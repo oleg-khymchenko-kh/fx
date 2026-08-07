@@ -1,0 +1,122 @@
+Loading EURUSD from C:\Users\Oleg\Documents\Oleg\fx\FXViewer\bin\Debug\net10.0-windows\data
+  2015:   370,431 minutes
+  2016:   370,874 minutes
+  2017:   369,311 minutes
+  2018:   368,028 minutes
+  2019:   364,416 minutes
+Total trading minutes: 1,843,060 (2015-01-01 .. 2019-12-31), loaded in 0.1s
+
+Robot2 mode: the legacy 2015 strategy, see docs/legacy-robot2-strategy.md.
+SMA over bar midpoints, ending at the current bar. A side arms when the bar
+touches avg+-diffLevel1 (touch = level inside the bar or in the gap to the
+previous bar) and fires when the armed side touches avg+-diffLevel2: a limit
+order goes orderStartDelta pips back from that level, cancelled if the price
+runs profLimit away first. Fixed TP=profLimit, SL=lossLimit from the entry.
+Many trades can be open at once; a new one is dropped when an open trade of
+the same direction sits within 50 pips. Faithfully reproduced legacy quirks:
+the high level is checked first, so a bar covering both brackets is a win
+for buys and a loss for sells; re-arming drops the pending order; fills are
+checked before cancels on the same bar; a trade can close on its entry bar.
+Grid:         avgPeriod 1440..14400 step 1440, diffLevel1 -50..50 step 10,
+              diffLevel2 0..100 step 10, lossLimit 20..100 step 10,
+              profLimit 50..150 step 10, orderStartDelta 0..50 step 10
+Combinations: 718,740, every one is a full sequential pass
+Spread cost:  0.7 pips per closed trade (legacy used 5.0)
+Save filter:  profitWithSpread >= 3,000 pips and worstLoss >= -500 pips
+Early abort:  a pass dies as soon as worstLoss drops below -500 pips
+Ranking:      score = min(5000, profitWithSpread) + 2 * worstLoss (the legacy GUI formula)
+Threads:      22
+
+Running Robot2 sweep...
+  16,169/718,740 combos (2.2 %)  elapsed 5s  eta 218s
+  29,382/718,740 combos (4.1 %)  elapsed 10s  eta 235s
+  43,082/718,740 combos (6.0 %)  elapsed 15s  eta 236s
+  57,092/718,740 combos (7.9 %)  elapsed 20s  eta 232s
+  71,487/718,740 combos (9.9 %)  elapsed 25s  eta 227s
+  84,764/718,740 combos (11.8 %)  elapsed 30s  eta 225s
+  97,939/718,740 combos (13.6 %)  elapsed 35s  eta 222s
+  111,677/718,740 combos (15.5 %)  elapsed 40s  eta 218s
+  127,212/718,740 combos (17.7 %)  elapsed 45s  eta 210s
+  141,381/718,740 combos (19.7 %)  elapsed 50s  eta 205s
+  151,534/718,740 combos (21.1 %)  elapsed 55s  eta 206s
+  161,874/718,740 combos (22.5 %)  elapsed 60s  eta 207s
+  171,065/718,740 combos (23.8 %)  elapsed 65s  eta 209s
+  180,147/718,740 combos (25.1 %)  elapsed 70s  eta 210s
+  191,918/718,740 combos (26.7 %)  elapsed 75s  eta 206s
+  202,436/718,740 combos (28.2 %)  elapsed 80s  eta 204s
+  214,547/718,740 combos (29.9 %)  elapsed 85s  eta 200s
+  227,234/718,740 combos (31.6 %)  elapsed 90s  eta 195s
+  237,670/718,740 combos (33.1 %)  elapsed 95s  eta 193s
+  248,283/718,740 combos (34.5 %)  elapsed 100s  eta 190s
+  259,104/718,740 combos (36.0 %)  elapsed 105s  eta 187s
+  272,036/718,740 combos (37.8 %)  elapsed 110s  eta 181s
+  285,710/718,740 combos (39.8 %)  elapsed 115s  eta 175s
+  296,583/718,740 combos (41.3 %)  elapsed 120s  eta 171s
+  307,968/718,740 combos (42.8 %)  elapsed 125s  eta 167s
+  319,435/718,740 combos (44.4 %)  elapsed 130s  eta 163s
+  330,098/718,740 combos (45.9 %)  elapsed 135s  eta 159s
+  341,347/718,740 combos (47.5 %)  elapsed 140s  eta 155s
+  350,524/718,740 combos (48.8 %)  elapsed 145s  eta 153s
+  362,296/718,740 combos (50.4 %)  elapsed 150s  eta 148s
+  372,875/718,740 combos (51.9 %)  elapsed 155s  eta 144s
+  383,110/718,740 combos (53.3 %)  elapsed 160s  eta 140s
+  393,054/718,740 combos (54.7 %)  elapsed 165s  eta 137s
+  403,181/718,740 combos (56.1 %)  elapsed 170s  eta 133s
+  414,114/718,740 combos (57.6 %)  elapsed 175s  eta 129s
+  424,242/718,740 combos (59.0 %)  elapsed 180s  eta 125s
+  435,827/718,740 combos (60.6 %)  elapsed 185s  eta 120s
+  446,083/718,740 combos (62.1 %)  elapsed 190s  eta 116s
+  457,006/718,740 combos (63.6 %)  elapsed 195s  eta 112s
+  467,047/718,740 combos (65.0 %)  elapsed 200s  eta 108s
+  477,602/718,740 combos (66.4 %)  elapsed 205s  eta 104s
+  487,796/718,740 combos (67.9 %)  elapsed 210s  eta 100s
+  497,220/718,740 combos (69.2 %)  elapsed 215s  eta 96s
+  507,927/718,740 combos (70.7 %)  elapsed 220s  eta 91s
+  518,521/718,740 combos (72.1 %)  elapsed 225s  eta 87s
+  529,256/718,740 combos (73.6 %)  elapsed 230s  eta 83s
+  539,257/718,740 combos (75.0 %)  elapsed 235s  eta 78s
+  550,756/718,740 combos (76.6 %)  elapsed 240s  eta 73s
+  561,356/718,740 combos (78.1 %)  elapsed 245s  eta 69s
+  572,861/718,740 combos (79.7 %)  elapsed 250s  eta 64s
+  583,888/718,740 combos (81.2 %)  elapsed 255s  eta 59s
+  594,965/718,740 combos (82.8 %)  elapsed 261s  eta 54s
+  604,907/718,740 combos (84.2 %)  elapsed 266s  eta 50s
+  615,668/718,740 combos (85.7 %)  elapsed 271s  eta 45s
+  626,265/718,740 combos (87.1 %)  elapsed 276s  eta 41s
+  638,545/718,740 combos (88.8 %)  elapsed 281s  eta 35s
+  650,448/718,740 combos (90.5 %)  elapsed 286s  eta 30s
+  661,020/718,740 combos (92.0 %)  elapsed 291s  eta 25s
+  671,324/718,740 combos (93.4 %)  elapsed 296s  eta 21s
+  681,121/718,740 combos (94.8 %)  elapsed 301s  eta 17s
+  693,367/718,740 combos (96.5 %)  elapsed 306s  eta 11s
+  706,245/718,740 combos (98.3 %)  elapsed 311s  eta 5s
+Robot2 sweep done in 315.5s: 718,740 combos, 569,259 aborted early, 220 passed the legacy save filter
+
+==================== TOP 15 (by legacy score) ====================
+  #     avg  diff1  diff2    SL    TP  delta       profit   withSpread    worstLoss  maxRun  entries   win%   cancel    dup      score
+  1      1d    -50      0   100    70     50        4,270        4,144         -334       3      180  72.8 %      475     15      3,477
+  2      3d    -50     20    60    90     10        4,440        4,194         -371       5      351  48.4 %       32     11      3,452
+  3      1d    -50      0    90    80     50        4,430        4,277         -420       4      219  64.8 %      413     24      3,437
+  4      1d    -50      0    90   100     50        4,450        4,279         -467       4      244  57.0 %      332     42      3,346
+  5      1d    -50      0    80    80     50        4,240        4,087         -415       4      219  62.1 %      413     24      3,257
+  6      3d    -40     20    60    90     10        4,290        4,020         -400       6      386  47.4 %       39     42      3,220
+  7      3d    -50     20    60   100     10        4,340        4,096         -453       6      349  45.3 %       28     16      3,190
+  8      3d    -40     20    60   100     10        4,120        3,853         -364       6      382  44.2 %       34     49      3,124
+  9      3d      0      0    30    80     10        4,650        3,981         -438      11      956  31.7 %      368  1,688      3,106
+ 10      3d    -50     20    50    90     10        4,130        3,880         -389       5      357  44.0 %       32      5      3,102
+ 11      1d    -20     40    40    50     10        4,350        3,936         -447       6      591  52.6 %      115     31      3,042
+ 12      1d    -20     20   100    80     30        4,220        3,974         -467       4      352  62.2 %      424    169      3,040
+ 13      3d    -40      0    40   100     10        4,180        3,815         -389       8      522  34.3 %       53     65      3,036
+ 14      3d    -20     20    40    60     10        3,920        3,558         -273       6      517  47.6 %       97     53      3,012
+ 15      2d    -40     20    40   110     10        4,320        3,976         -499       9      492  32.5 %       36     32      2,978
+
+============ BY YEAR (entry year, spread included): avg=1d diff1=-50 diff2=0 SL=100 TP=70 delta=50 ============
+year     entries      pips     wins  losses   win%
+2015         54     1,022       38      16   70.4%
+2016         40       732       28      12   70.0%
+2017         36       965       27       9   75.0%
+2018         36       965       27       9   75.0%
+2019         14       460       11       3   78.6%
+
+Top CSV:    C:\Users\Oleg\Documents\Oleg\fx\reports\eurusd-robot2-top.csv (500 rows)
+Total time: 315.6s

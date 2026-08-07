@@ -1,0 +1,109 @@
+<Window x:Class="FXViewer.SearchParamsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:FXViewer"
+        Title="Search parameters" SizeToContent="WidthAndHeight" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" Width="420" ShowInTaskbar="False"
+        UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <Window.Resources>
+        <local:PatternCellConverter x:Key="CellConv" />
+    </Window.Resources>
+    <Grid Margin="16">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="FragmentText" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
+                   Foreground="Gray" Margin="0,0,0,12" TextWrapping="Wrap" />
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Search type" VerticalAlignment="Center"
+                   Margin="0,0,10,10" />
+        <ComboBox x:Name="SearchTypeBox" Grid.Row="1" Grid.Column="1" Width="140" Height="26"
+                  HorizontalAlignment="Left" VerticalContentAlignment="Center" Margin="0,0,0,10"
+                  SelectionChanged="SearchTypeBox_SelectionChanged" />
+
+        <TextBlock x:Name="TargetsLabel" Grid.Row="2" Grid.Column="0" Text="Target symbols"
+                   VerticalAlignment="Top" Margin="0,4,10,10" />
+        <Border x:Name="TargetsBorder" Grid.Row="2" Grid.Column="1" BorderBrush="#E0E0E0"
+                BorderThickness="1" Padding="6,4,6,4" Margin="0,0,0,10">
+            <UniformGrid x:Name="TargetsPanel" Columns="2" />
+        </Border>
+        <Border x:Name="ZigZagTargetsBorder" Grid.Row="2" Grid.Column="1" BorderBrush="#E0E0E0"
+                BorderThickness="1" Padding="6,4,6,4" Margin="0,0,0,10" Visibility="Collapsed">
+            <UniformGrid x:Name="ZigZagTargetsPanel" Columns="2" />
+        </Border>
+
+        <TextBlock x:Name="SmoothLabel" Grid.Row="3" Grid.Column="0" Text="Smoothing"
+                   VerticalAlignment="Center" Margin="0,0,10,10" />
+        <StackPanel x:Name="SmoothPanel" Grid.Row="3" Grid.Column="1" Orientation="Horizontal"
+                    Margin="0,0,0,10">
+            <TextBox x:Name="SmoothBox" Width="60" Height="26" VerticalContentAlignment="Center" />
+            <ComboBox x:Name="SmoothUnitBox" Width="90" Height="26" VerticalContentAlignment="Center"
+                      Margin="8,0,0,0" />
+        </StackPanel>
+
+        <TextBlock Grid.Row="4" Grid.Column="0" Text="Max zoom, %" VerticalAlignment="Center"
+                   Margin="0,0,10,10" />
+        <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,10">
+            <TextBox x:Name="ZoomBox" Width="60" Height="26" VerticalContentAlignment="Center" />
+            <TextBlock x:Name="ZoomHint" VerticalAlignment="Center" Foreground="Gray" Margin="10,0,0,0" />
+        </StackPanel>
+
+        <TextBlock x:Name="StepLabel" Grid.Row="5" Grid.Column="0" Text="Step, min"
+                   VerticalAlignment="Center" Margin="0,0,10,10" />
+        <StackPanel x:Name="StepPanel" Grid.Row="5" Grid.Column="1" Orientation="Horizontal"
+                    Margin="0,0,0,10">
+            <TextBox x:Name="StepBox" Width="60" Height="26" VerticalContentAlignment="Center" />
+            <TextBlock Text="candidate step along the time axis" VerticalAlignment="Center"
+                       Foreground="Gray" Margin="10,0,0,0" />
+        </StackPanel>
+
+        <TextBlock x:Name="PointsLabel" Grid.Row="6" Grid.Column="0" Text="Points"
+                   VerticalAlignment="Top" Margin="0,4,10,10" Visibility="Collapsed" />
+        <DataGrid x:Name="PointsGrid" Grid.Row="6" Grid.Column="1" Visibility="Collapsed"
+                  AutoGenerateColumns="False" CanUserAddRows="True" CanUserDeleteRows="True"
+                  CanUserResizeRows="False" CanUserSortColumns="False" CanUserReorderColumns="False"
+                  HeadersVisibility="Column" RowHeaderWidth="0" MaxHeight="260" Margin="0,0,0,10"
+                  InitializingNewItem="PointsGrid_InitializingNewItem">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Pips" Width="58"
+                                    Binding="{Binding Pips, Converter={StaticResource CellConv},
+                                              ConverterParameter=F1}" />
+                <DataGridTextColumn Header="Minutes" Width="62"
+                                    Binding="{Binding Minutes, Converter={StaticResource CellConv},
+                                              ConverterParameter=F0}" />
+                <DataGridTextColumn Header="Pips up" Width="58"
+                                    Binding="{Binding PipsUp, Converter={StaticResource CellConv},
+                                              ConverterParameter=F1}" />
+                <DataGridTextColumn Header="Pips down" Width="68"
+                                    Binding="{Binding PipsDown, Converter={StaticResource CellConv},
+                                              ConverterParameter=F1}" />
+                <DataGridTextColumn Header="Min left" Width="58"
+                                    Binding="{Binding MinLeft, Converter={StaticResource CellConv},
+                                              ConverterParameter=F0}" />
+                <DataGridTextColumn Header="Min right" Width="62"
+                                    Binding="{Binding MinRight, Converter={StaticResource CellConv},
+                                              ConverterParameter=F0}" />
+                <DataGridCheckBoxColumn Header="Zoom" Width="44" Binding="{Binding Zoom}" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <DockPanel Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="2" LastChildFill="False">
+            <Button x:Name="CancelBtn" DockPanel.Dock="Right" Content="Cancel" Width="90" Height="28"
+                    IsCancel="True" Click="CancelBtn_Click" />
+            <Button x:Name="OkBtn" DockPanel.Dock="Right" Content="Search" Width="90" Height="28"
+                    Margin="0,0,8,0" IsDefault="True" Click="OkBtn_Click" />
+        </DockPanel>
+    </Grid>
+</Window>

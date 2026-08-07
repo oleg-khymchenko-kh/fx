@@ -1,0 +1,41 @@
+<Window x:Class="FXViewer.FindResultsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Find similar" Width="660" Height="460" WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False" UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="HeaderText" Grid.Row="0" Margin="0,0,0,8" />
+
+        <StackPanel x:Name="ProgressPanel" Grid.Row="1" Margin="0,0,0,8">
+            <TextBlock x:Name="StatusText" Text="Searching..." Foreground="Gray" Margin="0,0,0,4" />
+            <DockPanel LastChildFill="True">
+                <Button x:Name="CancelBtn" DockPanel.Dock="Right" Content="Cancel" Width="80" Height="24"
+                        Margin="8,0,0,0" Click="CancelBtn_Click" />
+                <ProgressBar x:Name="ProgressBar" Height="16" Minimum="0" Maximum="100" />
+            </DockPanel>
+        </StackPanel>
+
+        <ListView x:Name="ResultsList" Grid.Row="2" SelectionMode="Single"
+                  Visibility="Collapsed" SelectionChanged="ResultsList_SelectionChanged">
+            <ListView.View>
+                <GridView x:Name="ResultsView">
+                    <GridViewColumn Header="#" Width="36" DisplayMemberBinding="{Binding Rank}" />
+                    <GridViewColumn Header="Pair" Width="72" DisplayMemberBinding="{Binding Symbol}" />
+                    <GridViewColumn Header="Source window (UTC)" Width="250" DisplayMemberBinding="{Binding Window}" />
+                    <GridViewColumn x:Name="FitColumn" Header="Fit" Width="52" DisplayMemberBinding="{Binding Fit}" />
+                    <GridViewColumn Header="Sim" Width="62" DisplayMemberBinding="{Binding Sim}" />
+                    <GridViewColumn Header="Rho" Width="56" DisplayMemberBinding="{Binding Rho}" />
+                    <GridViewColumn Header="Zoom" Width="50" DisplayMemberBinding="{Binding Zoom}" />
+                    <GridViewColumn Header="Mir" Width="40" DisplayMemberBinding="{Binding Mirror}" />
+                    <GridViewColumn Header="Overlap" Width="70" DisplayMemberBinding="{Binding Overlap}" />
+                </GridView>
+            </ListView.View>
+        </ListView>
+    </Grid>
+</Window>

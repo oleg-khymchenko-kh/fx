@@ -1,0 +1,80 @@
+Loading EURUSD from C:\Users\Oleg\Documents\Oleg\fx\FXViewer\bin\Debug\net10.0-windows\data
+  2015:   370,431 minutes
+  2016:   370,874 minutes
+  2017:   369,311 minutes
+  2018:   368,028 minutes
+  2019:   364,416 minutes
+  2020:   368,369 minutes
+  2021:   364,670 minutes
+  2022:   369,829 minutes
+  2023:   368,679 minutes
+  2024:   370,121 minutes
+  2025:   370,048 minutes
+  2026:   216,003 minutes
+Total trading minutes: 4,270,779 (2015-01-01 .. 2026-07-31), loaded in 0.1s
+
+Block index ready in 0.0s (16,683 blocks)
+
+Comeback mode: an anchor sits at a bar's average price. The price must touch
+anchor+X and anchor-X (either order) while staying inside anchor+-Y, X < Y.
+When a LATER bar comes back through the anchor price, a BUY and a SELL open
+there at once, same SL and TP each, measured from the anchor. When both
+close, the exit bar becomes the next anchor. A bar beyond anchor+-Y moves
+the anchor to that bar and clears the touches.
+X grid:       19 values 10..100 pips
+Y grid:       19 values 10..100 pips (171 pairs with X < Y)
+StopLoss:     19 values 10..100 step 5 pips
+TakeProfit:   19 values 10..100 step 5 pips
+TP cap:       at most 3 x SL (321 SL/TP combos kept)
+Risk/trade:   10 values 0.05%..0.50% of equity
+Deposit:      100,000, dropped when equity falls 25% below its own peak
+Spread cost:  0.7 pips per leg
+Windows:      12 (2015..2026), each picked on its own, each starting from a fresh deposit and a fresh anchor;
+              entries only inside the window, the last exits may run past its end
+Min entries:  30 per average window, scaled by window length (18..31)
+Threads:      22
+Combinations: 6,586,920 (658,692 trade sequences x 10 sizes)
+
+Running comeback sweep...
+  0/171 X/Y pairs (0.0 %)  elapsed 5s  eta 0s
+  19/171 X/Y pairs (11.1 %)  elapsed 10s  eta 80s
+  30/171 X/Y pairs (17.5 %)  elapsed 15s  eta 71s
+  37/171 X/Y pairs (21.6 %)  elapsed 20s  eta 73s
+  43/171 X/Y pairs (25.1 %)  elapsed 25s  eta 75s
+  53/171 X/Y pairs (31.0 %)  elapsed 30s  eta 67s
+  60/171 X/Y pairs (35.1 %)  elapsed 35s  eta 65s
+  70/171 X/Y pairs (40.9 %)  elapsed 40s  eta 58s
+  76/171 X/Y pairs (44.4 %)  elapsed 45s  eta 56s
+  81/171 X/Y pairs (47.4 %)  elapsed 50s  eta 56s
+  84/171 X/Y pairs (49.1 %)  elapsed 55s  eta 57s
+  96/171 X/Y pairs (56.1 %)  elapsed 60s  eta 47s
+  103/171 X/Y pairs (60.2 %)  elapsed 65s  eta 43s
+  109/171 X/Y pairs (63.7 %)  elapsed 70s  eta 40s
+  115/171 X/Y pairs (67.3 %)  elapsed 75s  eta 37s
+  121/171 X/Y pairs (70.8 %)  elapsed 80s  eta 33s
+  133/171 X/Y pairs (77.8 %)  elapsed 85s  eta 24s
+  138/171 X/Y pairs (80.7 %)  elapsed 90s  eta 22s
+  151/171 X/Y pairs (88.3 %)  elapsed 95s  eta 13s
+  161/171 X/Y pairs (94.2 %)  elapsed 100s  eta 6s
+Comeback sweep done in 102.1s (26,330,162 simulated entries, 3,118 blown up)
+
+==================== BEST COMBINATION OF EVERY WINDOW ====================
+window     X     Y    SL    TP   risk        start          end     return   maxDD  entries      pips  legWin%      2w/mix/2l
+2015      15    90    10    25  0.50%      100,000      127,900       27.9%   11.1%      264       510   33.3 %      0/176/88
+2016      10    50    35    75  0.50%      100,000      132,054       32.1%    5.5%      168     1,975   37.8 %      0/127/41
+2017      10    85    20    60  0.50%      100,000      134,571       34.6%    8.4%      133     1,214   31.6 %      0/84/49
+2018      15    30    15    45  0.50%      100,000      131,116       31.1%    9.9%      134       832   31.3 %      0/84/50
+2019      15    60    15    45  0.50%      100,000      122,094       22.1%    3.6%       59       607   34.7 %      0/41/18
+2020      20    45    20    60  0.50%      100,000      130,227       30.2%    3.9%       90     1,074   33.3 %      0/60/30
+2021      10    55    10    30  0.50%      100,000      121,552       21.6%    8.7%      140       404   30.4 %      0/85/55
+2022      10    15    35   100  0.50%      100,000      136,323       36.3%    5.5%      126     2,209   32.9 %      0/83/43
+2023      10    20    25    65  0.50%      100,000      127,109       27.1%    7.5%      139     1,225   33.5 %      0/93/46
+2024      15    45    20    50  0.50%      100,000      119,321       19.3%    4.5%       74       716   36.5 %      0/54/20
+2025      20    75    25    75  0.50%      100,000      121,770       21.8%    5.8%       70     1,002   32.9 %      0/46/24
+2026      10    80    30    90  0.50%      100,000      117,233       17.2%    2.7%       39       965   35.9 %      0/28/11
+
+Every window starts again from the full deposit and is optimised on its own data only.
+Average window: 26.8%.
+
+Window CSV: C:\Users\Oleg\Documents\Oleg\fx\reports\eurusd-comeback-per-year.csv (top 500 of every window)
+Total time: 102.3s

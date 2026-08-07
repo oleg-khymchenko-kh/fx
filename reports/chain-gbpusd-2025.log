@@ -1,0 +1,47 @@
+Loading GBPUSD from C:\Users\Oleg\Documents\Oleg\fx\FXViewer\bin\Debug\net10.0-windows\data
+  2025:   370,459 minutes
+  2026:   216,434 minutes
+Total trading minutes: 586,893 (2025-01-01 .. 2026-07-31), loaded in 0.0s
+
+MA periods:   144 values 30..14400 trading minutes
+              30, 60, 90, 120, 150, 180, 210, 240, ..., 13920, 14160, 14400
+MA pairs:     10,296
+StopLoss:     1 values 15..15 step 5 pips
+TakeProfit:   1 values 45..45 step 5 pips
+Risk/trade:   10 values 0.05%..0.50% of equity
+              0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5
+Combinations: 102,960 (10,296 trade sequences x 10 sizes)
+Deposit:      100,000, dropped when equity falls 25% below its own peak
+Filters:      at least 0 crossovers per MA pair, at least 1,000 entries per result
+Spread cost:  0.0 pips per trade (0.0 pips per entry, both trades)
+Threads:      22
+
+Building barrier tables (2 distances x 2 directions, ~0.01 GB)...
+  88 jobs, stack capacity 17,680
+Barrier tables ready in 0.0s
+
+Per-minute outcome with SL 15 / TP 45 pips, entry at the bar average:
+  some side wins:      282,866 (48.2 %)
+  both sides lose:     303,658 (51.7 %)
+  still open:              369
+  random walk expects 50.0 % winning minutes
+
+Chain rule: a single loss stays inside the chain only when it has at least
+2 wins in a row right before it and at least 2 wins in a row right after it.
+Scanning 10,296 MA pairs, entry delay 1 bar(s)...
+Chain sweep done in 1.0s
+
+==================== TOP 10 CHAINS: SL 15, TP 45 ====================
+  #       A1       A2  chain   wins  loss              from                to  crossings   win%  share
+  1     0.5h    1.65d     53     48     5  2025-08-15 12:40  2025-09-11 12:49      1,103  50.0 %  4.81 %
+  2     0.5h    1.58d     51     48     3  2025-08-15 11:03  2025-09-11 12:50      1,075  49.8 %  4.74 %
+  3     0.5h    1.63d     51     47     4  2025-08-15 12:39  2025-09-11 12:50      1,107  49.6 %  4.61 %
+  4     0.5h    1.35d     51     45     6  2026-04-22 17:23  2026-05-18 06:42      1,187  48.9 %  4.30 %
+  5     0.5h     1.6d     50     45     5  2025-08-15 19:29  2025-09-11 12:50      1,083  50.2 %  4.62 %
+  6     0.5h       1h     49     47     2  2026-01-07 01:41  2026-01-08 13:28     10,890  47.9 %  0.45 %
+  7       6h     6.5h     49     45     4  2025-12-09 21:17  2025-12-17 13:52      3,179  48.5 %  1.54 %
+  8     0.5h    1.75d     48     44     4  2025-08-15 12:43  2025-09-02 07:12      1,081  48.2 %  4.44 %
+  9     0.5h    1.48d     47     45     2  2025-08-15 10:58  2025-09-04 23:39      1,113  51.5 %  4.22 %
+ 10     0.5h    1.46d     47     45     2  2025-08-17 21:46  2025-09-04 23:40      1,137  52.2 %  4.13 %
+
+Chain CSV:  C:\Users\Oleg\Documents\Oleg\fx\reports\gbpusd-chain-top.csv (500 rows)

@@ -1,0 +1,333 @@
+using System.Buffers.Binary;
+using System.Globalization;
+using System.Text;
+
+const int HeaderSize = 64;
+const int RecordSize = 16;
+const uint FlagFilled = 1u << 0;
+
+const int WeekMinutes = 5 * 1440;
+const int SmaHalfWindowMinutes = 120;
+const int MinSmaSamples = 121;
+const int BucketMinutes = 15;
+const int WeekPoints = WeekMinutes / BucketMinutes;
+const int PointsPerHour = 60 / BucketMinutes;
+const int MaxShiftHours = 24;
+const int MinOverlapPoints = WeekPoints * 6 / 10;
+const double MinZoom = 0.6;
+const double MaxZoom = 1.5;
+
+string dataRoot = args.Length > 0
+    ? args[0]
+    : @"C:\Users\Oleg\Documents\Oleg\fx\FXViewer\bin\Debug\net10.0-windows\data";
+string symbol = args.Length > 1 ? args[1] : "EURUSD";
+DateOnly targetMonday = args.Length > 2
+    ? DateOnly.ParseExact(args[2], "yyyy-MM-dd", CultureInfo.InvariantCulture)
+    : new DateOnly(2026, 7, 20);
+int topCount = args.Length > 3 ? int.Parse(args[3], CultureInfo.InvariantCulture) : 20;
+
+string symbolDir = Path.Combine(dataRoot, symbol);
+if (!Directory.Exists(symbolDir))
+{
+    Console.Error.WriteLine($"Symbol directory not found: {symbolDir}");
+    return 1;
+}
+
+var rawWeeks = new SortedDictionary<DateOnly, List<(long Unix, int Avg)>>();
+
+foreach (var (path, year) in Directory.GetFiles(symbolDir, "*.m1")
+             .Select(p => (Path: p, Year: int.Parse(Path.GetFileNameWithoutExtension(p), CultureInfo.InvariantCulture)))
+             .OrderBy(t => t.Year))
+{
+    byte[] bytes;
+    using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+    {
+        bytes = new byte[fs.Length];
+        fs.ReadExactly(bytes);
+    }
+    long yearStartUnix = new DateTimeOffset(year, 1, 1, 0, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds();
+    int records = (bytes.Length - HeaderSize) / RecordSize;
+    for (int i = 0; i < records; i++)
+    {
+        int off = HeaderSize + i * RecordSize;
+        uint flags = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(off + 12));
+        if ((flags & FlagFilled) == 0) continue;
+        long unix = yearStartUnix + (long)i * 60;
+        var date = DateOnly.FromDateTime(DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime);
+        var monday = TradingWeekMonday(date);
+        long mondayUnix = new DateTimeOffset(monday.Year, monday.Month, monday.Day, 0, 0, 0, TimeSpan.Zero)
+            .ToUnixTimeSeconds();
+        if (unix < mondayUnix - 4 * 3600 || unix >= mondayUnix + 5 * 86400) continue;
+        int avg = BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(off + 8));
+        if (!rawWeeks.TryGetValue(monday, out var list))
+            rawWeeks[monday] = list = new List<(long, int)>(WeekMinutes);
+        list.Add((unix, avg));
+    }
+}
+
+var weeks = new List<WeekSeries>();
+long lastOpenOffset = -2 * 3600;
+int reAnchored = 0;
+foreach (var (monday, list) in rawWeeks)
+{
+    long mondayUnix = new DateTimeOffset(monday.Year, monday.Month, monday.Day, 0, 0, 0, TimeSpan.Zero)
+        .ToUnixTimeSeconds();
+    long firstFilled = list[0].Unix;
+    long open;
+    if (firstFilled <= mondayUnix - 2 * 3600 + 300)
+    {
+        open = firstFilled;
+        lastOpenOffset = firstFilled - mondayUnix;
+    }
+    else
+    {
+        open = mondayUnix + lastOpenOffset;
+        reAnchored++;
+    }
+    var minute = new double[WeekMinutes];
+    Array.Fill(minute, double.NaN);
+    foreach (var (unix, avg) in list)
+    {
+        int idx = (int)((unix - open) / 60);
+        if (idx >= 0 && idx < WeekMinutes) minute[idx] = avg;
+    }
+    var points = Downsample(Smooth(minute));
+    int coverage = points.Count(v => !double.IsNaN(v));
+    if (coverage >= MinOverlapPoints)
+        weeks.Add(new WeekSeries(monday, DateTimeOffset.FromUnixTimeSeconds(open).UtcDateTime, points, coverage));
+}
+
+var target = weeks.FirstOrDefault(w => w.Monday == targetMonday);
+if (target is null)
+{
+    Console.Error.WriteLine($"Target week {targetMonday:yyyy-MM-dd} not found or has too little data.");
+    return 1;
+}
+
+Console.WriteLine($"Symbol:        {symbol}");
+Console.WriteLine($"Target week:   {targetMonday:yyyy-MM-dd} (open {target.OpenUtc:yyyy-MM-dd HH:mm} UTC, {target.Coverage}/{WeekPoints} points)");
+Console.WriteLine($"History weeks: {weeks.Count - 1} candidates ({reAnchored} late-open weeks re-anchored to session grid)");
+
+var self = BestMatch(target.Points, target.Points);
+if (self is not { ShiftHours: 0 } s0 || Math.Abs(s0.Zoom - 1) > 1e-6 || Math.Abs(s0.Score - 1) > 1e-6)
+{
+    Console.Error.WriteLine($"Self-test FAILED: {self}");
+    return 1;
+}
+Console.WriteLine($"Self-test:     ok (score={self.Value.Score:F4}, shift={self.Value.ShiftHours}, zoom={self.Value.Zoom:F2})");
+Console.WriteLine();
+
+var results = new List<(WeekSeries Week, MatchResult M)>();
+foreach (var week in weeks)
+{
+    if (week.Monday == targetMonday) continue;
+    var m = BestMatch(target.Points, week.Points);
+    if (m is not null) results.Add((week, m.Value));
+}
+results.Sort((x, y) => y.M.Sim.CompareTo(x.M.Sim));
+
+Console.WriteLine($"rank  weekMonday   sim     score   rho     zoom  shift  mir  overlap");
+for (int i = 0; i < Math.Min(topCount, results.Count); i++)
+{
+    var (w, m) = results[i];
+    Console.WriteLine(
+        $"{i + 1,4}  {w.Monday:yyyy-MM-dd}  {m.Sim,6:F4}  {m.Score,6:F4}  {m.Rho,6:F4}  {m.Zoom,4:F2}  {m.ShiftHours,4:+0;-0;0}h  {(m.Mirrored ? "M" : " "),3}  {m.Overlap,4}/{WeekPoints}");
+}
+
+string reportsDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "reports"));
+Directory.CreateDirectory(reportsDir);
+string baseName = $"{symbol.ToLowerInvariant()}-similar-weeks-{targetMonday:yyyy-MM-dd}";
+
+string csvPath = Path.Combine(reportsDir, baseName + ".csv");
+using (var writer = new StreamWriter(csvPath))
+{
+    writer.WriteLine("weekMonday;sim;score;rho;zoom;shiftHours;mirror;overlapPoints;weekPoints");
+    foreach (var (w, m) in results)
+        writer.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"{w.Monday:yyyy-MM-dd};{m.Sim:F4};{m.Score:F4};{m.Rho:F4};{m.Zoom:F2};{m.ShiftHours};{(m.Mirrored ? 1 : 0)};{m.Overlap};{w.Coverage}"));
+}
+Console.WriteLine();
+Console.WriteLine($"CSV:  {csvPath} ({results.Count} weeks)");
+
+string htmlPath = Path.Combine(reportsDir, baseName + ".html");
+File.WriteAllText(htmlPath, BuildHtml(results.Take(5).ToList()));
+Console.WriteLine($"HTML: {htmlPath} (top 5 overlays)");
+return 0;
+
+static DateOnly TradingWeekMonday(DateOnly d) => d.DayOfWeek switch
+{
+    DayOfWeek.Sunday => d.AddDays(1),
+    DayOfWeek.Saturday => d.AddDays(-5),
+    _ => d.AddDays(-((int)d.DayOfWeek - 1)),
+};
+
+static double[] Smooth(double[] minute)
+{
+    int n = minute.Length;
+    var sum = new double[n + 1];
+    var cnt = new int[n + 1];
+    for (int i = 0; i < n; i++)
+    {
+        bool has = !double.IsNaN(minute[i]);
+        sum[i + 1] = sum[i] + (has ? minute[i] : 0);
+        cnt[i + 1] = cnt[i] + (has ? 1 : 0);
+    }
+    var smoothed = new double[n];
+    for (int i = 0; i < n; i++)
+    {
+        int lo = Math.Max(0, i - SmaHalfWindowMinutes);
+        int hi = Math.Min(n - 1, i + SmaHalfWindowMinutes);
+        int c = cnt[hi + 1] - cnt[lo];
+        smoothed[i] = c >= MinSmaSamples ? (sum[hi + 1] - sum[lo]) / c : double.NaN;
+    }
+    return smoothed;
+}
+
+static double[] Downsample(double[] smoothed)
+{
+    var points = new double[WeekPoints];
+    for (int p = 0; p < WeekPoints; p++)
+    {
+        double acc = 0;
+        int c = 0;
+        for (int i = p * BucketMinutes; i < (p + 1) * BucketMinutes; i++)
+        {
+            if (double.IsNaN(smoothed[i])) continue;
+            acc += smoothed[i];
+            c++;
+        }
+        points[p] = c > 0 ? acc / c : double.NaN;
+    }
+    return points;
+}
+
+static MatchResult? BestMatch(double[] a, double[] b)
+{
+    MatchResult? best = null;
+    for (int shift = -MaxShiftHours; shift <= MaxShiftHours; shift++)
+    {
+        int s = shift * PointsPerHour;
+        int iMin = Math.Max(0, s);
+        int iMax = Math.Min(WeekPoints, WeekPoints + s);
+        int n = 0;
+        double sumA = 0, sumB = 0, sumAA = 0, sumBB = 0, sumAB = 0;
+        for (int i = iMin; i < iMax; i++)
+        {
+            double va = a[i], vb = b[i - s];
+            if (double.IsNaN(va) || double.IsNaN(vb)) continue;
+            n++;
+            sumA += va;
+            sumB += vb;
+            sumAA += va * va;
+            sumBB += vb * vb;
+            sumAB += va * vb;
+        }
+        if (n < MinOverlapPoints) continue;
+        double meanA = sumA / n, meanB = sumB / n;
+        double sxx = sumAA - n * meanA * meanA;
+        double syy = sumBB - n * meanB * meanB;
+        double sxy = sumAB - n * meanA * meanB;
+        if (sxx <= 0 || syy <= 0) continue;
+        double rho = sxy / Math.Sqrt(sxx * syy);
+        for (int mirror = 0; mirror < 2; mirror++)
+        {
+            double sxyM = mirror == 0 ? sxy : -sxy;
+            double zoom = Math.Clamp(sxyM / syy, MinZoom, MaxZoom);
+            double residual = sxx - 2 * zoom * sxyM + zoom * zoom * syy;
+            double score = 1 - residual / sxx;
+            double sim = score * Math.Sqrt((double)n / WeekPoints);
+            if (best is null || sim > best.Value.Sim)
+                best = new MatchResult(shift, n, mirror == 0 ? rho : -rho, zoom, score, sim, meanA, meanB,
+                    mirror == 1);
+        }
+    }
+    return best;
+}
+
+string BuildHtml(List<(WeekSeries Week, MatchResult M)> top)
+{
+    const int W = 960, H = 300, Pad = 40;
+    var sb = new StringBuilder();
+    sb.AppendLine("<!doctype html><html><head><meta charset=\"utf-8\">");
+    sb.AppendLine($"<title>{symbol} similar weeks - {targetMonday:yyyy-MM-dd}</title>");
+    sb.AppendLine("<style>body{font-family:Segoe UI,sans-serif;background:#fafafa;color:#222;margin:24px}" +
+                  "h1{font-size:20px}h2{font-size:15px;margin:28px 0 4px}" +
+                  "svg{background:#fff;border:1px solid #ddd}.meta{color:#666;font-size:13px}</style></head><body>");
+    sb.AppendLine($"<h1>{symbol}: weeks similar to {targetMonday:yyyy-MM-dd}</h1>");
+    sb.AppendLine($"<p class=\"meta\">Blue = target week {targetMonday:yyyy-MM-dd}. " +
+                  "Orange = matched week, shifted, re-centered, zoomed and (if marked MIRROR) flipped vertically. " +
+                  "Y axis: pips relative to the overlap mean. X axis: days from week open.</p>");
+    for (int rank = 0; rank < top.Count; rank++)
+    {
+        var (week, m) = top[rank];
+        var aPlot = new double[WeekPoints];
+        var bPlot = new double[WeekPoints];
+        Array.Fill(aPlot, double.NaN);
+        Array.Fill(bPlot, double.NaN);
+        int s = m.ShiftHours * PointsPerHour;
+        for (int i = 0; i < WeekPoints; i++)
+        {
+            if (!double.IsNaN(target.Points[i])) aPlot[i] = (target.Points[i] - m.MeanA) / 10;
+            int j = i - s;
+            if (j >= 0 && j < WeekPoints && !double.IsNaN(week.Points[j]))
+                bPlot[i] = m.Zoom * (week.Points[j] - m.MeanB) * (m.Mirrored ? -1 : 1) / 10;
+        }
+        double min = double.MaxValue, max = double.MinValue;
+        foreach (var v in aPlot.Concat(bPlot))
+        {
+            if (double.IsNaN(v)) continue;
+            min = Math.Min(min, v);
+            max = Math.Max(max, v);
+        }
+        double span = Math.Max(1, max - min);
+        double X(int i) => Pad + (double)i / (WeekPoints - 1) * (W - 2 * Pad);
+        double Y(double v) => Pad + (max - v) / span * (H - 2 * Pad);
+        sb.AppendLine($"<h2>#{rank + 1} &nbsp; {week.Monday:yyyy-MM-dd} &nbsp; sim {m.Sim:F4} &nbsp; " +
+                      $"rho {m.Rho:F3} &nbsp; zoom {m.Zoom:F2}x &nbsp; shift {m.ShiftHours:+0;-0;0}h &nbsp; " +
+                      $"{(m.Mirrored ? "MIRROR &nbsp; " : "")}overlap {m.Overlap}/{WeekPoints}</h2>");
+        sb.AppendLine($"<svg width=\"{W}\" height=\"{H}\" viewBox=\"0 0 {W} {H}\">");
+        for (int d = 0; d <= 5; d++)
+        {
+            double x = X(Math.Min(WeekPoints - 1, d * WeekPoints / 5));
+            sb.AppendLine(FormattableString.Invariant(
+                $"<line x1=\"{x:F1}\" y1=\"{Pad}\" x2=\"{x:F1}\" y2=\"{H - Pad}\" stroke=\"#eee\"/>"));
+            if (d < 5)
+                sb.AppendLine(FormattableString.Invariant(
+                    $"<text x=\"{x + 4:F1}\" y=\"{H - Pad + 16}\" font-size=\"11\" fill=\"#999\">day {d + 1}</text>"));
+        }
+        double y0 = Y(0);
+        sb.AppendLine(FormattableString.Invariant(
+            $"<line x1=\"{Pad}\" y1=\"{y0:F1}\" x2=\"{W - Pad}\" y2=\"{y0:F1}\" stroke=\"#ccc\" stroke-dasharray=\"4 3\"/>"));
+        sb.AppendLine(FormattableString.Invariant(
+            $"<text x=\"4\" y=\"{Pad + 4}\" font-size=\"11\" fill=\"#999\">{max:F0} pips</text>"));
+        sb.AppendLine(FormattableString.Invariant(
+            $"<text x=\"4\" y=\"{H - Pad}\" font-size=\"11\" fill=\"#999\">{min:F0}</text>"));
+        AppendPolylines(sb, aPlot, X, Y, "#2b6cb0");
+        AppendPolylines(sb, bPlot, X, Y, "#dd6b20");
+        sb.AppendLine("</svg>");
+    }
+    sb.AppendLine("</body></html>");
+    return sb.ToString();
+}
+
+static void AppendPolylines(StringBuilder sb, double[] vals, Func<int, double> x, Func<double, double> y, string color)
+{
+    var seg = new StringBuilder();
+    for (int i = 0; i <= vals.Length; i++)
+    {
+        if (i < vals.Length && !double.IsNaN(vals[i]))
+        {
+            seg.Append(FormattableString.Invariant($"{x(i):F1},{y(vals[i]):F1} "));
+            continue;
+        }
+        if (seg.Length > 0)
+            sb.AppendLine($"<polyline fill=\"none\" stroke=\"{color}\" stroke-width=\"1.6\" points=\"{seg}\"/>");
+        seg.Clear();
+    }
+}
+
+sealed record WeekSeries(DateOnly Monday, DateTime OpenUtc, double[] Points, int Coverage);
+
+readonly record struct MatchResult(
+    int ShiftHours, int Overlap, double Rho, double Zoom, double Score, double Sim, double MeanA, double MeanB,
+    bool Mirrored);

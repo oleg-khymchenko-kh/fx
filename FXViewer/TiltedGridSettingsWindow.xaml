@@ -1,0 +1,65 @@
+<Window x:Class="FXViewer.TiltedGridSettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Tilted grid settings" SizeToContent="WidthAndHeight" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" Width="380" ShowInTaskbar="False"
+        UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <Grid Margin="16">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3"
+                   Text="Slope in pips per day. Rising lines are positive, falling lines are negative. The two directions are independent and are switched on separately in the right bar. Lock stops Alt + wheel from changing that one line."
+                   Foreground="Gray" Margin="0,0,0,12" TextWrapping="Wrap" />
+
+        <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal"
+                    Margin="0,0,0,12">
+            <TextBlock Text="Grid" VerticalAlignment="Center" Margin="0,0,10,0" />
+            <ToggleButton x:Name="Grid1Btn" Content="1" Width="34" Height="26" Margin="0,0,4,0"
+                          Click="GridBtn_Click" />
+            <ToggleButton x:Name="Grid2Btn" Content="2" Width="34" Height="26" Margin="0,0,4,0"
+                          Click="GridBtn_Click" />
+            <ToggleButton x:Name="Grid3Btn" Content="3" Width="34" Height="26" Margin="0,0,4,0"
+                          Click="GridBtn_Click" />
+            <ToggleButton x:Name="Grid4Btn" Content="4" Width="34" Height="26" Margin="0,0,4,0"
+                          Click="GridBtn_Click" />
+            <ToggleButton x:Name="Grid5Btn" Content="5" Width="34" Height="26" Margin="0,0,4,0"
+                          Click="GridBtn_Click" />
+            <ToggleButton x:Name="Grid6Btn" Content="6" Width="34" Height="26" Margin="0,0,4,0"
+                          Click="GridBtn_Click" />
+            <ToggleButton x:Name="Grid7Btn" Content="7" Width="34" Height="26"
+                          Click="GridBtn_Click" />
+        </StackPanel>
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="Rising, pips per day"
+                   VerticalAlignment="Center" Margin="0,0,10,10" />
+        <TextBox x:Name="UpPipsBox" Grid.Row="2" Grid.Column="1" Width="90" Height="26"
+                 HorizontalAlignment="Left" VerticalContentAlignment="Center" Margin="0,0,12,10" />
+        <CheckBox x:Name="UpLockBox" Grid.Row="2" Grid.Column="2" Content="Lock"
+                  VerticalAlignment="Center" Margin="0,0,0,10" />
+
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="Falling, pips per day"
+                   VerticalAlignment="Center" Margin="0,0,10,10" />
+        <TextBox x:Name="DownPipsBox" Grid.Row="3" Grid.Column="1" Width="90" Height="26"
+                 HorizontalAlignment="Left" VerticalContentAlignment="Center" Margin="0,0,12,10" />
+        <CheckBox x:Name="DownLockBox" Grid.Row="3" Grid.Column="2" Content="Lock"
+                  VerticalAlignment="Center" Margin="0,0,0,10" />
+
+        <DockPanel Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="3" LastChildFill="False">
+            <Button x:Name="CancelBtn" DockPanel.Dock="Right" Content="Cancel" Width="90" Height="28"
+                    IsCancel="True" Click="CancelBtn_Click" />
+            <Button x:Name="OkBtn" DockPanel.Dock="Right" Content="OK" Width="90" Height="28"
+                    Margin="0,0,8,0" IsDefault="True" Click="OkBtn_Click" />
+        </DockPanel>
+    </Grid>
+</Window>

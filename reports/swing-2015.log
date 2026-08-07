@@ -1,0 +1,98 @@
+Loading EURUSD from C:\Users\Oleg\Documents\Oleg\fx\FXViewer\bin\Debug\net10.0-windows\data
+  2015:   370,431 minutes
+  2016:   370,874 minutes
+  2017:   369,311 minutes
+  2018:   368,028 minutes
+  2019:   364,416 minutes
+  2020:   368,369 minutes
+  2021:   364,670 minutes
+  2022:   369,829 minutes
+  2023:   368,679 minutes
+  2024:   370,121 minutes
+  2025:   370,048 minutes
+  2026:   216,003 minutes
+Total trading minutes: 4,270,779 (2015-01-01 .. 2026-07-31), loaded in 0.1s
+
+Block index ready in 0.0s (16,683 blocks)
+
+Swing mode: an anchor sits at a bar's average price. The price must run at
+least X but at most Y pips to one side of the anchor (the largest excursion
+so far is P), then turn and run 2*P the other way, i.e. touch anchor-P after
+a move up or anchor+P after a move down. That touch enters ONE trade at that
+exact level, in the direction of the turn, SL and TP from the entry level.
+A bar beyond anchor+-Y moves the anchor to that bar and clears the extremes;
+after the trade closes its exit bar becomes the next anchor. The mirror
+column counts entries where the OPPOSITE trade would have won instead.
+X grid:       19 values 10..100 pips
+Y grid:       19 values 10..100 pips (171 pairs with X < Y)
+StopLoss:     19 values 10..100 step 5 pips
+TakeProfit:   19 values 10..100 step 5 pips
+Risk/trade:   10 values 0.05%..0.50% of equity
+Deposit:      100,000, dropped when equity falls 25% below its own peak
+Spread cost:  0.7 pips per trade
+Filters:      at least 300 entries per result
+Threads:      22
+Combinations: 617,310 (61,731 trade sequences x 10 sizes)
+
+Running swing sweep...
+  0/171 X/Y pairs (0.0 %)  elapsed 5s  eta 0s
+  13/171 X/Y pairs (7.6 %)  elapsed 10s  eta 122s
+  22/171 X/Y pairs (12.9 %)  elapsed 15s  eta 102s
+  35/171 X/Y pairs (20.5 %)  elapsed 20s  eta 78s
+  37/171 X/Y pairs (21.6 %)  elapsed 25s  eta 91s
+  57/171 X/Y pairs (33.3 %)  elapsed 30s  eta 60s
+  58/171 X/Y pairs (33.9 %)  elapsed 35s  eta 68s
+  64/171 X/Y pairs (37.4 %)  elapsed 40s  eta 67s
+  76/171 X/Y pairs (44.4 %)  elapsed 45s  eta 56s
+  80/171 X/Y pairs (46.8 %)  elapsed 50s  eta 57s
+  86/171 X/Y pairs (50.3 %)  elapsed 55s  eta 54s
+  93/171 X/Y pairs (54.4 %)  elapsed 60s  eta 50s
+  102/171 X/Y pairs (59.6 %)  elapsed 65s  eta 44s
+  106/171 X/Y pairs (62.0 %)  elapsed 70s  eta 43s
+  111/171 X/Y pairs (64.9 %)  elapsed 75s  eta 41s
+  120/171 X/Y pairs (70.2 %)  elapsed 80s  eta 34s
+  124/171 X/Y pairs (72.5 %)  elapsed 85s  eta 32s
+  131/171 X/Y pairs (76.6 %)  elapsed 90s  eta 28s
+  137/171 X/Y pairs (80.1 %)  elapsed 95s  eta 24s
+  142/171 X/Y pairs (83.0 %)  elapsed 100s  eta 20s
+  145/171 X/Y pairs (84.8 %)  elapsed 105s  eta 19s
+  153/171 X/Y pairs (89.5 %)  elapsed 110s  eta 13s
+  162/171 X/Y pairs (94.7 %)  elapsed 115s  eta 6s
+  169/171 X/Y pairs (98.8 %)  elapsed 120s  eta 1s
+Swing sweep done in 122.5s (49,394,930 simulated entries, 56,820 blown up)
+
+==================== TOP 15 ====================
+  #     X     Y    SL    TP   risk      deposit        final       return   maxDD  entries        pips   win%        d/m/f
+  1    10    80    10    90  0.35%      100,000      260,701         161%   24.5%    2,487       3,189  12.0 %    298/246/1943
+  2    20    95    15    90  0.50%      100,000      238,985         139%   20.1%    1,152       2,914  17.4 %    200/166/786
+  3    20    60    20    80  0.50%      100,000      237,017         137%   21.5%    1,374       3,758  23.4 %    322/277/775
+  4    10    50    10    90  0.25%      100,000      231,581         132%   24.2%    3,282       3,783  11.9 %    389/335/2558
+  5    10    85    30    95  0.50%      100,000      216,379         116%   24.4%    1,615       5,044  27.1 %    437/381/797
+  6    10    50    15    65  0.45%      100,000      198,649          99%   24.9%    3,226       2,792  20.7 %    668/567/1991
+  7    10    30    20    75  0.40%      100,000      194,586          95%   22.9%    3,197       3,837  23.1 %    737/636/1824
+  8    10    30    30    75  0.50%      100,000      193,770          94%   20.6%    2,536       4,465  30.9 %    784/695/1057
+  9    15    30    20    95  0.45%      100,000      193,078          93%   23.0%    2,113       3,411  19.4 %    410/344/1359
+ 10    10    50    20    75  0.50%      100,000      188,159          88%   25.0%    2,702       3,064  23.0 %    621/538/1543
+ 11    20    90    40    85  0.50%      100,000      185,717          86%   13.5%      896       5,158  37.2 %    333/246/317
+ 12    10    85    40    80  0.50%      100,000      183,324          83%   13.8%    1,486       5,160  36.8 %    547/445/494
+ 13    10    80    20    65  0.50%      100,000      180,511          81%   24.2%    2,257       2,750  25.8 %    582/544/1131
+ 14    10    80    10    95  0.25%      100,000      179,291          79%   24.2%    2,459       2,669  11.2 %    276/247/1936
+ 15    10    90    60    70  0.50%      100,000      178,145          78%    9.0%    1,255       7,152  51.1 %    641/535/79
+
+============ BY YEAR: X=10 Y=80 SL=10 TP=90 risk=0.35% ============
+year     entries      pips   direct  mirror   fail   direct%
+2015        451       774       56      38    357     12.4%
+2016        223       314       27      20    176     12.1%
+2017        201       349       25      20    156     12.4%
+2018        232      -382       21      22    189      9.1%
+2019         89        48       10      10     69     11.2%
+2020        273       779       37      27    209     13.6%
+2021        108       244       14      14     80     13.0%
+2022        320       476       39      31    250     12.2%
+2023        175       128       20      25    130     11.4%
+2024        112       502       17       8     87     15.2%
+2025        225      -108       23      24    178     10.2%
+2026         78        65        9       7     62     11.5%
+
+Top CSV:    C:\Users\Oleg\Documents\Oleg\fx\reports\eurusd-swing-top.csv (500 rows)
+Total time: 122.7s

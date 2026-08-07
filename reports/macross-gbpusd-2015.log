@@ -1,0 +1,284 @@
+Loading GBPUSD from C:\Users\Oleg\Documents\Oleg\fx\FXViewer\bin\Debug\net10.0-windows\data
+  2015:   370,768 minutes
+  2016:   370,762 minutes
+  2017:   369,253 minutes
+  2018:   368,528 minutes
+  2019:   366,393 minutes
+  2020:   369,007 minutes
+  2021:   364,622 minutes
+  2022:   368,383 minutes
+  2023:   368,891 minutes
+  2024:   371,604 minutes
+  2025:   370,459 minutes
+  2026:   216,434 minutes
+Total trading minutes: 4,275,104 (2015-01-01 .. 2026-07-31), loaded in 0.1s
+
+MA periods:   144 values 30..14400 trading minutes
+              30, 60, 90, 120, 150, 180, 210, 240, ..., 13920, 14160, 14400
+MA pairs:     10,296
+StopLoss:     17 values 20..100 step 5 pips
+TakeProfit:   17 values 20..100 step 5 pips
+Risk/trade:   10 values 0.05%..0.50% of equity
+              0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5
+Combinations: 29,755,440 (2,975,544 trade sequences x 10 sizes)
+Deposit:      100,000, dropped when equity falls 25% below its own peak
+Filters:      at least 2,000 crossovers per MA pair, at least 1,000 entries per result
+Spread cost:  0.7 pips per trade (1.4 pips per entry, both trades)
+Threads:      22
+
+Building barrier tables (17 distances x 2 directions, ~0.54 GB)...
+  88 jobs, stack capacity 56,040
+Barrier tables ready in 0.4s
+
+Checking 300 random barrier lookups against a naive forward scan...
+  barrier table ok
+Checking full strategy runs against a naive simulation...
+  A1=   990 A2=  1080 SL= 100 TP=  85 risk= 0.05% -> alive equity x  0.998, dd  0.7 %,  1,106 entries, 7,595 crossovers  ok
+  A1=  4800 A2=  8160 SL=  90 TP=  65 risk= 0.35% -> alive equity x  0.883, dd 12.5 %,    478 entries, 577 crossovers  ok
+  A1=  1020 A2=  1530 SL=  65 TP=  30 risk= 0.35% -> blown equity x  0.809, dd 25.0 %,  1,835 entries, 3,170 crossovers  ok
+  A1=   360 A2=  1680 SL=  90 TP= 100 risk= 0.45% -> alive equity x  1.035, dd  4.4 %,    923 entries, 3,281 crossovers  ok
+  A1=  7440 A2=  9120 SL=  80 TP=  60 risk= 0.10% -> alive equity x  0.981, dd  3.3 %,    495 entries, 635 crossovers  ok
+Verification passed.
+Verification took 0.1s
+
+Counting crossovers per MA pair...
+  crossovers per pair: min 314, p10 496, p25 691, median 1,477, p75 2,723, max 81,179  (7.7s)
+  keeping 3,959 of 10,296 pairs with at least 2,000 crossovers (6,337 dropped)
+  combinations now 11,441,510
+
+Running sweep...
+  355/3,959 pairs (9.0 %)  elapsed 2s  eta 20s
+  749/3,959 pairs (18.9 %)  elapsed 4s  eta 17s
+  1,140/3,959 pairs (28.8 %)  elapsed 6s  eta 15s
+  1,550/3,959 pairs (39.2 %)  elapsed 8s  eta 12s
+  1,969/3,959 pairs (49.7 %)  elapsed 10s  eta 10s
+  2,326/3,959 pairs (58.8 %)  elapsed 12s  eta 8s
+  2,521/3,959 pairs (63.7 %)  elapsed 14s  eta 8s
+  2,706/3,959 pairs (68.4 %)  elapsed 16s  eta 7s
+  2,902/3,959 pairs (73.3 %)  elapsed 18s  eta 7s
+  3,031/3,959 pairs (76.6 %)  elapsed 20s  eta 6s
+  3,195/3,959 pairs (80.7 %)  elapsed 22s  eta 5s
+  3,396/3,959 pairs (85.8 %)  elapsed 24s  eta 4s
+  3,603/3,959 pairs (91.0 %)  elapsed 26s  eta 3s
+  3,811/3,959 pairs (96.3 %)  elapsed 28s  eta 1s
+Sweep done in 29.5s (387k combinations/s, 1,815,271,538 simulated entries)
+Survived the 25% drawdown limit: 7,423,323 of 11,441,510 (64.9 %), 2,338,207 dropped
+
+==================== TOP 15 ====================
+  #      A1      A2    SL    TP   risk      deposit        final       return   maxDD  entries        pips   win%
+  1     120    1440    20    90  0.50%      100,000      508,502         409%   24.6%    2,025       7,245  20.4 %
+  2      90    1530    25   100  0.50%      100,000      459,182         359%   21.0%    1,680       8,273  22.5 %
+  3     120    1440    20   100  0.45%      100,000      435,482         335%   24.7%    1,877       7,252  18.9 %
+  4      90    1500    25   100  0.50%      100,000      434,198         334%   19.8%    1,683       7,994  22.5 %
+  5     300    1410    25   100  0.50%      100,000      432,930         333%   20.6%    1,635       7,961  22.5 %
+  6      90    1680    20    90  0.45%      100,000      395,020         295%   24.9%    1,923       6,738  20.4 %
+  7      90    1680    20    95  0.45%      100,000      392,566         293%   23.8%    1,854       6,734  19.6 %
+  8      90    1500    25    95  0.50%      100,000      378,322         278%   18.6%    1,761       7,285  23.1 %
+  9      30    1740    25    95  0.50%      100,000      374,047         274%   19.6%    1,725       7,215  23.2 %
+ 10     120    1440    20    95  0.40%      100,000      369,667         270%   23.9%    1,955       7,153  19.6 %
+ 11      60    1680    25   100  0.50%      100,000      368,261         268%   22.3%    1,641       7,153  22.3 %
+ 12      90    1440    25    95  0.50%      100,000      363,543         264%   20.6%    1,795       7,097  23.1 %
+ 13      90    1530    25    95  0.50%      100,000      359,435         259%   23.0%    1,759       7,027  23.1 %
+ 14      90    1320    30    95  0.50%      100,000      358,264         258%   16.0%    1,656       8,197  26.5 %
+ 15      90    1470    25   100  0.50%      100,000      357,432         257%   18.7%    1,697       7,024  22.2 %
+
+Top CSV:    C:\Users\Oleg\Documents\Oleg\fx\reports\gbpusd-ma-cross-top.csv (500 rows)
+Best trades: C:\Users\Oleg\Documents\Oleg\fx\reports\gbpusd-ma-cross-best-trades.csv (2025 entries, A1=120 A2=1440 SL=20 TP=90 risk=0.50%)
+
+============ BY YEAR: A1=120 A2=1440 SL=20 TP=90 risk=0.50% ============
+year        start          end     return   maxDD     pips  entries   win%
+2015         100,000      116,150      16.1%   13.3%      671      199  20.4 %
+2016         116,150      105,900      -8.8%   24.6%     -294      217  18.2 %
+2017         105,900      137,424      29.8%   20.0%    1,103      162  21.9 %
+2018         137,424      143,732       4.6%   12.8%      247      188  19.4 %
+2019         143,732      150,363       4.6%   15.2%      237      159  19.5 %
+2020         150,363      248,207      65.1%    7.9%    2,086      210  23.3 %
+2021         248,207      299,232      20.6%    9.4%      803      148  21.3 %
+2022         299,232      260,451     -13.0%   20.5%     -475      232  17.9 %
+2023         260,451      404,817      55.4%   18.1%    1,831      171  23.7 %
+2024         404,817      439,910       8.7%   11.4%      379      129  20.2 %
+2025         439,910      510,264      16.0%   19.5%      641      128  21.1 %
+2026         510,264      508,502      -0.3%   12.2%       15       82  18.9 %
+maxDD is measured against the running high water mark, it does not reset in January
+
+========== LEG CHOICE: A1=120 A2=1440 SL=20 TP=90 ==========
+828 of 2,025 entries have a winner; on the other 1,197 both legs lose and the choice changes nothing.
+Hit rate needed to match taking both legs: 53.98 %. Coin flip noise on 828 samples is +-1.74 points per sigma.
+
+criterion            param      all           ..2019        2020..        pips     vs both
+cross direction      -         47.71 %    828  49.45 %   366  46.32 %   462     1,532  -+0-05,713
+price vs SMA         1d        48.19 %    828  49.73 %   366  46.97 %   462     1,972  -+0-05,273
+price vs SMA         2d        50.36 %    828  51.09 %   366  49.78 %   462     3,952  -+0-03,293
+price vs SMA         3d        50.36 %    828  51.64 %   366  49.35 %   462     3,952  -+0-03,293
+price vs SMA         5d        50.12 %    828  51.09 %   366  49.35 %   462     3,732  -+0-03,513
+price vs SMA         10d       49.88 %    828  50.55 %   366  49.35 %   462     3,512  -+0-03,733
+price vs SMA         20d       49.28 %    828  49.18 %   366  49.35 %   462     2,962  -+0-04,283
+momentum             30m       49.76 %    828  50.27 %   366  49.35 %   462     3,402  -+0-03,843
+momentum             2h        47.46 %    828  48.91 %   366  46.32 %   462     1,312  -+0-05,933
+momentum             8h        49.03 %    828  48.09 %   366  49.78 %   462     2,742  -+0-04,503
+momentum             1d        52.17 %    828  53.83 %   366  50.87 %   462     5,602  -+0-01,643
+momentum             3d        48.19 %    828  46.45 %   366  49.57 %   462     1,972  -+0-05,273
+momentum             5d        49.64 %    828  49.45 %   366  49.78 %   462     3,292  -+0-03,953
+range position       4h        48.43 %    828  49.73 %   366  47.40 %   462     2,192  -+0-05,053
+range position       1d        47.71 %    828  50.82 %   366  45.24 %   462     1,532  -+0-05,713
+range position       3d        49.76 %    828  51.64 %   366  48.27 %   462     3,402  -+0-03,843
+range position       5d        48.67 %    828  50.00 %   366  47.62 %   462     2,412  -+0-04,833
+range position       10d       48.43 %    828  48.36 %   366  48.48 %   462     2,192  -+0-05,053
+range position       20d       50.24 %    828  50.82 %   366  49.78 %   462     3,842  -+0-03,403
+
+A rate below 50% is the same signal reversed: subtract it from 100%.
+Both legs give 7,245 pips. A perfect choice would give 49,162.
+
+===== THIRD MA as direction filter: A1=120 A2=1440 SL=20 TP=90 =====
+828 of 2,025 entries have a winner. Rule "MA3 above -> BUY"; the reversed rule is 100% minus the shown rate.
+Need > 53.98 % to beat taking both legs. One sigma of a coin flip is 1.74 points, and 164 periods x 2 references are tested two-sided, so a believable hit needs a plateau, not a single spike.
+Third MA grid: 164 values 30m..30d
+
+ MA3 vs entry price: range 48.79 % .. 52.66 %, biggest deviation 2.66 points = 1.53 sigma
+    period      all      ..2019    2020..      pips       final    maxDD   rule
+    4h        52.66 %   51.09 %   53.90 %     6,042     398,370   22.8%   above->BUY
+    3h        52.54 %   51.37 %   53.46 %     5,932     387,655   22.2%   above->BUY
+    6h        52.54 %   51.37 %   53.46 %     5,932     387,655   24.3%   above->BUY
+    15d       52.54 %   52.73 %   52.38 %     5,932     387,655   22.6%   above->BUY
+    3h        52.42 %   51.37 %   53.25 %     5,822     377,227   22.2%   above->BUY
+    5h        52.42 %   51.09 %   53.46 %     5,822     377,227   22.8%   above->BUY
+    6h        52.42 %   51.37 %   53.25 %     5,822     377,227   24.3%   above->BUY
+    8h        52.42 %   51.64 %   53.03 %     5,822     377,227   22.2%   above->BUY
+
+ MA3 vs the MA1/MA2 crossing level: range 47.71 % .. 53.14 %, biggest deviation 3.14 points = 1.81 sigma
+    period      all      ..2019    2020..      pips       final    maxDD   rule
+    16d       53.14 %   51.09 %   54.76 %     6,482     444,280   24.5%   above->BUY
+    4h        52.78 %   51.09 %   54.11 %     6,152      95,540   25.1%   above->BUY  BLOWN UP
+    4.67d     52.78 %   51.37 %   53.90 %     6,152     409,383   18.3%   above->BUY
+    4.83d     52.78 %   51.37 %   53.90 %     6,152     409,383   20.5%   above->BUY
+    18d       52.78 %   51.91 %   53.46 %     6,152     409,383   22.6%   above->BUY
+    20h       52.66 %   51.09 %   53.90 %     6,042     104,706   25.2%   above->BUY  BLOWN UP
+    17d       52.66 %   51.37 %   53.68 %     6,042     195,929   25.1%   above->BUY  BLOWN UP
+    5h        52.54 %   51.09 %   53.68 %     5,932      95,540   25.1%   above->BUY  BLOWN UP
+
+Full curve: C:\Users\Oleg\Documents\Oleg\fx\reports\gbpusd-ma-cross-third-ma.csv
+Both legs: 7,245 pips, 508,502 final, 24.6% max drawdown.
+
+===== ENTRY FILTER: A1=120 A2=1440 SL=20 TP=90 risk=0.50% =====
+Both legs are kept. 2,025 entries, of which 1,197 (59.1 %) end with both stops hit and cost 40 pips each.
+Baseline without any filter: 508,502 final, 24.6% max drawdown.
+
+--- |MA3(17d) - cross level|, pips ---
+decile        from        to  entries  bothSL%  pips/entry
+    1         0.0      19.0      202   59.4 %        3.25
+    2        19.3      39.7      203   62.1 %        0.32
+    3        39.7      59.5      202   56.4 %        6.52
+    4        59.7      84.3      203   56.7 %        6.28
+    5        84.5     104.9      202   59.4 %        3.25
+    6       104.9     133.5      203   60.1 %        2.49
+    7       133.7     165.4      202   60.4 %        2.16
+    8       165.4     202.4      203   57.6 %        5.20
+    9       202.8     279.0      202   56.9 %        5.98
+   10       280.1    1101.7      203   62.1 %        0.32
+cut   keep deciles >= cut              keep deciles < cut
+      entries      final    maxDD      entries      final    maxDD
+   2    1,823    439,468    24.4%         202    115,709    16.6%
+   3    1,620    440,146    19.5%         405    115,530    23.6%
+   4    1,418    322,709    18.8%         607    157,573    19.2%
+   5    1,215    239,080    17.8%         810     79,968    25.1%
+   6    1,013    206,622    16.8%       1,012     81,778    25.2%
+   7      810    185,453    16.9%       1,215     87,426    25.2%
+   8      608    169,307    15.8%       1,417     82,167    25.2%
+   9      405    132,499    15.0%       1,620     85,914    25.1%
+
+--- mean bar range over 1h, pips ---
+decile        from        to  entries  bothSL%  pips/entry
+    1         0.4       1.2      202   63.9 %       -1.65
+    2         1.2       1.7      203   56.2 %        6.83
+    3         1.7       2.1      202   69.3 %       -7.64
+    4         2.1       2.5      203   52.7 %       10.62
+    5         2.5       2.9      202   59.9 %        2.71
+    6         2.9       3.2      203   65.0 %       -2.93
+    7         3.2       3.7      202   56.4 %        6.52
+    8         3.7       4.3      203   55.2 %        7.91
+    9         4.3       5.5      202   53.5 %        9.79
+   10         5.5      41.4      203   59.1 %        3.58
+cut   keep deciles >= cut              keep deciles < cut
+      entries      final    maxDD      entries      final    maxDD
+   2    1,824    556,595    22.0%         201     91,360    24.3%
+   3    1,620    405,402    21.9%         405    125,431    24.4%
+   4    1,418    606,161    17.7%         607     90,224    25.3%
+   5    1,215    360,656    19.9%         810    125,727    25.2%
+   6    1,013     84,721    25.4%       1,012    143,547    25.3%
+   7      810    378,199    22.9%       1,215    121,305    25.2%
+   8      612    288,783    21.7%       1,413    160,049    25.2%
+   9      405    189,216    18.9%       1,620    186,229    25.1%
+
+--- mean bar range over 1 day, pips ---
+decile        from        to  entries  bothSL%  pips/entry
+    1         1.0       1.6      202   54.5 %        8.70
+    2         1.6       1.8      203   58.1 %        4.66
+    3         1.8       1.9      202   58.9 %        3.80
+    4         1.9       2.0      203   59.6 %        3.03
+    5         2.0       2.2      202   59.9 %        2.71
+    6         2.2       2.4      203   63.5 %       -1.30
+    7         2.4       2.6      202   52.5 %       10.88
+    8         2.6       2.8      203   68.0 %       -6.18
+    9         2.8       3.3      202   56.9 %        5.98
+   10         3.3      10.2      203   59.1 %        3.58
+cut   keep deciles >= cut              keep deciles < cut
+      entries      final    maxDD      entries      final    maxDD
+   2    1,823    334,113    24.6%         202    152,195    11.0%
+   3    1,620    268,742    24.6%         405    189,216    15.3%
+   4    1,418    225,978    25.0%         607    225,023    15.7%
+   5    1,215     87,369    25.2%         810    257,676    16.2%
+   6    1,013     82,296    25.4%       1,012    290,092    22.5%
+   7      810     86,554    25.0%       1,215    155,956    25.2%
+   8      608     82,319    25.1%       1,417    453,074    24.1%
+   9      405    156,183    18.5%       1,620    208,599    25.1%
+
+--- high-low range over 1 day, pips ---
+decile        from        to  entries  bothSL%  pips/entry
+    1        29.1      64.8      202   66.3 %       -4.37
+    2        64.8      74.4      203   56.7 %        6.28
+    3        74.5      83.5      202   58.4 %        4.34
+    4        83.5      92.6      203   52.7 %       10.62
+    5        92.6     102.1      202   61.9 %        0.53
+    6       102.1     111.3      203   58.1 %        4.66
+    7       111.4     122.5      202   58.4 %        4.34
+    8       122.6     139.2      203   57.6 %        5.20
+    9       139.4     168.3      202   59.9 %        2.71
+   10       168.6     769.7      203   61.1 %        1.41
+cut   keep deciles >= cut              keep deciles < cut
+      entries      final    maxDD      entries      final    maxDD
+   2    1,825    631,739    24.5%         200     79,407    25.4%
+   3    1,620    477,867    25.0%         405    106,411    18.2%
+   4    1,421     96,850    25.2%         604    102,527    25.0%
+   5    1,218     91,739    25.0%         807    207,730    17.9%
+   6    1,018     89,245    25.0%       1,007    147,059    25.1%
+   7      810     85,798    25.2%       1,215    161,215    25.2%
+   8      608     88,750    25.1%       1,417    335,145    22.3%
+   9      405     76,831    25.4%       1,620    232,813    25.1%
+
+--- high-low range over 1 week, pips ---
+decile        from        to  entries  bothSL%  pips/entry
+    1        85.1     149.5      202   56.9 %        5.98
+    2       149.5     178.2      203   58.1 %        4.66
+    3       178.6     201.5      202   52.0 %       11.42
+    4       201.5     219.0      203   59.1 %        3.58
+    5       219.1     239.2      202   60.4 %        2.16
+    6       239.3     264.4      203   62.6 %       -0.22
+    7       264.8     301.5      202   56.9 %        5.98
+    8       301.5     342.8      203   58.1 %        4.66
+    9       343.1     420.8      202   66.8 %       -4.91
+   10       420.8    1897.5      203   60.1 %        2.49
+cut   keep deciles >= cut              keep deciles < cut
+      entries      final    maxDD      entries      final    maxDD
+   2    1,824    389,758    24.5%         201    130,466    14.7%
+   3    1,620    308,214    24.2%         405    164,983    17.9%
+   4    1,419     83,521    25.2%         606    290,988    17.5%
+   5    1,215     82,361    25.3%         810    338,928    18.5%
+   6    1,013     89,478    25.3%       1,012    371,250    23.6%
+   7      810     86,179    25.1%       1,215    360,656    24.2%
+   8      609     81,523    25.0%       1,416    240,565    25.2%
+   9      405     80,896    25.2%       1,620    595,023    24.2%
+
+Decile table: C:\Users\Oleg\Documents\Oleg\fx\reports\gbpusd-ma-cross-entry-filter.csv
+A filter only helps if bothSL% falls steadily across the deciles. One odd bucket is noise.
+Equity:     C:\Users\Oleg\Documents\Oleg\fx\reports\gbpusd-ma-cross-equity.html
+Total time: 38.3s

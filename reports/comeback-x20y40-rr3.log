@@ -1,0 +1,58 @@
+Loading EURUSD from C:\Users\Oleg\Documents\Oleg\fx\FXViewer\bin\Debug\net10.0-windows\data
+  2015:   370,431 minutes
+  2016:   370,874 minutes
+  2017:   369,311 minutes
+  2018:   368,028 minutes
+  2019:   364,416 minutes
+  2020:   368,369 minutes
+  2021:   364,670 minutes
+  2022:   369,829 minutes
+  2023:   368,679 minutes
+  2024:   370,121 minutes
+  2025:   370,048 minutes
+  2026:   216,003 minutes
+Total trading minutes: 4,270,779 (2015-01-01 .. 2026-07-31), loaded in 0.1s
+
+Block index ready in 0.0s (16,683 blocks)
+
+Comeback mode: an anchor sits at a bar's average price. The price must touch
+anchor+X and anchor-X (either order) while staying inside anchor+-Y, X < Y.
+When a LATER bar comes back through the anchor price, a BUY and a SELL open
+there at once, same SL and TP each, measured from the anchor. When both
+close, the exit bar becomes the next anchor. A bar beyond anchor+-Y moves
+the anchor to that bar and clears the touches.
+X grid:       1 values 20..20 pips
+Y grid:       1 values 40..40 pips (1 pairs with X < Y)
+StopLoss:     19 values 10..100 step 5 pips
+TakeProfit:   19 values 10..100 step 5 pips
+TP cap:       at most 3 x SL (321 SL/TP combos kept)
+Risk/trade:   10 values 0.05%..0.50% of equity
+Deposit:      100,000, dropped when equity falls 25% below its own peak
+Spread cost:  0.7 pips per leg
+Filters:      at least 300 entries per result
+Threads:      22
+Combinations: 3,210 (321 trade sequences x 10 sizes)
+
+Running comeback sweep...
+Comeback sweep done in 1.7s (249,337 simulated entries, 265 blown up)
+
+==================== TOP 15 ====================
+  #     X     Y    SL    TP   risk      deposit        final       return   maxDD  entries        pips  legWin%      2w/mix/2l
+  1    20    40    20    45  0.50%      100,000      122,801          23%   14.9%      979         939   32.6 %      0/638/341
+  2    20    40    90    45  0.50%      100,000      116,471          16%    4.9%      652       2,822   68.8 %    245/407/0
+  3    20    40   100    35  0.50%      100,000      114,036          14%    5.7%      679       2,704   76.1 %    354/325/0
+  4    20    40    80    45  0.50%      100,000      112,787          13%    4.5%      704       1,999   65.7 %    221/483/0
+  5    20    40    95    35  0.50%      100,000      112,492          12%    7.8%      697       2,314   74.9 %    347/350/0
+  6    20    40   100    25  0.50%      100,000      110,802          11%    3.7%      720       2,117   81.7 %    457/263/0
+  7    20    40    80    65  0.50%      100,000      110,179          10%    5.7%      654       1,599   56.5 %     85/569/0
+  8    20    40    90    40  0.50%      100,000      110,064          10%    5.2%      663       1,802   70.8 %    276/387/0
+  9    20    40    95    25  0.50%      100,000      108,510           9%    7.3%      737       1,618   80.7 %    452/285/0
+ 10    20    40    80    70  0.50%      100,000      108,069           8%    7.1%      651       1,279   54.5 %     58/593/0
+ 11    20    40    90    25  0.50%      100,000      107,615           8%    3.9%      755       1,388   79.7 %    448/307/0
+ 12    20    40    95    70  0.50%      100,000      107,553           8%    6.1%      533       1,439   58.8 %     94/439/0
+ 13    20    40   100    45  0.50%      100,000      107,067           7%    6.9%      612       1,443   70.3 %    248/364/0
+ 14    20    40    85    25  0.50%      100,000      106,847           7%    6.6%      776       1,194   78.6 %    444/332/0
+ 15    20    40    80    75  0.50%      100,000      106,463           6%    3.9%      639       1,025   52.6 %     33/606/0
+
+Top CSV:    C:\Users\Oleg\Documents\Oleg\fx\reports\eurusd-comeback-top.csv (321 rows)
+Total time: 1.9s

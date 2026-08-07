@@ -1,0 +1,48 @@
+Loading GBPUSD from C:\Users\Oleg\Documents\Oleg\fx\FXViewer\bin\Debug\net10.0-windows\data
+  2020:   369,007 minutes
+  2021:   364,622 minutes
+  2022:   368,383 minutes
+  2023:   368,891 minutes
+  2024:   371,604 minutes
+  2025:   370,459 minutes
+  2026:   216,434 minutes
+Total trading minutes: 2,429,400 (2020-01-02 .. 2026-07-31), loaded in 0.1s
+
+Robot2 replay: 500 combinations from reports/gbpusd-robot2-fit-2015-2019.csv
+re-run as-is on the loaded range 2020-01-02..2026-07-31, no re-optimisation, no early abort
+Spread cost:  0.7 pips per closed trade
+Replay done in 0.7s
+
+==================== FIT vs TEST (first rows = best fit rank) ====================
+  #     avg  diff1  diff2    SL    TP  delta      fitPips   fitWorst     testPips  testWorst  testN  test win%
+  1      2d     20     30    90   110     20        5,109       -363           88     -1,061    160    45.6 %
+  2      2d    -10     30    30   110     20        5,437       -395          254     -1,670    808    22.2 %
+  3      2d      0     30    30   120     20        5,715       -440         -608     -1,892    826    20.0 %
+  4      2d     20     30    40   100     10        6,066       -453        1,425       -633    536    31.0 %
+  5      1d      0     10    20   120     10        5,202       -460        2,666       -871  1,163    16.4 %
+  6      2d     10     20    30   120     10        5,484       -464          870     -1,640    685    21.3 %
+  7      2d      0     10    20   110     10        5,235       -464        3,869       -852    887    19.3 %
+  8      2d     10     20    30   110     10        5,389       -474        1,108     -1,474    689    23.1 %
+  9      2d      0     30    30   110     20        4,972       -470           30     -1,769    829    22.0 %
+ 10      2d     20     30    80   110     20        4,935       -456          117       -870    161    42.9 %
+ 11      2d     20     40    90    50     10        4,978       -479        1,372     -1,242    911    65.9 %
+ 12      2d     20     30    40    90     10        5,766       -491        1,373       -744    538    33.3 %
+ 13      2d      0     40    40   100     20        5,605       -493          286     -1,554    705    29.4 %
+ 14      2d     20     30    30   100     10        4,812       -453        1,374       -782    565    25.5 %
+ 15      2d    -10     30    30   100     20        4,674       -392          658     -1,632    817    24.2 %
+
+Out of sample: 437/500 profitable (87.4 %), median 1,074 pips, best 5,036, worst -2,472
+Average test trades per combo: 317
+
+============ BY YEAR (entry year, spread included): avg=2d diff1=20 diff2=30 SL=90 TP=110 delta=20 ============
+year     entries      pips     wins  losses   win%
+2020         22      -395        8      14   36.4%
+2021          9       184        5       4   55.6%
+2022         38       -47       17      21   44.7%
+2023         32      -102       14      18   43.8%
+2024         20      -214        8      12   40.0%
+2025         25       332       13      12   52.0%
+2026         14       330        8       6   57.1%
+
+Replay CSV: C:\Users\Oleg\Documents\Oleg\fx\reports\gbpusd-robot2-replay.csv (500 rows)
+Total time: 0.9s

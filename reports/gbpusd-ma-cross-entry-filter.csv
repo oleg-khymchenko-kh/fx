@@ -1,0 +1,51 @@
+predictor,decile,from,to,entries,bothSlShare,pipsPerEntry
+|MA3(17d) - cross level|, pips,1,0.04,19.04,202,0.5941,3.253
+|MA3(17d) - cross level|, pips,2,19.30,39.67,203,0.6207,0.324
+|MA3(17d) - cross level|, pips,3,39.69,59.51,202,0.5644,6.521
+|MA3(17d) - cross level|, pips,4,59.68,84.31,203,0.5665,6.285
+|MA3(17d) - cross level|, pips,5,84.47,104.89,202,0.5941,3.253
+|MA3(17d) - cross level|, pips,6,104.91,133.50,203,0.6010,2.492
+|MA3(17d) - cross level|, pips,7,133.69,165.35,202,0.6040,2.164
+|MA3(17d) - cross level|, pips,8,165.39,202.45,203,0.5764,5.201
+|MA3(17d) - cross level|, pips,9,202.77,279.02,202,0.5693,5.976
+|MA3(17d) - cross level|, pips,10,280.12,1101.66,203,0.6207,0.324
+mean bar range over 1h, pips,1,0.37,1.24,202,0.6386,-1.648
+mean bar range over 1h, pips,2,1.24,1.66,203,0.5616,6.827
+mean bar range over 1h, pips,3,1.67,2.08,202,0.6931,-7.638
+mean bar range over 1h, pips,4,2.09,2.49,203,0.5271,10.620
+mean bar range over 1h, pips,5,2.49,2.86,202,0.5990,2.709
+mean bar range over 1h, pips,6,2.86,3.24,203,0.6502,-2.927
+mean bar range over 1h, pips,7,3.25,3.71,202,0.5644,6.521
+mean bar range over 1h, pips,8,3.71,4.30,203,0.5517,7.910
+mean bar range over 1h, pips,9,4.31,5.53,202,0.5347,9.788
+mean bar range over 1h, pips,10,5.54,41.35,203,0.5911,3.575
+mean bar range over 1 day, pips,1,0.97,1.61,202,0.5446,8.699
+mean bar range over 1 day, pips,2,1.61,1.76,203,0.5813,4.659
+mean bar range over 1 day, pips,3,1.76,1.90,202,0.5891,3.798
+mean bar range over 1 day, pips,4,1.90,2.04,203,0.5961,3.033
+mean bar range over 1 day, pips,5,2.04,2.21,202,0.5990,2.709
+mean bar range over 1 day, pips,6,2.21,2.38,203,0.6355,-1.301
+mean bar range over 1 day, pips,7,2.39,2.59,202,0.5248,10.877
+mean bar range over 1 day, pips,8,2.59,2.85,203,0.6798,-6.178
+mean bar range over 1 day, pips,9,2.85,3.30,202,0.5693,5.976
+mean bar range over 1 day, pips,10,3.31,10.20,203,0.5911,3.575
+high-low range over 1 day, pips,1,29.10,64.80,202,0.6634,-4.370
+high-low range over 1 day, pips,2,64.80,74.40,203,0.5665,6.285
+high-low range over 1 day, pips,3,74.50,83.50,202,0.5842,4.343
+high-low range over 1 day, pips,4,83.50,92.60,203,0.5271,10.620
+high-low range over 1 day, pips,5,92.60,102.10,202,0.6188,0.531
+high-low range over 1 day, pips,6,102.10,111.30,203,0.5813,4.659
+high-low range over 1 day, pips,7,111.40,122.50,202,0.5842,4.343
+high-low range over 1 day, pips,8,122.60,139.20,203,0.5764,5.201
+high-low range over 1 day, pips,9,139.40,168.30,202,0.5990,2.709
+high-low range over 1 day, pips,10,168.60,769.70,203,0.6108,1.408
+high-low range over 1 week, pips,1,85.10,149.50,202,0.5693,5.976
+high-low range over 1 week, pips,2,149.50,178.20,203,0.5813,4.659
+high-low range over 1 week, pips,3,178.60,201.50,202,0.5198,11.422
+high-low range over 1 week, pips,4,201.50,219.00,203,0.5911,3.575
+high-low range over 1 week, pips,5,219.10,239.20,202,0.6040,2.164
+high-low range over 1 week, pips,6,239.30,264.40,203,0.6256,-0.218
+high-low range over 1 week, pips,7,264.80,301.50,202,0.5693,5.976
+high-low range over 1 week, pips,8,301.50,342.80,203,0.5813,4.659
+high-low range over 1 week, pips,9,343.10,420.80,202,0.6683,-4.915
+high-low range over 1 week, pips,10,420.80,1897.50,203,0.6010,2.492

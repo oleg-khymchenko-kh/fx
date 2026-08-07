@@ -1,0 +1,60 @@
+Loading EURUSD from C:\Users\Oleg\Documents\Oleg\fx\FXViewer\bin\Debug\net10.0-windows\data
+  2015:   370,431 minutes
+  2016:   370,874 minutes
+  2017:   369,311 minutes
+  2018:   368,028 minutes
+  2019:   364,416 minutes
+  2020:   368,369 minutes
+  2021:   364,670 minutes
+  2022:   369,829 minutes
+  2023:   368,679 minutes
+  2024:   370,121 minutes
+  2025:   370,048 minutes
+  2026:   216,003 minutes
+Total trading minutes: 4,270,779 (2015-01-01 .. 2026-07-31), loaded in 0.2s
+
+Block index ready in 0.0s (16,683 blocks)
+
+Comeback mode: an anchor sits at a bar's average price. The price must touch
+anchor+X and anchor-X (either order) while staying inside anchor+-Y, X < Y.
+When a LATER bar comes back through the anchor price, a BUY and a SELL open
+there at once, same SL and TP each, measured from the anchor. When both
+close, the exit bar becomes the next anchor. A bar beyond anchor+-Y moves
+the anchor to that bar and clears the touches.
+X grid:       1 values 20..20 pips
+Y grid:       1 values 40..40 pips (1 pairs with X < Y)
+StopLoss:     19 values 10..100 step 5 pips
+TakeProfit:   19 values 10..100 step 5 pips
+TP cap:       at most 3 x SL (321 SL/TP combos kept)
+Risk/trade:   10 values 0.05%..0.50% of equity
+Deposit:      100,000, dropped when equity falls 25% below its own peak
+Spread cost:  0.7 pips per leg
+Windows:      12 (2015..2026), each picked on its own, each starting from a fresh deposit and a fresh anchor;
+              entries only inside the window, the last exits may run past its end
+Min entries:  30 per average window, scaled by window length (18..31)
+Threads:      22
+Combinations: 38,520 (3,852 trade sequences x 10 sizes)
+
+Running comeback sweep...
+Comeback sweep done in 2.5s (248,364 simulated entries, 4 blown up)
+
+==================== BEST COMBINATION OF EVERY WINDOW ====================
+window     X     Y    SL    TP   risk        start          end     return   maxDD  entries      pips  legWin%      2w/mix/2l
+2015      20    40    20    45  0.50%      100,000      115,086       15.1%   11.5%      190       584   34.2 %      0/130/60
+2016      20    40    35    90  0.50%      100,000      111,609       11.6%    6.5%       73       788   32.9 %      0/48/25
+2017      20    40    25    75  0.50%      100,000      116,404       16.4%    6.6%       55       773   32.7 %      0/36/19
+2018      20    40    15    45  0.50%      100,000      114,270       14.3%    5.3%       71       411   31.0 %      0/44/27
+2019      20    40    25    75  0.50%      100,000      107,193        7.2%    5.5%       32       355   31.2 %      0/20/12
+2020      20    40    30    70  0.50%      100,000      115,833       15.8%    4.5%       75       895   36.7 %      0/55/20
+2021      20    40    15    40  0.50%      100,000      113,257       13.3%    2.6%       44       378   36.4 %      0/32/12
+2022      20    40    70    25  0.50%      100,000      109,687        9.7%    1.8%      105     1,303   81.0 %     65/40/0
+2023      20    40    15    45  0.50%      100,000      114,270       14.3%    5.6%       71       411   31.0 %      0/44/27
+2024      20    40    20    45  0.50%      100,000      107,659        7.7%    3.6%       43       300   37.2 %      0/32/11
+2025      20    40    25    75  0.50%      100,000      109,046        9.0%    7.1%       71       451   28.9 %      0/41/30
+2026      20    40    90    30  0.50%      100,000      104,533        4.5%    0.8%       28       801   87.5 %     21/7/0
+
+Every window starts again from the full deposit and is optimised on its own data only.
+Average window: 11.6%.
+
+Window CSV: C:\Users\Oleg\Documents\Oleg\fx\reports\eurusd-comeback-per-year.csv (top 500 of every window)
+Total time: 2.8s

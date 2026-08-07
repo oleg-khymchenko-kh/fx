@@ -1,0 +1,71 @@
+Loading GBPUSD from C:\Users\Oleg\Documents\Oleg\fx\FXViewer\bin\Debug\net10.0-windows\data
+  2020:   369,007 minutes
+  2021:   364,622 minutes
+  2022:   368,383 minutes
+  2023:   368,891 minutes
+  2024:   371,604 minutes
+  2025:   370,459 minutes
+  2026:   216,434 minutes
+Total trading minutes: 2,429,400 (2020-01-02 .. 2026-07-31), loaded in 0.1s
+
+Robot2 mode: the legacy 2015 strategy, see docs/legacy-robot2-strategy.md.
+SMA over bar midpoints, ending at the current bar. A side arms when the bar
+touches avg+-diffLevel1 (touch = level inside the bar or in the gap to the
+previous bar) and fires when the armed side touches avg+-diffLevel2: a limit
+order goes orderStartDelta pips back from that level, cancelled if the price
+runs profLimit away first. Fixed TP=profLimit, SL=lossLimit from the entry.
+Many trades can be open at once; a new one is dropped when an open trade of
+the same direction sits within 50 pips. Faithfully reproduced legacy quirks:
+the high level is checked first, so a bar covering both brackets is a win
+for buys and a loss for sells; re-arming drops the pending order; fills are
+checked before cancels on the same bar; a trade can close on its entry bar.
+Grid:         avgPeriod 1440..14400 step 1440, diffLevel1 -50..50 step 10,
+              diffLevel2 0..100 step 10, lossLimit 20..20 step 10,
+              profLimit 50..150 step 10, orderStartDelta 0..50 step 10
+TP cap:       at most 3 x SL (2 of 11 SL/TP combos kept)
+Combinations: 14,520, every one is a full sequential pass
+Spread cost:  0.7 pips per closed trade (legacy used 5.0)
+Save filter:  profitWithSpread >= 3,000 pips and worstLoss >= -500 pips
+Early abort:  a pass dies as soon as worstLoss drops below -500 pips
+Ranking:      score = min(5000, profitWithSpread) + 2 * worstLoss (the legacy GUI formula)
+Threads:      22
+
+Running Robot2 sweep...
+  28,712/79,860 combos (36.0 %)  elapsed 5s  eta 9s
+  50,297/79,860 combos (63.0 %)  elapsed 10s  eta 6s
+  68,843/79,860 combos (86.2 %)  elapsed 15s  eta 2s
+Robot2 sweep done in 17.6s: 79,860 combos, 7,863 aborted early, 0 passed the legacy save filter
+
+==================== TOP 15 (by legacy score) ====================
+  #     avg  diff1  diff2    SL    TP  delta       profit   withSpread    worstLoss  maxRun  entries   win%          d/m/f   cancel    dup      score
+  1      2d    -10     10    20    60     20        3,100        2,721         -383      11      541  32.2 %    174/81/286       825     66      1,956
+  2      1d     30     70    20    60     30        2,540        2,366         -280      10      249  37.8 %     94/37/118       346      9      1,805
+  3      2d    -30      0    20    50     30        2,700        2,422         -310      15      397  38.3 %    152/87/158       996     25      1,801
+  4      1d     50     60    20    50     20        2,020        1,919         -104       5      144  48.6 %     70/7/67        536     13      1,712
+  5      9d     50     30    20    50     10        2,980        2,472         -387      12      726  34.4 %    250/190/286        14    117      1,697
+  6      1d    -30      0    20    60     40        2,220        2,104         -210       8      165  41.8 %     69/25/71      1,468      2      1,685
+  7      9d     50     20    20    50      0        2,950        2,438         -387      12      731  34.3 %    251/190/290         2    125      1,664
+  8      1d     40     60    20    50     20        2,000        1,903         -124       6      138  49.3 %     68/5/65        494     12      1,655
+  9      1d    -10     10    20    50     30        1,940        1,846         -124       6      134  49.3 %     66/9/59      1,884      0      1,598
+ 10      1d    -30     10    20    60     50        1,840        1,787         -104       5       76  55.3 %     42/6/28      1,532      0      1,580
+ 11      2d    -10     10    20    50     20        2,600        2,245         -333       8      507  35.9 %    182/86/239       997     57      1,579
+ 12      9d     50     40    20    50     20        2,870        2,365         -405      12      721  34.3 %    247/190/284        49    110      1,555
+ 13      9d     20     30    20    50     10        2,240        1,970         -220       9      385  36.9 %    142/76/167       446    129      1,531
+ 14      2d      0     10    20    60     20        1,940        1,773         -148       7      239  35.1 %     84/14/141     1,002     18      1,477
+ 15      1d     40     60    20    60     20        1,900        1,804         -166       8      137  42.3 %     58/3/76        358     15      1,473
+
+============ BY YEAR (entry year, spread included): avg=2d diff1=-10 diff2=10 SL=20 TP=60 delta=20 ============
+d/m/f = direct wins / direct lost but the opposite trade would have won / both lose
+year     entries      pips        d/m/f   direct%
+2020         86       780     32/18/36      37.2%
+2021         55       -98     13/8/34      23.6%
+2022        114       600     37/20/57      32.5%
+2023         88       978     35/8/45      39.8%
+2024         76        27     20/12/44      26.3%
+2025         77       246     23/9/45      29.9%
+2026         45       188     14/6/25      31.1%
+
+Deals file: C:\Users\Oleg\Documents\Oleg\fx\FXViewer\bin\Debug\net10.0-windows\deals\robot2-gbpusd-sl20.json (541 trades, symbol GBPUSD)
+
+Top CSV:    C:\Users\Oleg\Documents\Oleg\fx\reports\gbpusd-robot2-top.csv (500 rows)
+Total time: 18.8s

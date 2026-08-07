@@ -1,0 +1,155 @@
+Loading GBPUSD from C:\Users\Oleg\Documents\Oleg\fx\FXViewer\bin\Debug\net10.0-windows\data
+  2015:   370,768 minutes
+  2016:   370,762 minutes
+  2017:   369,253 minutes
+  2018:   368,528 minutes
+  2019:   366,393 minutes
+  2020:   369,007 minutes
+  2021:   364,622 minutes
+  2022:   368,383 minutes
+  2023:   368,891 minutes
+  2024:   371,604 minutes
+  2025:   370,459 minutes
+  2026:   216,434 minutes
+Total trading minutes: 4,275,104 (2015-01-01 .. 2026-07-31), loaded in 0.2s
+
+Robot2 mode: the legacy 2015 strategy, see docs/legacy-robot2-strategy.md.
+SMA over bar midpoints, ending at the current bar. A side arms when the bar
+touches avg+-diffLevel1 (touch = level inside the bar or in the gap to the
+previous bar) and fires when the armed side touches avg+-diffLevel2: a limit
+order goes orderStartDelta pips back from that level, cancelled if the price
+runs profLimit away first. Fixed TP=profLimit, SL=lossLimit from the entry.
+Many trades can be open at once; a new one is dropped when an open trade of
+the same direction sits within 50 pips. Faithfully reproduced legacy quirks:
+the high level is checked first, so a bar covering both brackets is a win
+for buys and a loss for sells; re-arming drops the pending order; fills are
+checked before cancels on the same bar; a trade can close on its entry bar.
+Grid:         avgPeriod 1440..14400 step 1440, diffLevel1 -50..50 step 10,
+              diffLevel2 0..100 step 10, lossLimit 20..100 step 10,
+              profLimit 50..150 step 10, orderStartDelta 0..50 step 10
+Combinations: 718,740, every one is a full sequential pass
+Spread cost:  0.7 pips per closed trade (legacy used 5.0)
+Save filter:  profitWithSpread >= 3,000 pips and worstLoss >= -500 pips
+Early abort:  a pass dies as soon as worstLoss drops below -500 pips
+Ranking:      score = min(5000, profitWithSpread) + 2 * worstLoss (the legacy GUI formula)
+Threads:      22
+
+Running Robot2 sweep...
+  17,476/718,740 combos (2.4 %)  elapsed 5s  eta 201s
+  28,425/718,740 combos (4.0 %)  elapsed 10s  eta 244s
+  40,522/718,740 combos (5.6 %)  elapsed 15s  eta 252s
+  49,236/718,740 combos (6.9 %)  elapsed 20s  eta 273s
+  59,123/718,740 combos (8.2 %)  elapsed 25s  eta 280s
+  69,971/718,740 combos (9.7 %)  elapsed 30s  eta 279s
+  82,818/718,740 combos (11.5 %)  elapsed 35s  eta 270s
+  96,228/718,740 combos (13.4 %)  elapsed 40s  eta 260s
+  106,606/718,740 combos (14.8 %)  elapsed 45s  eta 259s
+  115,861/718,740 combos (16.1 %)  elapsed 50s  eta 261s
+  123,176/718,740 combos (17.1 %)  elapsed 55s  eta 267s
+  130,593/718,740 combos (18.2 %)  elapsed 60s  eta 271s
+  140,841/718,740 combos (19.6 %)  elapsed 65s  eta 268s
+  147,010/718,740 combos (20.5 %)  elapsed 70s  eta 273s
+  156,690/718,740 combos (21.8 %)  elapsed 75s  eta 270s
+  164,514/718,740 combos (22.9 %)  elapsed 80s  eta 270s
+  172,150/718,740 combos (24.0 %)  elapsed 85s  eta 271s
+  180,558/718,740 combos (25.1 %)  elapsed 90s  eta 269s
+  188,754/718,740 combos (26.3 %)  elapsed 95s  eta 268s
+  198,454/718,740 combos (27.6 %)  elapsed 100s  eta 263s
+  206,366/718,740 combos (28.7 %)  elapsed 105s  eta 262s
+  214,439/718,740 combos (29.8 %)  elapsed 110s  eta 260s
+  222,512/718,740 combos (31.0 %)  elapsed 115s  eta 257s
+  231,675/718,740 combos (32.2 %)  elapsed 120s  eta 253s
+  241,158/718,740 combos (33.6 %)  elapsed 125s  eta 248s
+  249,313/718,740 combos (34.7 %)  elapsed 130s  eta 246s
+  257,359/718,740 combos (35.8 %)  elapsed 135s  eta 243s
+  266,882/718,740 combos (37.1 %)  elapsed 141s  eta 238s
+  278,328/718,740 combos (38.7 %)  elapsed 146s  eta 230s
+  287,119/718,740 combos (39.9 %)  elapsed 151s  eta 226s
+  294,923/718,740 combos (41.0 %)  elapsed 156s  eta 224s
+  302,395/718,740 combos (42.1 %)  elapsed 161s  eta 221s
+  309,556/718,740 combos (43.1 %)  elapsed 166s  eta 219s
+  317,189/718,740 combos (44.1 %)  elapsed 171s  eta 216s
+  325,805/718,740 combos (45.3 %)  elapsed 176s  eta 212s
+  335,586/718,740 combos (46.7 %)  elapsed 181s  eta 206s
+  343,767/718,740 combos (47.8 %)  elapsed 186s  eta 203s
+  353,303/718,740 combos (49.2 %)  elapsed 191s  eta 197s
+  362,600/718,740 combos (50.4 %)  elapsed 196s  eta 192s
+  371,392/718,740 combos (51.7 %)  elapsed 201s  eta 188s
+  379,434/718,740 combos (52.8 %)  elapsed 206s  eta 184s
+  386,646/718,740 combos (53.8 %)  elapsed 211s  eta 181s
+  393,665/718,740 combos (54.8 %)  elapsed 216s  eta 178s
+  401,261/718,740 combos (55.8 %)  elapsed 221s  eta 175s
+  409,495/718,740 combos (57.0 %)  elapsed 226s  eta 171s
+  419,632/718,740 combos (58.4 %)  elapsed 231s  eta 165s
+  429,458/718,740 combos (59.8 %)  elapsed 236s  eta 159s
+  436,773/718,740 combos (60.8 %)  elapsed 241s  eta 156s
+  444,433/718,740 combos (61.8 %)  elapsed 246s  eta 152s
+  452,076/718,740 combos (62.9 %)  elapsed 251s  eta 148s
+  459,104/718,740 combos (63.9 %)  elapsed 256s  eta 145s
+  466,272/718,740 combos (64.9 %)  elapsed 261s  eta 141s
+  473,674/718,740 combos (65.9 %)  elapsed 266s  eta 138s
+  482,929/718,740 combos (67.2 %)  elapsed 271s  eta 132s
+  494,010/718,740 combos (68.7 %)  elapsed 276s  eta 126s
+  503,724/718,740 combos (70.1 %)  elapsed 281s  eta 120s
+  511,364/718,740 combos (71.1 %)  elapsed 286s  eta 116s
+  518,963/718,740 combos (72.2 %)  elapsed 291s  eta 112s
+  526,392/718,740 combos (73.2 %)  elapsed 296s  eta 108s
+  533,896/718,740 combos (74.3 %)  elapsed 301s  eta 104s
+  543,504/718,740 combos (75.6 %)  elapsed 306s  eta 99s
+  551,633/718,740 combos (76.8 %)  elapsed 311s  eta 94s
+  560,589/718,740 combos (78.0 %)  elapsed 316s  eta 89s
+  572,649/718,740 combos (79.7 %)  elapsed 321s  eta 82s
+  579,837/718,740 combos (80.7 %)  elapsed 326s  eta 78s
+  588,080/718,740 combos (81.8 %)  elapsed 331s  eta 74s
+  595,230/718,740 combos (82.8 %)  elapsed 336s  eta 70s
+  602,209/718,740 combos (83.8 %)  elapsed 341s  eta 66s
+  609,528/718,740 combos (84.8 %)  elapsed 346s  eta 62s
+  617,570/718,740 combos (85.9 %)  elapsed 351s  eta 58s
+  629,129/718,740 combos (87.5 %)  elapsed 356s  eta 51s
+  638,379/718,740 combos (88.8 %)  elapsed 361s  eta 45s
+  648,267/718,740 combos (90.2 %)  elapsed 366s  eta 40s
+  655,368/718,740 combos (91.2 %)  elapsed 371s  eta 36s
+  663,237/718,740 combos (92.3 %)  elapsed 376s  eta 31s
+  670,941/718,740 combos (93.3 %)  elapsed 381s  eta 27s
+  679,402/718,740 combos (94.5 %)  elapsed 386s  eta 22s
+  687,848/718,740 combos (95.7 %)  elapsed 391s  eta 18s
+  695,972/718,740 combos (96.8 %)  elapsed 396s  eta 13s
+  705,282/718,740 combos (98.1 %)  elapsed 401s  eta 8s
+  716,730/718,740 combos (99.7 %)  elapsed 406s  eta 1s
+Robot2 sweep done in 407.7s: 718,740 combos, 642,588 aborted early, 2,269 passed the legacy save filter
+
+==================== TOP 15 (by legacy score) ====================
+  #     avg  diff1  diff2    SL    TP  delta       profit   withSpread    worstLoss  maxRun  entries   win%   cancel    dup      score
+  1      1d     20     40    80    90     30        5,090        4,960         -242       3      185  63.2 %      822     27      4,476
+  2      1d    -10     10    40    50     30        5,440        5,252         -276       5      269  66.9 %    3,423      6      4,447
+  3      3d    -20     20    50    60     40        5,180        4,971         -287       5      299  61.2 %    1,278     15      4,397
+  4      1d      0     10    50    50     20        5,550        5,164         -320       4      551  60.1 %    3,145     60      4,361
+  5      1d     20     40    30    60     20        5,490        5,169         -322       8      459  46.6 %    1,247     57      4,357
+  6      1d     50     70    80   100     20        5,180        5,038         -323       4      203  58.6 %      235     54      4,354
+  7      1d      0     10    40    50     20        5,180        4,789         -218       3      559  54.7 %    3,145     52      4,352
+  8      1d    -10     10    70    50     30        5,810        5,624         -326       3      265  76.6 %    3,423     10      4,349
+  9      1d      0     10    40    50     30        4,980        4,755         -204       5      321  61.7 %    4,401     13      4,348
+ 10      1d     20     40    90    90     30        5,040        4,911         -286       3      184  65.2 %      822     28      4,339
+ 11      1d     20     40   100    90     30        5,350        5,221         -336       3      184  67.9 %      822     28      4,327
+ 12      1d     20     40    70    90     30        5,010        4,878         -283       4      189  60.3 %      822     23      4,312
+ 13      1d      0     10    70    50     30        5,410        5,188         -354       5      317  72.6 %    4,401     17      4,293
+ 14      2d     20     40    50    60     20        5,580        5,268         -354       6      445  56.9 %    1,171     63      4,292
+ 15      1d     20     40    40    60     20        5,520        5,207         -355       6      447  52.3 %    1,247     69      4,291
+
+============ BY YEAR (entry year, spread included): avg=1d diff1=20 diff2=40 SL=80 TP=90 delta=30 ============
+year     entries      pips     wins  losses   win%
+2015         20     1,276       17       3   85.0%
+2016         27       201       14      13   51.9%
+2017         21       855       15       6   71.4%
+2018         15       320        9       6   60.0%
+2019         14       570       10       4   71.4%
+2020         14       230        8       6   57.1%
+2021          4        17        2       2   50.0%
+2022         25       192       13      12   52.0%
+2023         13       481        9       4   69.2%
+2024         13       311        8       5   61.5%
+2025         14       400        9       5   64.3%
+2026          5       106        3       2   60.0%
+
+Top CSV:    C:\Users\Oleg\Documents\Oleg\fx\reports\gbpusd-robot2-top.csv (500 rows)
+Total time: 408.0s

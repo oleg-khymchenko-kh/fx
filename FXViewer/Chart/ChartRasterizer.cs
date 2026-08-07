@@ -1,0 +1,441 @@
+namespace FXViewer.Chart;
+
+public readonly record struct ChartPalette(int Background, int Weekend, int GridDay, int GridMonth, int GridYear,
+    int GridPrice100, int GridPrice50, int GridPrice10, int GridTilted = 0, int GridTiltedNear = 0);
+
+public readonly record struct RenderLine(ChartSeries Series, int[] Chosen, int Color, int LastPrice, long LastBucket, double OffsetPoints, double[]? ColumnShift = null, int Width = 1);
+
+public readonly record struct TiltedFamilySettings(
+    bool Visible, double AnchorSeconds, double AnchorPoints, double Slope,
+    bool Nearest = false, long NearestLine = 0);
+
+public readonly record struct TiltedGridSettings(
+    TiltedFamilySettings Up, TiltedFamilySettings Down)
+{
+    public bool Visible => Up.Visible || Down.Visible;
+}
+
+public static class ChartRasterizer
+{
+    public const int GridPriceStepPoints = 1000;
+    public const int GridPrice50StepPoints = 500;
+    public const int GridPrice10StepPoints = 100;
+    public const long DaySeconds = 86400;
+    public const long HourSeconds = 3600;
+    public const int MinDayGridSpacingPixels = 10;
+    public const int MinHourGridSpacingPixels = 10;
+    public const int MinPriceGridSpacingPixels = 20;
+
+    public static bool HourGridVisible(int minutesPerColumn) =>
+        HourSeconds >= MinHourGridSpacingPixels * (minutesPerColumn * 60L);
+
+    public static void Render(int[] buffer, int width, int height,
+        IReadOnlyList<RenderLine> lines, ChartPalette palette,
+        int minutesPerColumn, long startBucket, long[] columnEdges,
+        double topPrice, double pointsPerRow, TiltedGridSettings tiltedGrid = default)
+    {
+        Array.Fill(buffer, palette.Background, 0, width * height);
+        if (pointsPerRow <= 0) return;
+        DrawGrid(buffer, width, height, minutesPerColumn, startBucket, columnEdges,
+            topPrice, pointsPerRow, palette, tiltedGrid);
+        for (int i = 0; i < lines.Count; i++)
+            DrawLine(buffer, width, height, lines[i], startBucket, topPrice, pointsPerRow);
+        for (int i = 0; i < lines.Count; i++)
+            DrawLastPrice(buffer, width, height, lines[i], startBucket, topPrice, pointsPerRow);
+    }
+
+    public static void DrawSeries(int[] buffer, int width, int height,
+        RenderLine line, long startBucket, double topPrice, double pointsPerRow)
+    {
+        DrawLine(buffer, width, height, line, startBucket, topPrice, pointsPerRow);
+        DrawLastPrice(buffer, width, height, line, startBucket, topPrice, pointsPerRow);
+    }
+
+    private static void DrawLine(int[] buffer, int width, int height,
+        RenderLine line, long startBucket, double topPrice, double pointsPerRow)
+    {
+        double priceOffsetPoints = line.OffsetPoints;
+        int extra = Math.Max(0, line.Width - 1);
+        var columns = line.Series.Columns;
+        var chosen = line.Chosen;
+        var shift = line.ColumnShift;
+        int color = line.Color;
+        int startColumn = (int)(startBucket - line.Series.FirstBucket);
+        int visEnd = Math.Min(columns.Length, startColumn + width);
+        bool prevHasData = false;
+        int prevY = 0;
+        int prevLo = 0;
+        int prevHi = 0;
+        for (int i = 0; i < visEnd; i++)
+        {
+            if (!columns[i].HasData)
+            {
+                prevHasData = false;
+                continue;
+            }
+            double value = shift == null || i >= shift.Length ? chosen[i] : chosen[i] + shift[i];
+            int y = (int)Math.Round((topPrice - priceOffsetPoints - value) / pointsPerRow);
+            if (y < 0) y = 0;
+            else if (y >= height) y = height - 1;
+            int runLo = y;
+            int runHi = y;
+            if (prevHasData)
+            {
+                int start = prevY + Math.Sign(y - prevY);
+                runLo = Math.Min(start, y);
+                runHi = Math.Max(start, y);
+                if (runLo >= prevLo && runHi <= prevHi)
+                {
+                    runLo = y;
+                    runHi = y;
+                }
+                else if (y > prevHi) runLo = Math.Max(runLo, prevHi + 1);
+                else if (y < prevLo) runHi = Math.Min(runHi, prevLo - 1);
+            }
+            int x = i - startColumn;
+            if (x >= 0)
+            {
+                int fillHi = Math.Min(height - 1, runHi + extra);
+                for (int row = runLo; row <= fillHi; row++)
+                    buffer[row * width + x] = color;
+            }
+            prevY = y;
+            prevLo = runLo;
+            prevHi = runHi;
+            prevHasData = true;
+        }
+    }
+
+    public const int EntryRowHeightPx = 3;
+    public const int EntryRowCount = 3;
+    public const int EntryPanelHeightPx = EntryRowHeightPx * EntryRowCount;
+    public const int EntryPanelGapPx = 2;
+    public const int EntryPanelBottomMarginPx = 10;
+    public const int EntryBuyArgb = unchecked((int)0xFF2E7D32);
+    public const int EntryBothLostArgb = unchecked((int)0xFF000000);
+    public const int EntrySellArgb = unchecked((int)0xFFE65100);
+
+    public static void DrawEntryPanel(int[] buffer, int width, int height, byte[] states,
+        int bottomRow, int emptyArgb)
+    {
+        int top = bottomRow - EntryPanelHeightPx + 1;
+        if (top < 0 || bottomRow >= height) return;
+        for (int x = 0; x < width; x++)
+        {
+            byte s = x < states.Length ? states[x] : (byte)0;
+            DrawEntryBar(buffer, width, x, top,
+                (s & EntryPointsColumns.Buy) != 0 ? EntryBuyArgb : emptyArgb);
+            DrawEntryBar(buffer, width, x, top + EntryRowHeightPx,
+                (s & EntryPointsColumns.BothLost) != 0 ? EntryBothLostArgb : emptyArgb);
+            DrawEntryBar(buffer, width, x, top + 2 * EntryRowHeightPx,
+                (s & EntryPointsColumns.Sell) != 0 ? EntrySellArgb : emptyArgb);
+        }
+    }
+
+    private static void DrawEntryBar(int[] buffer, int width, int x, int rowTop, int color)
+    {
+        for (int row = rowTop; row < rowTop + EntryRowHeightPx; row++)
+            buffer[row * width + x] = color;
+    }
+
+    public static void DrawVerticalDashed(int[] buffer, int width, int height,
+        int x, int color, int on, int period)
+    {
+        if (x < 0 || x >= width) return;
+        for (int y = 0; y < height; y++)
+            if (period <= 1 || y % period < on)
+                buffer[y * width + x] = color;
+    }
+
+    public static void DrawSegment(int[] buffer, int width, int height,
+        double x0, double y0, double x1, double y1, int color)
+    {
+        double dx = x1 - x0;
+        double dy = y1 - y0;
+        double t0 = 0;
+        double t1 = 1;
+        if (!ClipT(-dx, x0 + 0.5, ref t0, ref t1)) return;
+        if (!ClipT(dx, width - 0.5 - x0, ref t0, ref t1)) return;
+        if (!ClipT(-dy, y0 + 0.5, ref t0, ref t1)) return;
+        if (!ClipT(dy, height - 0.5 - y0, ref t0, ref t1)) return;
+        double cx0 = x0 + t0 * dx;
+        double cy0 = y0 + t0 * dy;
+        double cx1 = x0 + t1 * dx;
+        double cy1 = y0 + t1 * dy;
+        int steps = (int)Math.Ceiling(Math.Max(Math.Abs(cx1 - cx0), Math.Abs(cy1 - cy0)));
+        for (int i = 0; i <= steps; i++)
+        {
+            double f = steps == 0 ? 0 : (double)i / steps;
+            int px = (int)Math.Floor(cx0 + (cx1 - cx0) * f + 0.5);
+            int py = (int)Math.Floor(cy0 + (cy1 - cy0) * f + 0.5);
+            if (px >= 0 && px < width && py >= 0 && py < height)
+                buffer[py * width + px] = color;
+        }
+    }
+
+    public const int DealWinArgb = unchecked((int)0xFF2E7D32);
+    public const int DealLossArgb = unchecked((int)0xFFD32F2F);
+    public const int DealConnectorAlpha = 140;
+    public const int DealMarkerHalfPx = 3;
+
+    public static void BlendSegment(int[] buffer, int width, int height,
+        double x0, double y0, double x1, double y1, int color, int alpha)
+    {
+        double dx = x1 - x0;
+        double dy = y1 - y0;
+        double t0 = 0;
+        double t1 = 1;
+        if (!ClipT(-dx, x0 + 0.5, ref t0, ref t1)) return;
+        if (!ClipT(dx, width - 0.5 - x0, ref t0, ref t1)) return;
+        if (!ClipT(-dy, y0 + 0.5, ref t0, ref t1)) return;
+        if (!ClipT(dy, height - 0.5 - y0, ref t0, ref t1)) return;
+        double cx0 = x0 + t0 * dx;
+        double cy0 = y0 + t0 * dy;
+        double cx1 = x0 + t1 * dx;
+        double cy1 = y0 + t1 * dy;
+        int steps = (int)Math.Ceiling(Math.Max(Math.Abs(cx1 - cx0), Math.Abs(cy1 - cy0)));
+        int lastPx = int.MinValue;
+        int lastPy = int.MinValue;
+        for (int i = 0; i <= steps; i++)
+        {
+            double f = steps == 0 ? 0 : (double)i / steps;
+            int px = (int)Math.Floor(cx0 + (cx1 - cx0) * f + 0.5);
+            int py = (int)Math.Floor(cy0 + (cy1 - cy0) * f + 0.5);
+            if (px == lastPx && py == lastPy) continue;
+            lastPx = px;
+            lastPy = py;
+            if (px >= 0 && px < width && py >= 0 && py < height)
+            {
+                int idx = py * width + px;
+                buffer[idx] = Blend(buffer[idx], color, alpha);
+            }
+        }
+    }
+
+    public static void FillTriangle(int[] buffer, int width, int height,
+        int cx, int cy, int half, bool pointsUp, int color)
+    {
+        for (int dy = -half; dy <= half; dy++)
+        {
+            int y = cy + dy;
+            if (y < 0 || y >= height) continue;
+            int span = pointsUp ? (dy + half) / 2 : (half - dy) / 2;
+            for (int dx = -span; dx <= span; dx++)
+            {
+                int x = cx + dx;
+                if (x >= 0 && x < width) buffer[y * width + x] = color;
+            }
+        }
+    }
+
+    public static void FillDisc(int[] buffer, int width, int height,
+        int cx, int cy, int radius, int color)
+    {
+        int r2 = radius * radius + radius / 2;
+        for (int dy = -radius; dy <= radius; dy++)
+        {
+            int y = cy + dy;
+            if (y < 0 || y >= height) continue;
+            for (int dx = -radius; dx <= radius; dx++)
+            {
+                if (dx * dx + dy * dy > r2) continue;
+                int x = cx + dx;
+                if (x >= 0 && x < width) buffer[y * width + x] = color;
+            }
+        }
+    }
+
+    private static int Blend(int dst, int src, int alpha)
+    {
+        int inv = 255 - alpha;
+        int r = (((src >> 16) & 0xFF) * alpha + ((dst >> 16) & 0xFF) * inv) / 255;
+        int g = (((src >> 8) & 0xFF) * alpha + ((dst >> 8) & 0xFF) * inv) / 255;
+        int b = ((src & 0xFF) * alpha + (dst & 0xFF) * inv) / 255;
+        return unchecked((int)0xFF000000) | (r << 16) | (g << 8) | b;
+    }
+
+    private static bool ClipT(double p, double q, ref double t0, ref double t1)
+    {
+        if (p == 0) return q >= 0;
+        double r = q / p;
+        if (p < 0)
+        {
+            if (r > t1) return false;
+            if (r > t0) t0 = r;
+        }
+        else
+        {
+            if (r < t0) return false;
+            if (r < t1) t1 = r;
+        }
+        return true;
+    }
+
+    private static void DrawLastPrice(int[] buffer, int width, int height,
+        RenderLine line, long startBucket, double topPrice, double pointsPerRow)
+    {
+        long lastCol = line.LastBucket - startBucket;
+        if (lastCol >= width) return;
+        int y = (int)Math.Round((topPrice - line.OffsetPoints - line.LastPrice) / pointsPerRow);
+        if (y < 0 || y >= height) return;
+        int from = (int)Math.Max(0, lastCol + 1);
+        int lastRow = Math.Min(height - 1, y + Math.Max(0, line.Width - 1));
+        for (int row = y; row <= lastRow; row++)
+        {
+            int rowOff = row * width;
+            for (int x = from; x < width; x++)
+                buffer[rowOff + x] = line.Color;
+        }
+    }
+
+    private static void DrawPriceLines(int[] buffer, int width, int height,
+        double topPrice, double bottom, double pointsPerRow, int step, int color, bool dotted)
+    {
+        int inc = dotted ? 2 : 1;
+        long firstLine = (long)Math.Ceiling(bottom / step) * step;
+        for (long p = firstLine; p <= topPrice; p += step)
+        {
+            int y = (int)Math.Round((topPrice - p) / pointsPerRow);
+            if (y < 0 || y >= height) continue;
+            int rowOff = y * width;
+            for (int x = 0; x < width; x += inc)
+                buffer[rowOff + x] = color;
+        }
+    }
+
+    private static void DrawGrid(int[] buffer, int width, int height,
+        int minutesPerColumn, long startBucket, long[] columnEdges, double topPrice, double pointsPerRow,
+        ChartPalette palette, TiltedGridSettings tiltedGrid)
+    {
+        long bucketSec = minutesPerColumn * 60L;
+        if (bucketSec < 2 * DaySeconds)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                long mid = columnEdges[x] + bucketSec / 2;
+                int dow = (int)((mid / DaySeconds + 4) % 7);
+                if (dow != 0 && dow != 6) continue;
+                for (int row = 0; row < height; row++)
+                    buffer[row * width + x] = palette.Weekend;
+            }
+        }
+        double bottom = topPrice - pointsPerRow * (height - 1);
+        if (!tiltedGrid.Visible)
+        {
+            if (GridPrice10StepPoints / pointsPerRow >= MinPriceGridSpacingPixels)
+                DrawPriceLines(buffer, width, height, topPrice, bottom, pointsPerRow, GridPrice10StepPoints, palette.GridPrice10, true);
+            if (GridPrice50StepPoints / pointsPerRow >= MinPriceGridSpacingPixels)
+                DrawPriceLines(buffer, width, height, topPrice, bottom, pointsPerRow, GridPrice50StepPoints, palette.GridPrice50, true);
+        }
+        DrawPriceLines(buffer, width, height, topPrice, bottom, pointsPerRow, GridPriceStepPoints, palette.GridPrice100, false);
+        if (tiltedGrid.Visible)
+            DrawTiltedGrid(buffer, width, height, minutesPerColumn, startBucket, topPrice, pointsPerRow,
+                tiltedGrid, palette.GridTilted, palette.GridTiltedNear);
+        if (HourGridVisible(minutesPerColumn))
+        {
+            for (int x = 0; x < width; x++)
+            {
+                long ts = columnEdges[x];
+                long te = columnEdges[x + 1];
+                if ((ts - 1) / HourSeconds == (te - 1) / HourSeconds) continue;
+                for (int row = 0; row < height; row += 2)
+                    buffer[row * width + x] = palette.GridDay;
+            }
+        }
+        bool drawDaily = DaySeconds >= MinDayGridSpacingPixels * bucketSec;
+        for (int x = 0; x < width; x++)
+        {
+            long ts = columnEdges[x];
+            long te = columnEdges[x + 1];
+            if ((ts - 1) / DaySeconds == (te - 1) / DaySeconds) continue;
+            var before = DateTimeOffset.FromUnixTimeSeconds(ts - 1).UtcDateTime;
+            var after = DateTimeOffset.FromUnixTimeSeconds(te - 1).UtcDateTime;
+            bool yearChanged = before.Year != after.Year;
+            bool monthChanged = yearChanged || before.Month != after.Month;
+            if (!drawDaily && !monthChanged) continue;
+            int color = yearChanged ? palette.GridYear : monthChanged ? palette.GridMonth : palette.GridDay;
+            for (int row = 0; row < height; row++)
+                buffer[row * width + x] = color;
+        }
+    }
+
+    public const int MaxTiltedLinesPerFamily = 2000;
+    public const int TiltedSubLineMinSpacingPixels = 200;
+
+    public static double TiltedLineSpacingPixels(double slope, double bucketSec, double pointsPerRow)
+    {
+        if (!(pointsPerRow > 0) || !double.IsFinite(slope)) return 0;
+        double screenSlope = Math.Abs(slope) * bucketSec / pointsPerRow;
+        return GridPriceStepPoints / pointsPerRow / Math.Sqrt(1 + screenSlope * screenSlope);
+    }
+
+    public static int TiltedStepPoints(double slope, double bucketSec, double pointsPerRow) =>
+        TiltedLineSpacingPixels(slope, bucketSec, pointsPerRow) > TiltedSubLineMinSpacingPixels
+            ? GridPrice50StepPoints
+            : GridPriceStepPoints;
+
+    private static void DrawTiltedGrid(int[] buffer, int width, int height,
+        int minutesPerColumn, long startBucket, double topPrice, double pointsPerRow,
+        TiltedGridSettings grid, int color, int nearColor)
+    {
+        double bucketSec = minutesPerColumn * 60.0;
+        DrawTiltedFamily(buffer, width, height, startBucket, bucketSec, topPrice, pointsPerRow,
+            grid.Up.Nearest ? grid.Down : grid.Up, color, nearColor);
+        DrawTiltedFamily(buffer, width, height, startBucket, bucketSec, topPrice, pointsPerRow,
+            grid.Up.Nearest ? grid.Up : grid.Down, color, nearColor);
+    }
+
+    private static void DrawTiltedFamily(int[] buffer, int width, int height,
+        long startBucket, double bucketSec, double topPrice, double pointsPerRow,
+        TiltedFamilySettings family, int color, int nearColor)
+    {
+        if (!family.Visible) return;
+        double anchorSeconds = family.AnchorSeconds;
+        double anchorPoints = family.AnchorPoints;
+        double slope = family.Slope;
+        bool highlight = family.Nearest && nearColor != 0;
+        if (!double.IsFinite(slope) || slope == 0) return;
+        double BaseAt(double x) =>
+            anchorPoints + slope * ((startBucket + x) * bucketSec - anchorSeconds);
+        double left = BaseAt(-0.5);
+        double right = BaseAt(width - 0.5);
+        if (!double.IsFinite(left) || !double.IsFinite(right)) return;
+        double lo = Math.Min(left, right);
+        double hi = Math.Max(left, right);
+        double bottom = topPrice - pointsPerRow * (height - 1);
+        int step = TiltedStepPoints(slope, bucketSec, pointsPerRow);
+        bool hasSubLines = step < GridPriceStepPoints;
+        double first = Math.Floor((bottom - hi) / step) - 1;
+        double last = Math.Ceiling((topPrice - lo) / step) + 1;
+        if (!double.IsFinite(first) || !double.IsFinite(last)) return;
+        if (last - first > MaxTiltedLinesPerFamily) return;
+        for (long n = (long)first; n <= (long)last; n++)
+            DrawTiltedLine(buffer, width, height, startBucket, bucketSec, topPrice, pointsPerRow,
+                anchorSeconds, anchorPoints + n * (double)step, slope,
+                highlight && n == family.NearestLine ? nearColor : color,
+                hasSubLines && (n & 1) != 0);
+    }
+
+    private static void DrawTiltedLine(int[] buffer, int width, int height,
+        long startBucket, double bucketSec, double topPrice, double pointsPerRow,
+        double anchorSeconds, double linePoints, double slope, int color, bool dotted)
+    {
+        double RowAt(double x) =>
+            (topPrice - (linePoints + slope * ((startBucket + x) * bucketSec - anchorSeconds)))
+            / pointsPerRow;
+        for (int x = 0; x < width; x++)
+        {
+            double yLo = RowAt(x - 0.5);
+            double yHi = RowAt(x + 0.5);
+            double top = Math.Min(yLo, yHi);
+            double bot = Math.Max(yLo, yHi);
+            if (!(bot >= 0) || !(top < height)) continue;
+            int rowLo = (int)Math.Round(Math.Max(top, 0));
+            int rowHi = (int)Math.Round(Math.Min(bot, height - 1));
+            if (rowHi >= height) rowHi = height - 1;
+            for (int row = rowLo; row <= rowHi; row++)
+                if (!dotted || ((x + row) & 1) == 0)
+                    buffer[row * width + x] = color;
+        }
+    }
+}
