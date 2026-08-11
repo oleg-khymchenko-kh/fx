@@ -23,6 +23,8 @@ public partial class SymbolEditorWindow : Window
     private readonly Func<IProgress<double>, CancellationToken, Task>? _refresh;
     private readonly List<Border> _swatches = new();
     private readonly List<CheckBox> _pairBoxes = new();
+    private readonly TextBox[] _densityPeriodBoxes;
+    private readonly ComboBox[] _densityUnitBoxes;
     private int _selectedColor;
     private CancellationTokenSource? _cts;
     private bool _busy;
@@ -61,9 +63,23 @@ public partial class SymbolEditorWindow : Window
         foreach (var p in indexPairs ?? Array.Empty<string>()) TargetBox.Items.Add(p);
         foreach (var t in IndicatorTypes.All) TypeBox.Items.Add(IndicatorTypes.Label(t));
         foreach (var u in IndicatorUnits.All) UnitBox.Items.Add(u);
+        _densityPeriodBoxes = new[]
+        {
+            Density1Box, Density2Box, Density3Box, Density4Box, Density5Box,
+            Density6Box, Density7Box, Density8Box, Density9Box,
+        };
+        _densityUnitBoxes = new[]
+        {
+            Density1Unit, Density2Unit, Density3Unit, Density4Unit, Density5Unit,
+            Density6Unit, Density7Unit, Density8Unit, Density9Unit,
+        };
+        foreach (var box in _densityUnitBoxes)
+            foreach (var u in IndicatorUnits.All)
+                box.Items.Add(u);
         DirectionBox.Items.Add(PastLabel);
         DirectionBox.Items.Add(FutureLabel);
         foreach (var m in IndexMethods.All) MethodBox.Items.Add(m);
+        foreach (var a in IndexAlgorithms.All) AlgorithmBox.Items.Add(a);
         BuildPairBoxes(indexPairs ?? Array.Empty<string>(), editing);
         BuildSwatches();
 
@@ -98,9 +114,20 @@ public partial class SymbolEditorWindow : Window
             MethodBox.SelectedItem = IndexMethods.All.FirstOrDefault(
                 m => string.Equals(m, editing.IndexMethod, StringComparison.OrdinalIgnoreCase))
                 ?? IndexMethods.Median;
+            AlgorithmBox.SelectedItem = IndexAlgorithms.All.FirstOrDefault(
+                a => string.Equals(a, editing.IndexAlgorithm, StringComparison.OrdinalIgnoreCase))
+                ?? IndexAlgorithms.Percent;
             CurrencyPairBox.SelectedItem = CurrencyPairBox.Items.Cast<string>().FirstOrDefault(
                 p => IndicatorSymbol.NameKey(p) == IndicatorSymbol.NameKey(editing.IndexPair));
             DealsFileBox.Text = editing.DealsFile;
+            for (int i = 0; i < IndicatorSymbol.DensityOptionCount; i++)
+            {
+                _densityPeriodBoxes[i].Text =
+                    editing.DensityPeriodAt(i).ToString(CultureInfo.InvariantCulture);
+                _densityUnitBoxes[i].SelectedItem = IndicatorUnits.All.FirstOrDefault(
+                    u => string.Equals(u, editing.DensityUnitAt(i), StringComparison.OrdinalIgnoreCase))
+                    ?? IndicatorUnits.Minutes;
+            }
             SelectColor(editing.ColorArgb);
         }
         else
@@ -124,6 +151,13 @@ public partial class SymbolEditorWindow : Window
             SetAnchor(IndexStartDate, IndexStartTimeBox, 0, DefaultSourceTime);
             SetOptionalAnchor(IndexEndDate, IndexEndTimeBox, 0);
             MethodBox.SelectedItem = IndexMethods.Median;
+            AlgorithmBox.SelectedItem = IndexAlgorithms.Percent;
+            for (int i = 0; i < IndicatorSymbol.DensityOptionCount; i++)
+            {
+                _densityPeriodBoxes[i].Text =
+                    IndicatorSymbol.DefaultDensityPeriods[i].ToString(CultureInfo.InvariantCulture);
+                _densityUnitBoxes[i].SelectedItem = IndicatorSymbol.DefaultDensityUnits[i];
+            }
             SelectColor(IndicatorPalette.Colors[0]);
         }
 
@@ -298,6 +332,9 @@ public partial class SymbolEditorWindow : Window
         if (DealsParams != null)
             DealsParams.Visibility =
                 type == IndicatorTypes.Deals ? Visibility.Visible : Visibility.Collapsed;
+        if (DensityParams != null)
+            DensityParams.Visibility =
+                type == IndicatorTypes.Density ? Visibility.Visible : Visibility.Collapsed;
         UpdateCurrencyHint();
     }
 
@@ -353,12 +390,15 @@ public partial class SymbolEditorWindow : Window
         long startTime = _editing?.StartTimeUnix ?? 0;
         long endTime = _editing?.EndTimeUnix ?? 0;
         string indexMethod = _editing?.IndexMethod ?? IndexMethods.Median;
+        string indexAlgorithm = _editing?.IndexAlgorithm ?? IndexAlgorithms.Percent;
         var indexPairs = new List<string>(_editing?.IndexPairs ?? new List<string>());
         string indexPair = _editing?.IndexPair ?? "";
         int stopLoss = _editing?.StopLossPips ?? IndicatorSymbol.DefaultStopLossPips;
         int takeProfit = _editing?.TakeProfitPips ?? IndicatorSymbol.DefaultTakeProfitPips;
         string dealsFile = _editing?.DealsFile ?? "";
         string targetSymbol = _editing?.TargetSymbol ?? "";
+        var densityPeriods = new List<int>(_editing?.DensityPeriods ?? new List<int>());
+        var densityUnits = new List<string>(_editing?.DensityUnits ?? new List<string>());
         if (type == IndicatorTypes.ZigZag)
         {
             if (!int.TryParse(Limit1Box.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture,
@@ -432,6 +472,7 @@ public partial class SymbolEditorWindow : Window
                 return null;
             }
             indexMethod = (MethodBox.SelectedItem as string) ?? IndexMethods.Median;
+            indexAlgorithm = (AlgorithmBox.SelectedItem as string) ?? IndexAlgorithms.Percent;
             indexPairs = _pairBoxes.Where(b => b.IsChecked == true)
                 .Select(b => (string)b.Tag!).ToList();
             if (indexPairs.Count == 0)
@@ -479,6 +520,28 @@ public partial class SymbolEditorWindow : Window
                 return null;
             }
         }
+        else if (type == IndicatorTypes.Density)
+        {
+            densityPeriods = new List<int>();
+            densityUnits = new List<string>();
+            for (int i = 0; i < IndicatorSymbol.DensityOptionCount; i++)
+            {
+                if (!int.TryParse(_densityPeriodBoxes[i].Text.Trim(), NumberStyles.Integer,
+                        CultureInfo.InvariantCulture, out int densityPeriod) || densityPeriod <= 0)
+                {
+                    Warn($"Option {i + 1} period must be a positive whole number.");
+                    return null;
+                }
+                string densityUnit = (_densityUnitBoxes[i].SelectedItem as string) ?? IndicatorUnits.Minutes;
+                if ((long)densityPeriod * IndicatorUnits.BarsPerUnit(densityUnit) > 10_000_000)
+                {
+                    Warn($"Option {i + 1} lookback is too long.");
+                    return null;
+                }
+                densityPeriods.Add(densityPeriod);
+                densityUnits.Add(densityUnit);
+            }
+        }
         return new IndicatorSymbol
         {
             Name = name,
@@ -496,6 +559,7 @@ public partial class SymbolEditorWindow : Window
             StartTimeUnix = startTime,
             EndTimeUnix = endTime,
             IndexMethod = indexMethod,
+            IndexAlgorithm = indexAlgorithm,
             IndexPairs = indexPairs,
             IndexPair = indexPair,
             StopLossPips = stopLoss,
@@ -506,6 +570,9 @@ public partial class SymbolEditorWindow : Window
             FindZoomPercent = _editing?.FindZoomPercent ?? IndicatorSymbol.DefaultFindZoomPercent,
             FindStepMinutes = _editing?.FindStepMinutes ?? IndicatorSymbol.DefaultFindStepMinutes,
             FindTargets = new List<string>(_editing?.FindTargets ?? new List<string>()),
+            DensityPeriods = densityPeriods,
+            DensityUnits = densityUnits,
+            DensitySelected = _editing?.DensitySelected ?? 0,
             ColorArgb = _selectedColor,
         };
     }
@@ -621,6 +688,7 @@ public partial class SymbolEditorWindow : Window
         IndexEndDate.IsEnabled = !busy;
         IndexEndTimeBox.IsEnabled = !busy;
         MethodBox.IsEnabled = !busy;
+        AlgorithmBox.IsEnabled = !busy;
         PairsPanel.IsEnabled = !busy;
         IndexMirrorBox.IsEnabled = !busy;
         CurrencyPairBox.IsEnabled = !busy;
@@ -628,6 +696,8 @@ public partial class SymbolEditorWindow : Window
         TakeProfitBox.IsEnabled = !busy;
         DealsFileBox.IsEnabled = !busy;
         DealsBrowseBtn.IsEnabled = !busy;
+        foreach (var box in _densityPeriodBoxes) box.IsEnabled = !busy;
+        foreach (var box in _densityUnitBoxes) box.IsEnabled = !busy;
         ColorPanel.IsEnabled = !busy;
     }
 

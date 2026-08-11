@@ -26,6 +26,15 @@ built on top of it exactly like on a real pair.
 
 The computation is incremental, one M1 step at a time.
 
+Each index has an Algorithm setting (default Percent). Percent is the
+original algorithm: a step is a percent (log) return and the index is a
+product of percent moves. Pips is an additive algorithm: a step is a
+move in pips and the index is 1.0000 plus the accumulated pips. Both
+share the same step merging, aggregation and storage; only the step
+value and the accumulation differ.
+
+### Percent
+
 For each step take the log return of each selected pair between two
 consecutive computed minutes:
 
@@ -68,6 +77,50 @@ attributed to the dollar. Six pairs cannot distinguish "USD up" from
 "everything else down in sync"; the median is the best cheap
 approximation.
 
+### Pips
+
+For each step take each pair's price change in pips instead of the log
+return, with the same sign flip so that positive means "dollar up":
+
+    d = (price_now - price_prev) / pip
+    s = -d   when USD is the quote side
+    s = +d   when USD is the base side
+
+Pip size comes from the per-symbol config (10 raw points for the
+5-digit pairs, 1000 for USDJPY), so a JPY pip counts as one pip like
+any other. The `s` values go through the same Median / Average
+aggregation, and the result is a pip move of the dollar itself. The
+index accumulates additively:
+
+    pips += s_aggregated
+    index = 1.0000 + pips / 10000      (starts at 1.0 at the start minute)
+
+Stored at the same raw scale of 100000, one pip of dollar movement is
+10 raw points, so with the chart's fixed pip scale of 10 the line moves
+1:1 in pips: a 40 pip dollar drop shows as the USD Index down 40 pips.
+
+The point of the split: if EURUSD moved +50 pips and GBPUSD +70 pips,
+and the aggregation puts the dollar part at -40 pips, then the EUR
+index gets +10 and the GBP index +30, so in pips
+
+    pair move = currency index move - USD index move
+
+holds exactly for every USD-quote pair (EURUSD, GBPUSD, AUDUSD,
+NZDUSD). For USD-base pairs (USDCHF, USDCAD, USDJPY) the currency sits
+on the other side, so the sign flips: pair move = USD index move -
+currency index move. Both algorithms answer the same question ("how
+much of this pair's move was the dollar"); Percent answers it in
+percent, Pips answers it in pips. The known limit above applies the
+same way.
+
+Encoding limit of Pips: the stored raw value is 100000 + pips * 10, so
+an index that drops 10000 pips below the baseline would store zero or
+negative values. The compute layer treats those minutes as gaps, and
+Refresh falls back to a full recompute instead of extending
+incrementally (the result stays correct, just slower). In practice only
+a JPY currency index anchored many years back gets anywhere near that
+floor.
+
 ## Steps and gaps
 
 A step is computed only on minutes where every selected pair has a
@@ -94,18 +147,23 @@ scale as the pairs). The accumulator stays a double for the whole run;
 only the stored value is rounded.
 
 Model: IndicatorSymbol gains `StartTimeUnix`, `EndTimeUnix` (0 = no end),
-`IndexMethod` (Median / Average) and `IndexPairs` (the selected pairs;
-an empty list falls back to the six defaults, which also migrates older
-config entries). The Mirror checkbox reuses the existing `Flip` field
-(the same one the Shift type uses). SameData for Index compares only the
-four data fields and is checked before the shared Source comparison, so
-a name, color or mirror change does not recompute the data, and the pair
-list is compared as a set (reordering it changes nothing).
+`IndexMethod` (Median / Average), `IndexAlgorithm` (Percent / Pips,
+missing in older configs deserializes as Percent so old indexes keep
+their meaning) and `IndexPairs` (the selected pairs; an empty list falls
+back to the six defaults, which also migrates older config entries).
+The Mirror checkbox reuses the existing `Flip` field (the same one the
+Shift type uses). SameData for Index compares only the five data fields
+(start, end, method, algorithm, pairs) and is checked before the shared
+Source comparison, so a name, color or mirror change does not recompute
+the data, and the pair list is compared as a set (reordering it changes
+nothing).
 
 Generate reads the selected pairs year by year (memory stays small) and
 merges the per-year candle lists by minute. Refresh continues from the
 target's last stored minute: it re-reads the pair prices and the index
-value at that minute, then extends forward. New steps are possible only
+value at that minute (turned back into the accumulator per the
+algorithm: log of the level for Percent, pips from 1.0000 for Pips),
+then extends forward. New steps are possible only
 up to the earliest of the pairs' last filled minutes. Resuming
 from the stored (rounded) index value can shift later values by at most
 1 point; a full recompute (Compute derived or an Edit that changes
@@ -118,8 +176,8 @@ is required and starts empty for a new symbol, so nothing is created by
 accident. Picking "USD Index" hides the Source row (an index has no
 source) and shows the index block: Start (date + HH:mm, required), End
 (date + HH:mm, both empty = to the end of history), Method combo
-(Median / Average), the Pairs checkboxes and the Mirror checkbox. At
-least one pair must be checked. Mirror is display only: ticking or
+(Median / Average), Algorithm combo (Percent / Pips), the Pairs
+checkboxes and the Mirror checkbox. At least one pair must be checked. Mirror is display only: ticking or
 unticking it just reloads the chart, it never recomputes the data.
 
 For "Currency Index" the Source combo is refilled with the existing USD
@@ -190,13 +248,27 @@ the same minute. Every currency starts at 1.0000 on the first minute of
 its parent USD Index, so all currency indexes and the dollar index share
 one baseline and can be compared directly on the chart.
 
+The currency index has no algorithm setting of its own: it reads the
+Algorithm of its source USD Index. With Pips the same two formulas run
+on pip changes instead of log returns (r = the pair's pip change using
+the pair's own pip size, u = the index's pip change), the accumulator
+is a pip sum and the stored level is 1.0000 + pips / 10000, same as the
+parent. Saving an index edit that recomputes its data (an algorithm
+switch included) also regenerates the currency indexes built on it in
+the same pass, so a stored currency index never continues old-algorithm
+data with new-algorithm steps; Compute derived rebuilds everything as
+well.
+
 Steps are computed on the minutes where both the index and the pair have
 a candle; each side carries its last price across gaps, so nothing is
 lost. This makes the result exact in level terms:
 
     EUR_t / USD_t = EURUSD_t / EURUSD_start
 
-which holds in the data to about 0.0005 percent (pure rounding).
+which holds in the data to about 0.0005 percent (pure rounding). With
+the Pips algorithm the exact identity is additive instead:
+
+    EUR_pips - USD_pips = EURUSD move in pips since the start
 
 Sanity check on 2011-2026 with the six-pair median index: USD 1.419,
 EUR 1.185, CHF 1.655, with the franc's jump in January 2015 (the SNB

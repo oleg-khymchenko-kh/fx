@@ -7,7 +7,9 @@ namespace FXViewer.Calendar;
 
 public sealed class CalendarStore
 {
-    private const int Magic = 0x43414C32;
+    private const int Magic = 0x43414C34;
+    private const int MagicV3 = 0x43414C33;
+    private const int MagicV2 = 0x43414C32;
     private const int MagicV1 = 0x43414C31;
     private const string LegacyIndexName = "index.bin";
     private const string LegacyDetailsName = "details.jsonl";
@@ -85,7 +87,8 @@ public sealed class CalendarStore
                 byte currency = Currencies.IdOf(summary.Currency);
                 if (currency != 0)
                     index.Add(new CalendarEntry(
-                        summary.UnixSeconds, (byte)summary.Impact, currency, start, length));
+                        summary.UnixSeconds, (byte)summary.Impact, currency, start, length,
+                        Currencies.IsRateDecision(summary.Currency, summary.Event)));
             }
             start = i + 1;
         }
@@ -93,7 +96,8 @@ public sealed class CalendarStore
         return true;
     }
 
-    private static bool IsKnownMagic(int magic) => magic == Magic || magic == MagicV1;
+    private static bool IsKnownMagic(int magic) =>
+        magic == Magic || magic == MagicV3 || magic == MagicV2 || magic == MagicV1;
 
     private int IndexVersion(int year)
     {
@@ -139,14 +143,17 @@ public sealed class CalendarStore
         {
             using var stream = new FileStream(IndexPath(year), FileMode.Open, FileAccess.Read, FileShare.Read);
             using var reader = new BinaryReader(stream);
-            if (!IsKnownMagic(reader.ReadInt32())) return entries;
+            int magic = reader.ReadInt32();
+            if (!IsKnownMagic(magic)) return entries;
+            bool hasRateFlag = magic == Magic;
             int count = reader.ReadInt32();
             if (count < 0) return entries;
             entries.Capacity = count;
             for (int i = 0; i < count; i++)
                 entries.Add(new CalendarEntry(
                     reader.ReadInt64(), reader.ReadByte(), reader.ReadByte(),
-                    reader.ReadInt64(), reader.ReadInt32()));
+                    reader.ReadInt64(), reader.ReadInt32(),
+                    hasRateFlag && reader.ReadBoolean()));
         }
         catch
         {
@@ -315,6 +322,7 @@ public sealed class CalendarStore
                 writer.Write(entry.Currency);
                 writer.Write(entry.DetailOffset);
                 writer.Write(entry.DetailLength);
+                writer.Write(entry.RateDecision);
             }
         }
         File.Move(indexTmp, IndexPath(year), true);
@@ -364,7 +372,8 @@ public sealed class CalendarStore
                 byte currency = Currencies.IdOf(e.Currency);
                 if (currency != 0)
                     index.Add(new CalendarEntry(
-                        e.UnixSeconds, (byte)e.ImpactLevel, currency, offset, bytes.Length));
+                        e.UnixSeconds, (byte)e.ImpactLevel, currency, offset, bytes.Length,
+                        Currencies.IsRateDecision(e.Currency, e.Event)));
                 offset += bytes.Length + 1;
             }
         }

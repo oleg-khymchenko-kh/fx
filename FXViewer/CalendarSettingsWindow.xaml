@@ -5,24 +5,24 @@
         WindowStartupLocation="CenterOwner" Width="340" ShowInTaskbar="False"
         UseLayoutRounding="True" SnapsToDevicePixels="True">
     <StackPanel Margin="16">
-        <TextBlock Text="Which events are drawn on the chart."
+        <TextBlock Text="Which events are drawn on the chart. Changes apply at once."
                    Foreground="Gray" Margin="0,0,0,12" TextWrapping="Wrap" />
 
-        <CheckBox x:Name="RateBox" Content="Rate decision (USD Federal Funds Rate)" Margin="0,0,0,8" />
-        <CheckBox x:Name="HighBox" Content="High impact" Margin="0,0,0,8" />
-        <CheckBox x:Name="MediumBox" Content="Medium impact" Margin="0,0,0,8" />
-        <CheckBox x:Name="LowBox" Content="Low impact" Margin="0,0,0,8" />
-        <CheckBox x:Name="HolidayBox" Content="Holidays" Margin="0,0,0,14" />
+        <CheckBox x:Name="HighestBox" Content="Highest" Margin="0,0,0,2" Click="Setting_Changed" />
+        <TextBlock Text="USD Federal Funds Rate, Non-Farm Employment Change, Unemployment Rate, Average Hourly Earnings."
+                   Foreground="Gray" Margin="20,0,0,8" TextWrapping="Wrap" />
+        <CheckBox x:Name="HighBox" Content="High impact" Margin="0,0,0,8" Click="Setting_Changed" />
+        <CheckBox x:Name="MediumBox" Content="Medium impact" Margin="0,0,0,8" Click="Setting_Changed" />
+        <CheckBox x:Name="LowBox" Content="Low impact" Margin="0,0,0,8" Click="Setting_Changed" />
+        <CheckBox x:Name="HolidayBox" Content="Holidays" Margin="0,0,0,14" Click="Setting_Changed" />
 
-        <CheckBox x:Name="AnyZoomBox" Content="Show at any zoom" Margin="0,0,0,4" />
+        <CheckBox x:Name="AnyZoomBox" Content="Show at any zoom" Margin="0,0,0,4" Click="Setting_Changed" />
         <TextBlock Text="Off: lines appear only when the hourly grid is visible."
                    Foreground="Gray" Margin="20,0,0,14" TextWrapping="Wrap" />
 
         <DockPanel LastChildFill="False">
-            <Button x:Name="CancelBtn" DockPanel.Dock="Right" Content="Cancel" Width="90" Height="28"
-                    IsCancel="True" Click="CancelBtn_Click" />
-            <Button x:Name="OkBtn" DockPanel.Dock="Right" Content="OK" Width="90" Height="28"
-                    Margin="0,0,8,0" IsDefault="True" Click="OkBtn_Click" />
+            <Button x:Name="CloseBtn" DockPanel.Dock="Right" Content="Close" Width="90" Height="28"
+                    IsCancel="True" IsDefault="True" Click="CloseBtn_Click" />
         </DockPanel>
     </StackPanel>
 </Window>

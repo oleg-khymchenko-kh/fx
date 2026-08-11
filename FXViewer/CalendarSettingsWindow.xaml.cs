@@ -7,11 +7,13 @@ public partial class CalendarSettingsWindow : Window
 {
     public CalendarSettings Settings { get; private set; }
 
+    public event Action<CalendarSettings>? SettingsChanged;
+
     public CalendarSettingsWindow(CalendarSettings settings)
     {
         InitializeComponent();
         Settings = settings.Clone();
-        RateBox.IsChecked = Settings.ShowRate;
+        HighestBox.IsChecked = Settings.ShowHighest;
         HighBox.IsChecked = Settings.ShowHigh;
         MediumBox.IsChecked = Settings.ShowMedium;
         LowBox.IsChecked = Settings.ShowLow;
@@ -19,19 +21,20 @@ public partial class CalendarSettingsWindow : Window
         AnyZoomBox.IsChecked = Settings.ShowAtAnyZoom;
     }
 
-    private void OkBtn_Click(object sender, RoutedEventArgs e)
+    private void Setting_Changed(object sender, RoutedEventArgs e)
     {
+        if (!IsInitialized) return;
         Settings = new CalendarSettings
         {
-            ShowRate = RateBox.IsChecked == true,
+            ShowHighest = HighestBox.IsChecked == true,
             ShowHigh = HighBox.IsChecked == true,
             ShowMedium = MediumBox.IsChecked == true,
             ShowLow = LowBox.IsChecked == true,
             ShowHoliday = HolidayBox.IsChecked == true,
             ShowAtAnyZoom = AnyZoomBox.IsChecked == true,
         };
-        DialogResult = true;
+        SettingsChanged?.Invoke(Settings);
     }
 
-    private void CancelBtn_Click(object sender, RoutedEventArgs e) => DialogResult = false;
+    private void CloseBtn_Click(object sender, RoutedEventArgs e) => Close();
 }

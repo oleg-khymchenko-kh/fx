@@ -7,11 +7,12 @@ public enum CalendarImpact : byte
     Medium = 2,
     High = 3,
     Holiday = 4,
-    Rate = 5,
+    Highest = 5,
 }
 
 public readonly record struct CalendarEntry(
-    long UnixSeconds, byte Impact, byte Currency, long DetailOffset, int DetailLength);
+    long UnixSeconds, byte Impact, byte Currency, long DetailOffset, int DetailLength,
+    bool RateDecision);
 
 public sealed record CalendarDetail(
     long UnixSeconds, string Currency, string Impact, string Event,
@@ -26,7 +27,7 @@ public sealed record CalendarSummary(
 
 public sealed class CalendarSettings
 {
-    public bool ShowRate { get; set; } = true;
+    public bool ShowHighest { get; set; } = true;
     public bool ShowHigh { get; set; } = true;
     public bool ShowMedium { get; set; } = true;
     public bool ShowLow { get; set; } = true;
@@ -35,7 +36,7 @@ public sealed class CalendarSettings
 
     public bool IsShown(CalendarImpact impact) => impact switch
     {
-        CalendarImpact.Rate => ShowRate,
+        CalendarImpact.Highest => ShowHighest,
         CalendarImpact.High => ShowHigh,
         CalendarImpact.Medium => ShowMedium,
         CalendarImpact.Low => ShowLow,

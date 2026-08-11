@@ -14,7 +14,7 @@ using FXViewer.Storage;
 
 namespace FXViewer;
 
-public partial class MainWindow : Window
+public partial class MainWindow : Window, INotesHost
 {
     private static readonly (string Symbol, int ColorArgb, bool Mirror, int PipPoints, int PriceDiv)[] SymbolConfigs =
     {
@@ -46,7 +46,10 @@ public partial class MainWindow : Window
         bool IsDrawing, bool IsShift = false, long ShiftVirtualDelta = 0)
     {
         public bool IsEntryPanel { get; init; }
+        public bool IsAgePanel { get; init; }
+        public bool AgeMirror { get; init; }
         public bool IsDeals { get; init; }
+        public bool IsDensity { get; init; }
         public string? ShiftReadSymbol { get; init; }
         public int PriceDiv { get; init; } = 1;
     }
@@ -67,21 +70,27 @@ public partial class MainWindow : Window
     {
         bool isShift = IndicatorTypes.IsShift(ind.Type);
         bool isEntry = IndicatorTypes.IsEntryPoints(ind.Type);
+        bool isAge = IndicatorTypes.IsPriceAge(ind.Type);
+        bool isDensity = IndicatorTypes.IsDensity(ind.Type);
+        bool isPanel = isEntry || isAge || isDensity;
         string target = isShift ? ind.ShiftTarget() : "";
         var pair = isShift ? PairDisplay(target) : null;
         bool targetMirror = pair?.Mirror ?? sourceMirror;
         int targetPipPoints = pair?.PipPoints ?? sourcePipPoints;
         int targetPriceDiv = pair?.PriceDiv ?? sourcePriceDiv;
         return new DisplayConfig(ind.Name, ind.ColorArgb,
-            isEntry ? false : isShift ? targetMirror ^ ind.Flip : sourceMirror,
-            isEntry ? IndexPipPoints : isShift ? targetPipPoints : sourcePipPoints,
+            isPanel ? false : isShift ? targetMirror ^ ind.Flip : sourceMirror,
+            isPanel ? IndexPipPoints : isShift ? targetPipPoints : sourcePipPoints,
             IndicatorTypes.IsZigZag(ind.Type), sourceSymbol, IndicatorTypes.IsDrawing(ind.Type),
             isShift, ShiftedSymbol.VirtualDelta(ind.SourceTimeUnix, ind.ChartTimeUnix))
         {
             IsEntryPanel = isEntry,
+            IsAgePanel = isAge,
+            AgeMirror = isAge && sourceMirror,
             IsDeals = IndicatorTypes.IsDeals(ind.Type),
+            IsDensity = isDensity,
             ShiftReadSymbol = isShift ? target : null,
-            PriceDiv = isEntry ? 1 : isShift ? targetPriceDiv : sourcePriceDiv,
+            PriceDiv = isPanel ? 1 : isShift ? targetPriceDiv : sourcePriceDiv,
         };
     }
 
@@ -131,7 +140,9 @@ public partial class MainWindow : Window
                 IndicatorTypes.IsDrawing(ind.Type))
             {
                 IsEntryPanel = IndicatorTypes.IsEntryPoints(ind.Type),
+                IsAgePanel = IndicatorTypes.IsPriceAge(ind.Type),
                 IsDeals = IndicatorTypes.IsDeals(ind.Type),
+                IsDensity = IndicatorTypes.IsDensity(ind.Type),
             };
         }
     }
@@ -163,6 +174,13 @@ public partial class MainWindow : Window
         foreach (var c in SymbolConfigs)
             if (SymbolNameEquals(c.Symbol, symbol)) return c.PriceDiv;
         return 1;
+    }
+
+    private string IndexAlgorithmOf(string indexName)
+    {
+        var index = _config.Indicators.FirstOrDefault(x =>
+            IndicatorTypes.IsIndex(x.Type) && SymbolNameEquals(x.Name, indexName));
+        return index?.IndexAlgorithm ?? IndexAlgorithms.Percent;
     }
 
     private readonly Stopwatch _bootSw = Stopwatch.StartNew();
@@ -254,6 +272,17 @@ public partial class MainWindow : Window
         };
         Chart.CursorTimeChanged += (unix, xDip) => TimeAxis.SetCursor(unix, xDip);
         Chart.CursorPricesChanged += p => SymbolBar.SetCursorPrices(ToTruePrices(p));
+        Chart.DensitySelectedChanged += option =>
+        {
+            bool changed = false;
+            foreach (var ind in _config.Indicators)
+                if (IndicatorTypes.IsDensity(ind.Type) && ind.DensitySelected != option)
+                {
+                    ind.DensitySelected = option;
+                    changed = true;
+                }
+            if (changed) _config.Save();
+        };
         SymbolBar.PriceOffsetWheel += Chart.ShiftSeriesOffset;
         SymbolBar.TimeShiftWheel += (symbol, delta, fine) =>
             QueueShiftNudge(symbol, delta, fine ? ShiftNudgeFineMinutes : ShiftNudgeMinutes);
@@ -458,6 +487,7 @@ public partial class MainWindow : Window
                 ? "Chart load: no saved view - reading full history of enabled symbols..."
                 : "Chart load: reading only the visible range, the rest loads on demand...");
             var swBg = Stopwatch.StartNew();
+            var activeNote = ActiveNote();
             var configs = DisplayConfigs(indicators).ToArray();
             var slots = new SeriesSlot?[configs.Length];
             await Task.Run(() =>
@@ -471,8 +501,9 @@ public partial class MainWindow : Window
                 {
                     var (symbol, color, mirror, pipPoints, editable, source, isDrawing, isShift, shiftDelta) =
                         configs[i];
-                    if (isDrawing || editable || configs[i].IsDeals) return;
+                    if (isDrawing || editable || configs[i].IsDeals || configs[i].IsDensity) return;
                     bool entryPanel = configs[i].IsEntryPanel;
+                    bool agePanel = configs[i].IsAgePanel;
                     var swSym = Stopwatch.StartNew();
                     var readSymbol = isShift ? configs[i].ShiftReadSymbol ?? source! : symbol;
                     var years = db.ExistingYears(readSymbol);
@@ -482,8 +513,12 @@ public partial class MainWindow : Window
                         slots[i] = new SeriesSlot(
                             new SymbolSeries(symbol, CandleHistory.Build(Array.Empty<Candle>()), color,
                                 pipPoints, false, null, new SeriesTransform(false, 0, pipPoints), source,
-                                null, entryPanel)
-                            { PriceMul = configs[i].PriceDiv, TimeShift = isShift },
+                                null, entryPanel, null, agePanel)
+                            {
+                                PriceMul = configs[i].PriceDiv,
+                                TimeShift = isShift,
+                                AgeMirror = configs[i].AgeMirror,
+                            },
                             0, pipPoints, 0, false, 0, "", mirror, false, 0, 0, -1, null, null);
                         Dispatcher.BeginInvoke(() => AppendLog($"  {symbol}: no data on disk, empty series"));
                         return;
@@ -530,8 +565,12 @@ public partial class MainWindow : Window
                     bool isBase = SymbolConfigs.Any(c => c.Symbol == symbol);
                     slots[i] = new SeriesSlot(
                         new SymbolSeries(symbol, CandleHistory.Build(transformed), color, pipPoints,
-                            false, null, transform, source, null, entryPanel)
-                        { PriceMul = configs[i].PriceDiv, TimeShift = isShift },
+                            false, null, transform, source, null, entryPanel, null, agePanel)
+                        {
+                            PriceMul = configs[i].PriceDiv,
+                            TimeShift = isShift,
+                            AgeMirror = configs[i].AgeMirror,
+                        },
                         mirrorBase, pipPoints, lastAvg, isBase, lastUnix,
                         readSymbol, mirror, isShift, shiftDelta,
                         minYear, maxYear, loadYears?.Lo, loadYears?.Hi);
@@ -552,7 +591,8 @@ public partial class MainWindow : Window
                 {
                     var (symbol, color, mirror, pipPoints, editable, source, isDrawing, _, _) = configs[i];
                     bool isDeals = configs[i].IsDeals;
-                    if (!isDrawing && !isDeals && !editable) continue;
+                    bool isDensity = configs[i].IsDensity;
+                    if (!isDrawing && !isDeals && !editable && !isDensity) continue;
                     long mirrorBase = 0;
                     if (source != null)
                     {
@@ -569,6 +609,22 @@ public partial class MainWindow : Window
                     var transform = new SeriesTransform(mirror && mirrorBase != 0, mirrorBase, pipPoints);
                     int lastVal = 0;
                     long lastUnix = 0;
+                    if (isDensity)
+                    {
+                        var ind = indicators.FirstOrDefault(x => SymbolNameEquals(x.Name, symbol));
+                        slots[i] = new SeriesSlot(
+                            new SymbolSeries(symbol, CandleHistory.Build(Array.Empty<Candle>()), color,
+                                pipPoints, false, null, null, source)
+                            {
+                                PriceMul = configs[i].PriceDiv,
+                                DensityPanel = true,
+                                DensityWindows = ind?.DensityWindowBars(),
+                                DensitySelected = ind?.DensitySelected ?? 0,
+                            },
+                            0, pipPoints, 0, false, 0,
+                            "", mirror, false, 0, 0, -1, null, null);
+                        continue;
+                    }
                     if (isDeals)
                     {
                         var ind = indicators.FirstOrDefault(x => SymbolNameEquals(x.Name, symbol));
@@ -607,7 +663,8 @@ public partial class MainWindow : Window
                             "", mirror, false, 0, 0, -1, null, null);
                         continue;
                     }
-                    var drawingLines = DrawingStore.Load(db.SymbolDirectory(symbol));
+                    var drawingLines = activeNote?.LinesOf(symbol)
+                        ?? DrawingStore.Load(db.SymbolDirectory(symbol));
                     if (drawingLines.Length > 0 && drawingLines[^1].Length > 0)
                     {
                         lastVal = drawingLines[^1][^1].Value;
@@ -655,11 +712,13 @@ public partial class MainWindow : Window
                 return;
             }
             _seriesTransforms = transforms.ToArray();
+            _appliedNoteId = _activeTab.NoteId;
             var swUi = Stopwatch.StartNew();
             Chart.SetSeries(series);
             var alignExcludedNames = new HashSet<string>(indicators
                 .Where(x => IndicatorTypes.IsAverage(x.Type) || IndicatorTypes.IsEntryPoints(x.Type)
-                    || IndicatorTypes.IsDeals(x.Type))
+                    || IndicatorTypes.IsPriceAge(x.Type) || IndicatorTypes.IsDeals(x.Type)
+                    || IndicatorTypes.IsDensity(x.Type))
                 .Select(x => IndicatorSymbol.NameKey(x.Name)));
             Chart.SetAlignExcluded(series
                 .Select(s => s.Symbol)
@@ -1737,6 +1796,14 @@ public partial class MainWindow : Window
             foreach (var placement in tab.Shifts)
                 if (SymbolNameEquals(placement.Name, oldName)) placement.Name = newName;
         }
+        foreach (var note in NoteList)
+        {
+            states.Add(note.State);
+            foreach (var placement in note.Shifts)
+                if (SymbolNameEquals(placement.Name, oldName)) placement.Name = newName;
+            note.RenameSymbol(oldName, newName);
+        }
+        SaveNotes();
         foreach (var state in states)
         {
             if (state == null) continue;
@@ -1782,6 +1849,8 @@ public partial class MainWindow : Window
     {
         var item = new TabItem { Header = tab.Name, Tag = tab };
         var menu = new ContextMenu();
+        menu.Items.Add(TabMenuItem("Notes...", () => OpenNotes(tab)));
+        menu.Items.Add(new Separator());
         menu.Items.Add(TabMenuItem("Rename...", () => RenameTab(tab)));
         menu.Items.Add(TabMenuItem("Duplicate", () => DuplicateTab(tab)));
         menu.Items.Add(new Separator());
@@ -1825,10 +1894,12 @@ public partial class MainWindow : Window
         _config.ActiveTab = _config.Tabs.IndexOf(tab);
         item.Content = ChartPanel;
         bool shiftsChanged = ApplyShiftPlacements(tab);
+        ApplyTabDrawings(tab);
         if (tab.State != null) Chart.RestoreState(tab.State);
         SymbolBar.SetFlattenRow(tab.State?.FlattenSymbol != null);
         SyncSymbolBar();
         _config.Save();
+        _notesWindow?.Refresh();
         if (!shiftsChanged) return;
         if (_dbBusy || _historyCts != null)
         {
@@ -1942,6 +2013,161 @@ public partial class MainWindow : Window
         _activeTab.Shifts.Clear();
         foreach (var ind in _config.Indicators)
             if (IndicatorTypes.IsShift(ind.Type)) _activeTab.Shifts.Add(ShiftPlacement.From(ind));
+    }
+
+    private List<Note>? _notes;
+    private NotesWindow? _notesWindow;
+    private string _appliedNoteId = "";
+
+    private List<Note> NoteList => _notes ??= NotesStore.Load();
+
+    public IReadOnlyList<Note> Notes => NoteList;
+
+    public string ActiveNoteId => _activeTab.NoteId;
+
+    public string ActiveTabName => _activeTab.Name;
+
+    private Note? NoteById(string id) =>
+        id.Length == 0 ? null : NoteList.FirstOrDefault(x => x.Id == id);
+
+    private Note? ActiveNote() => NoteById(_activeTab.NoteId);
+
+    private void SaveNotes()
+    {
+        try { NotesStore.Save(NoteList); }
+        catch (Exception ex) { AppendLog("Notes save failed: " + ex.Message); }
+    }
+
+    private void OpenNotes(ChartTab tab)
+    {
+        if (!ReferenceEquals(tab, _activeTab) && _config.Tabs.Contains(tab))
+            Tabs.SelectedItem = TabItemOf(tab);
+        if (_notesWindow is { IsLoaded: true })
+        {
+            _notesWindow.Activate();
+            return;
+        }
+        var win = new NotesWindow(this) { Owner = this };
+        win.Closed += (_, _) => _notesWindow = null;
+        _notesWindow = win;
+        win.Show();
+    }
+
+    public string NextNoteName()
+    {
+        for (int i = 1; ; i++)
+        {
+            var name = $"Note {i}";
+            if (!NoteList.Any(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase)))
+                return name;
+        }
+    }
+
+    public string CreateNote(string name)
+    {
+        _stateSaveTimer.Stop();
+        SaveChartState();
+        var note = new Note { Id = Note.NewId(), Name = name };
+        FillNote(note);
+        NoteList.Add(note);
+        SaveNotes();
+        AppendLog($"Note {name} created from {_activeTab.Name}");
+        return note.Id;
+    }
+
+    public void UpdateNote(string id)
+    {
+        var note = NoteById(id);
+        if (note == null) return;
+        _stateSaveTimer.Stop();
+        SaveChartState();
+        FillNote(note);
+        SaveNotes();
+        AppendLog($"Note {note.Name} updated from {_activeTab.Name}");
+    }
+
+    public void RenameNote(string id, string name)
+    {
+        var note = NoteById(id);
+        if (note == null) return;
+        note.Name = name;
+        SaveNotes();
+    }
+
+    public void DeleteNote(string id)
+    {
+        var note = NoteById(id);
+        if (note == null) return;
+        NoteList.Remove(note);
+        SaveNotes();
+        foreach (var tab in _config.Tabs)
+            if (tab.NoteId == id) tab.NoteId = "";
+        _config.Save();
+        ApplyTabDrawings(_activeTab);
+        AppendLog($"Note {note.Name} deleted");
+    }
+
+    public void OpenNote(string id)
+    {
+        var note = NoteById(id);
+        if (note == null) return;
+        _stateSaveTimer.Stop();
+        SaveChartState();
+        _activeTab.NoteId = note.Id;
+        _activeTab.State = note.State?.Clone();
+        _activeTab.Shifts = note.Shifts.Select(x => x.Clone()).ToList();
+        bool shiftsChanged = ApplyShiftPlacements(_activeTab);
+        ApplyTabDrawings(_activeTab);
+        if (_activeTab.State != null) Chart.RestoreState(_activeTab.State);
+        SymbolBar.SetFlattenRow(_activeTab.State?.FlattenSymbol != null);
+        SyncSymbolBar();
+        _config.Save();
+        AppendLog($"{_activeTab.Name}: note {note.Name} opened");
+        if (!shiftsChanged) return;
+        if (_dbBusy || _historyCts != null)
+        {
+            AppendLog($"{_activeTab.Name}: shift settings are applied after the running DB operation");
+            return;
+        }
+        _ = LoadChartAsync();
+    }
+
+    private void FillNote(Note note)
+    {
+        note.State = _activeTab.State?.Clone();
+        note.Shifts = _activeTab.Shifts.Select(x => x.Clone()).ToList();
+        note.Drawings.Clear();
+        foreach (var ind in _config.Indicators)
+        {
+            if (!IndicatorTypes.IsDrawing(ind.Type)) continue;
+            note.Drawings[ind.Name] =
+                DrawingStore.ToRaw(Chart.GetSeries(ind.Name)?.DrawingLines ?? LiveDrawing(ind.Name));
+        }
+        var range = Chart.VisibleRealRange();
+        if (range == null) return;
+        note.StartUnix = range.Value.Lo;
+        note.EndUnix = range.Value.Hi;
+    }
+
+    private void ApplyTabDrawings(ChartTab tab)
+    {
+        var note = NoteById(tab.NoteId);
+        if (tab.NoteId.Length > 0 && note == null) tab.NoteId = "";
+        if (tab.NoteId == _appliedNoteId) return;
+        var lines = new Dictionary<string, PivotPoint[][]>();
+        foreach (var ind in _config.Indicators)
+        {
+            if (!IndicatorTypes.IsDrawing(ind.Type)) continue;
+            lines[ind.Name] = note?.LinesOf(ind.Name) ?? LiveDrawing(ind.Name);
+        }
+        _appliedNoteId = tab.NoteId;
+        Chart.ReplaceDrawings(lines);
+    }
+
+    private PivotPoint[][] LiveDrawing(string symbol)
+    {
+        try { return DrawingStore.Load(GetDb().SymbolDirectory(symbol)); }
+        catch { return Array.Empty<PivotPoint[]>(); }
     }
 
     private void SetStatus(string text) => StatusText.Text = text;
@@ -2145,10 +2371,13 @@ public partial class MainWindow : Window
     private void OpenCalendarSettings()
     {
         var dlg = new CalendarSettingsWindow(_config.Calendar) { Owner = this };
-        if (dlg.ShowDialog() != true) return;
-        _config.Calendar = dlg.Settings;
-        _config.Save();
-        Chart.SetCalendarSettings(_config.Calendar);
+        dlg.SettingsChanged += settings =>
+        {
+            _config.Calendar = settings;
+            _config.Save();
+            Chart.SetCalendarSettings(_config.Calendar);
+        };
+        dlg.ShowDialog();
     }
 
     private async Task OpenCalendarFindAsync()
@@ -2362,8 +2591,9 @@ public partial class MainWindow : Window
                     AppendLog($"{ind.Name}: {ind.Type.ToLowerInvariant()} symbol, nothing to compute");
                     continue;
                 }
+                long endUnix = ConfirmedEndUnix(new[] { ind.Source }, 0);
                 var (_, minutes) = await Task.Run(
-                    () => GenerateIndicatorData(db, ind, cts.Token, null), cts.Token);
+                    () => GenerateIndicatorData(db, ind, cts.Token, null, endUnix), cts.Token);
                 AppendLog(IndicatorTypes.IsZigZag(ind.Type)
                     ? $"{ind.Name} rebuilt: {minutes:N0} points"
                     : $"{ind.Name} rebuilt: {minutes:N0} minutes");
@@ -2509,14 +2739,21 @@ public partial class MainWindow : Window
                 AppendLog($"{symbol}: not a drawing symbol, line discarded");
                 return;
             }
+            var note = ActiveNote();
             var dir = GetDb().SymbolDirectory(symbol);
-            var stored = DrawingStore.Load(dir);
+            var stored = note != null ? s.DrawingLines : DrawingStore.Load(dir);
             var lines = new PivotPoint[stored.Length + 1][];
             Array.Copy(stored, lines, stored.Length);
             lines[^1] = points;
-            DrawingStore.Save(dir, lines);
+            if (note != null)
+            {
+                note.SetLines(symbol, lines);
+                SaveNotes();
+            }
+            else DrawingStore.Save(dir, lines);
             Chart.ReplaceDrawing(symbol, lines);
-            AppendLog($"{symbol}: line added ({points.Length} points, {lines.Length} lines total)");
+            AppendLog($"{symbol}: line added ({points.Length} points, {lines.Length} lines total)"
+                + (note != null ? $" into note {note.Name}" : ""));
         }
         catch (Exception ex)
         {
@@ -2544,6 +2781,15 @@ public partial class MainWindow : Window
         }
         try
         {
+            var note = ActiveNote();
+            if (note != null)
+            {
+                note.SetLines(symbol, lines);
+                SaveNotes();
+                Chart.ReplaceDrawing(symbol, lines);
+                AppendLog($"{symbol}: drawing saved into note {note.Name} ({lines.Length} lines)");
+                return;
+            }
             DrawingStore.Save(GetDb().SymbolDirectory(symbol), lines);
             Chart.ReplaceDrawing(symbol, lines);
             AppendLog($"{symbol}: drawing saved ({lines.Length} lines)");
@@ -2596,7 +2842,8 @@ public partial class MainWindow : Window
     }
 
     private (int Weeks, int Minutes) GenerateIndicatorData(
-        CandleDatabase db, IndicatorSymbol ind, CancellationToken ct, IProgress<double>? progress)
+        CandleDatabase db, IndicatorSymbol ind, CancellationToken ct, IProgress<double>? progress,
+        long sourceConfirmedEndUnix = 0)
     {
         void Log(string m) => Dispatcher.BeginInvoke(() => AppendLog(m));
         if (IndicatorTypes.IsAverage(ind.Type))
@@ -2604,15 +2851,19 @@ public partial class MainWindow : Window
                 MovingAverageSymbol.WindowBars(ind.Period, ind.Unit), ind.FromFuture, Log, ct, progress);
         if (IndicatorTypes.IsIndex(ind.Type))
             return DollarIndexSymbol.Generate(db, ind.Name, ind.IndexPairs, ind.StartTimeUnix,
-                ind.EndTimeUnix, ind.IndexMethod, Log, ct, progress);
+                ind.EndTimeUnix, ind.IndexMethod, ind.IndexAlgorithm, SourcePipPoints, Log, ct, progress);
         if (IndicatorTypes.IsCurrency(ind.Type))
-            return CurrencyIndexSymbol.Generate(db, ind.Name, ind.Source, ind.IndexPair, Log, ct, progress);
+            return CurrencyIndexSymbol.Generate(db, ind.Name, ind.Source, ind.IndexPair,
+                IndexAlgorithmOf(ind.Source), SourcePipPoints(ind.IndexPair), Log, ct, progress);
         if (IndicatorTypes.IsEntryPoints(ind.Type))
         {
             int pip = SourcePipPoints(ind.Source);
             return EntryPointsSymbol.Generate(db, ind.Source, ind.Name,
                 ind.StopLossPips * pip, ind.TakeProfitPips * pip, Log, ct, progress);
         }
+        if (IndicatorTypes.IsPriceAge(ind.Type))
+            return PriceAgeSymbol.Generate(db, ind.Source, ind.Name, SourcePipPoints(ind.Source),
+                sourceConfirmedEndUnix, Log, ct, progress);
         return (0, ZigZagSymbol.Generate(db, ind.Source, ind.Name, ZigZagLimitsOf(ind),
             Log, ct, progress));
     }
@@ -2623,7 +2874,8 @@ public partial class MainWindow : Window
         return new ZigZagLimits(ind.Limit1Pips * pip, ind.Limit2Pips * pip, ind.Limit2DelayMinutes);
     }
 
-    private sealed record CurrencyRefreshJob(string Name, string IndexSymbol, string Pair, long EndUnix);
+    private sealed record CurrencyRefreshJob(
+        string Name, string IndexSymbol, string Pair, string Algorithm, int PairPipPoints, long EndUnix);
 
     private CurrencyRefreshJob[] DependentCurrencyJobs(IndicatorSymbol saved)
     {
@@ -2631,7 +2883,8 @@ public partial class MainWindow : Window
         return _config.Indicators
             .Where(x => IndicatorTypes.IsCurrency(x.Type) && SymbolNameEquals(x.Source, saved.Name))
             .Select(x => new CurrencyRefreshJob(
-                x.Name, x.Source, x.IndexPair, ConfirmedEndUnix(new[] { x.IndexPair }, 0)))
+                x.Name, x.Source, x.IndexPair, saved.IndexAlgorithm, SourcePipPoints(x.IndexPair),
+                ConfirmedEndUnix(new[] { x.IndexPair }, 0)))
             .ToArray();
     }
 
@@ -2708,8 +2961,9 @@ public partial class MainWindow : Window
             _startupJobs[jobKey] = $"{saved.Name} · rebuilding";
             RefreshLoadIndicator();
             var db = GetDb();
+            long endUnix = ConfirmedEndUnix(new[] { saved.Source }, 0);
             var (_, minutes) = await Task.Run(
-                () => GenerateIndicatorData(db, saved, CancellationToken.None, progress));
+                () => GenerateIndicatorData(db, saved, CancellationToken.None, progress, endUnix));
             running = false;
             _startupJobs.TryRemove(jobKey, out _);
             RefreshLoadIndicator();
@@ -2752,6 +3006,8 @@ public partial class MainWindow : Window
             var db = GetDb();
             long indexEndUnix = ConfirmedEndUnix(saved.IndexPairs, saved.EndTimeUnix);
             long currencyEndUnix = ConfirmedEndUnix(new[] { saved.IndexPair }, 0);
+            long sourceEndUnix = ConfirmedEndUnix(new[] { saved.Source }, 0);
+            string currencyAlgorithm = IndexAlgorithmOf(saved.Source);
             var dependents = DependentCurrencyJobs(saved);
             await Task.Run(() =>
             {
@@ -2764,16 +3020,17 @@ public partial class MainWindow : Window
                 else if (IndicatorTypes.IsIndex(saved.Type))
                 {
                     DollarIndexSymbol.Refresh(db, saved.Name, saved.IndexPairs, saved.StartTimeUnix,
-                        indexEndUnix, saved.IndexMethod,
+                        indexEndUnix, saved.IndexMethod, saved.IndexAlgorithm, SourcePipPoints,
                         m => Dispatcher.BeginInvoke(() => AppendLog(m)), ct, progress);
                     foreach (var dep in dependents)
-                        CurrencyIndexSymbol.Refresh(db, dep.Name, dep.IndexSymbol, dep.Pair, dep.EndUnix,
+                        CurrencyIndexSymbol.Refresh(db, dep.Name, dep.IndexSymbol, dep.Pair,
+                            dep.Algorithm, dep.PairPipPoints, dep.EndUnix,
                             m => Dispatcher.BeginInvoke(() => AppendLog(m)), ct);
                 }
                 else if (IndicatorTypes.IsCurrency(saved.Type))
                 {
                     CurrencyIndexSymbol.Refresh(db, saved.Name, saved.Source, saved.IndexPair,
-                        currencyEndUnix,
+                        currencyAlgorithm, SourcePipPoints(saved.IndexPair), currencyEndUnix,
                         m => Dispatcher.BeginInvoke(() => AppendLog(m)), ct, progress);
                 }
                 else if (IndicatorTypes.IsEntryPoints(saved.Type))
@@ -2782,6 +3039,11 @@ public partial class MainWindow : Window
                     EntryPointsSymbol.Refresh(db, saved.Source, saved.Name,
                         saved.StopLossPips * pip, saved.TakeProfitPips * pip,
                         m => Dispatcher.BeginInvoke(() => AppendLog(m)), ct, progress);
+                }
+                else if (IndicatorTypes.IsPriceAge(saved.Type))
+                {
+                    PriceAgeSymbol.Refresh(db, saved.Source, saved.Name, SourcePipPoints(saved.Source),
+                        sourceEndUnix, m => Dispatcher.BeginInvoke(() => AppendLog(m)), ct, progress);
                 }
                 else
                 {
@@ -2817,6 +3079,15 @@ public partial class MainWindow : Window
             var db = GetDb();
             bool recompute = replacing == null || !replacing.SameData(def);
             bool nameChanged = replacing != null && !SymbolNameEquals(replacing.Name, def.Name);
+            string currencyAlgorithm = IndexAlgorithmOf(def.Source);
+            long sourceEndUnix = ConfirmedEndUnix(new[] { def.Source }, 0);
+            var dependentCurrencies = replacing != null && IndicatorTypes.IsIndex(def.Type)
+                ? _config.Indicators
+                    .Where(x => IndicatorTypes.IsCurrency(x.Type)
+                        && SymbolNameEquals(x.Source, replacing.Name))
+                    .Select(x => (x.Name, x.IndexPair))
+                    .ToArray()
+                : Array.Empty<(string Name, string IndexPair)>();
             await Task.Run(() =>
             {
                 if (recompute)
@@ -2828,7 +3099,8 @@ public partial class MainWindow : Window
                         DrawingStore.Save(db.SymbolDirectory(def.Name), Array.Empty<PivotPoint[]>());
                         progress.Report(1.0);
                     }
-                    else if (IndicatorTypes.IsShift(def.Type) || IndicatorTypes.IsDeals(def.Type))
+                    else if (IndicatorTypes.IsShift(def.Type) || IndicatorTypes.IsDeals(def.Type)
+                        || IndicatorTypes.IsDensity(def.Type))
                     {
                         db.DeleteSymbol(def.Name);
                         progress.Report(1.0);
@@ -2842,12 +3114,17 @@ public partial class MainWindow : Window
                     else if (IndicatorTypes.IsIndex(def.Type))
                     {
                         DollarIndexSymbol.Generate(db, def.Name, def.IndexPairs, def.StartTimeUnix,
-                            def.EndTimeUnix, def.IndexMethod,
+                            def.EndTimeUnix, def.IndexMethod, def.IndexAlgorithm, SourcePipPoints,
                             m => Dispatcher.BeginInvoke(() => AppendLog(m)), ct, progress);
+                        foreach (var dep in dependentCurrencies)
+                            CurrencyIndexSymbol.Generate(db, dep.Name, def.Name, dep.IndexPair,
+                                def.IndexAlgorithm, SourcePipPoints(dep.IndexPair),
+                                m => Dispatcher.BeginInvoke(() => AppendLog(m)), ct);
                     }
                     else if (IndicatorTypes.IsCurrency(def.Type))
                     {
                         CurrencyIndexSymbol.Generate(db, def.Name, def.Source, def.IndexPair,
+                            currencyAlgorithm, SourcePipPoints(def.IndexPair),
                             m => Dispatcher.BeginInvoke(() => AppendLog(m)), ct, progress);
                     }
                     else if (IndicatorTypes.IsEntryPoints(def.Type))
@@ -2856,6 +3133,11 @@ public partial class MainWindow : Window
                         EntryPointsSymbol.Generate(db, def.Source, def.Name,
                             def.StopLossPips * pip, def.TakeProfitPips * pip,
                             m => Dispatcher.BeginInvoke(() => AppendLog(m)), ct, progress);
+                    }
+                    else if (IndicatorTypes.IsPriceAge(def.Type))
+                    {
+                        PriceAgeSymbol.Generate(db, def.Source, def.Name, SourcePipPoints(def.Source),
+                            sourceEndUnix, m => Dispatcher.BeginInvoke(() => AppendLog(m)), ct, progress);
                     }
                     else
                     {
@@ -3372,6 +3654,7 @@ public partial class MainWindow : Window
         var ind = _config.Indicators.FirstOrDefault(x => SymbolNameEquals(x.Name, name));
         if (ind == null) return;
         string deletePrompt = IndicatorTypes.IsShift(ind.Type) || IndicatorTypes.IsDeals(ind.Type)
+            || IndicatorTypes.IsDensity(ind.Type)
             ? $"Delete indicator {ind.Name}?"
             : $"Delete indicator {ind.Name}? Its data files will be removed.";
         int children = _config.Indicators.Count(x => SymbolNameEquals(x.Source, ind.Name));
@@ -3405,6 +3688,11 @@ public partial class MainWindow : Window
             await Task.Run(() => db.DeleteSymbol(ind.Name));
             _config.Indicators.Remove(ind);
             _config.Save();
+            if (IndicatorTypes.IsDrawing(ind.Type))
+            {
+                foreach (var note in NoteList) note.RemoveSymbol(ind.Name);
+                SaveNotes();
+            }
             await LoadChartAsync();
             AppendLog($"Indicator {ind.Name} deleted");
         }

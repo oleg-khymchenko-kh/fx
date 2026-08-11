@@ -19,6 +19,7 @@ public sealed class IndicatorSymbol
     public long StartTimeUnix { get; set; }
     public long EndTimeUnix { get; set; }
     public string IndexMethod { get; set; } = IndexMethods.Median;
+    public string IndexAlgorithm { get; set; } = IndexAlgorithms.Percent;
     public List<string> IndexPairs { get; set; } = new();
     public string IndexPair { get; set; } = "";
     public int StopLossPips { get; set; } = DefaultStopLossPips;
@@ -31,6 +32,9 @@ public sealed class IndicatorSymbol
     public List<string> FindTargets { get; set; } = new();
     public string FindSearchType { get; set; } = FindSearchTypes.Similarity;
     public List<string> FindZigZagTargets { get; set; } = new();
+    public List<int> DensityPeriods { get; set; } = new();
+    public List<string> DensityUnits { get; set; } = new();
+    public int DensitySelected { get; set; }
     public int ColorArgb { get; set; } = unchecked((int)0xFFFF8C00);
 
     public const int DefaultLimit1Pips = 50;
@@ -41,6 +45,34 @@ public sealed class IndicatorSymbol
     public const int DefaultFindSmoothMinutes = 240;
     public const int DefaultFindZoomPercent = 50;
     public const int DefaultFindStepMinutes = 60;
+    public const int DensityOptionCount = 9;
+
+    public static readonly int[] DefaultDensityPeriods = { 1, 2, 5, 10, 20, 40, 60, 120, 240 };
+
+    public static readonly string[] DefaultDensityUnits =
+    {
+        IndicatorUnits.Days, IndicatorUnits.Days, IndicatorUnits.Days,
+        IndicatorUnits.Days, IndicatorUnits.Days, IndicatorUnits.Days,
+        IndicatorUnits.Days, IndicatorUnits.Days, IndicatorUnits.Days,
+    };
+
+    public int DensityPeriodAt(int option) =>
+        option < DensityPeriods.Count && DensityPeriods[option] > 0
+            ? DensityPeriods[option]
+            : DefaultDensityPeriods[option];
+
+    public string DensityUnitAt(int option) =>
+        option < DensityUnits.Count && !string.IsNullOrEmpty(DensityUnits[option])
+            ? DensityUnits[option]
+            : DefaultDensityUnits[option];
+
+    public int[] DensityWindowBars()
+    {
+        var bars = new int[DensityOptionCount];
+        for (int i = 0; i < bars.Length; i++)
+            bars[i] = DensityPeriodAt(i) * IndicatorUnits.BarsPerUnit(DensityUnitAt(i));
+        return bars;
+    }
 
     public string ShiftTarget() => TargetSymbol.Length > 0 ? TargetSymbol : Source;
 
@@ -64,6 +96,7 @@ public sealed class IndicatorSymbol
         StartTimeUnix = StartTimeUnix,
         EndTimeUnix = EndTimeUnix,
         IndexMethod = IndexMethod,
+        IndexAlgorithm = IndexAlgorithm,
         IndexPairs = new List<string>(IndexPairs),
         IndexPair = IndexPair,
         StopLossPips = StopLossPips,
@@ -76,6 +109,9 @@ public sealed class IndicatorSymbol
         FindTargets = new List<string>(FindTargets),
         FindSearchType = FindSearchType,
         FindZigZagTargets = new List<string>(FindZigZagTargets),
+        DensityPeriods = new List<int>(DensityPeriods),
+        DensityUnits = new List<string>(DensityUnits),
+        DensitySelected = DensitySelected,
         ColorArgb = ColorArgb,
     };
 
@@ -86,6 +122,7 @@ public sealed class IndicatorSymbol
             return StartTimeUnix == other.StartTimeUnix
                 && EndTimeUnix == other.EndTimeUnix
                 && string.Equals(IndexMethod, other.IndexMethod, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(IndexAlgorithm, other.IndexAlgorithm, StringComparison.OrdinalIgnoreCase)
                 && SamePairs(IndexPairs, other.IndexPairs);
         if (NameKey(Source) != NameKey(other.Source)) return false;
         if (IndicatorTypes.IsCurrency(Type))
@@ -96,8 +133,9 @@ public sealed class IndicatorSymbol
                 && FromFuture == other.FromFuture;
         if (IndicatorTypes.IsEntryPoints(Type))
             return StopLossPips == other.StopLossPips && TakeProfitPips == other.TakeProfitPips;
+        if (IndicatorTypes.IsPriceAge(Type)) return true;
         if (IndicatorTypes.IsDrawing(Type) || IndicatorTypes.IsShift(Type)
-            || IndicatorTypes.IsDeals(Type)) return true;
+            || IndicatorTypes.IsDeals(Type) || IndicatorTypes.IsDensity(Type)) return true;
         return Limit1Pips == other.Limit1Pips
             && Limit2Pips == other.Limit2Pips
             && Limit2DelayMinutes == other.Limit2DelayMinutes;
@@ -126,10 +164,12 @@ public static class IndicatorTypes
     public const string Index = "Index";
     public const string Currency = "Currency";
     public const string EntryPoints = "EntryPoints";
+    public const string PriceAge = "PriceAge";
     public const string Deals = "Deals";
+    public const string Density = "Density";
 
     public static readonly string[] All =
-        { ZigZag, Average, Shift, Drawing, Index, Currency, EntryPoints, Deals };
+        { ZigZag, Average, Shift, Drawing, Index, Currency, EntryPoints, PriceAge, Deals, Density };
 
     public static bool IsDrawing(string type) =>
         string.Equals(type, Drawing, StringComparison.OrdinalIgnoreCase);
@@ -143,7 +183,11 @@ public static class IndicatorTypes
     public static bool IsShift(string type) =>
         string.Equals(type, Shift, StringComparison.OrdinalIgnoreCase);
 
-    public static bool HasStorage(string type) => !IsDrawing(type) && !IsShift(type) && !IsDeals(type);
+    public static bool IsDensity(string type) =>
+        string.Equals(type, Density, StringComparison.OrdinalIgnoreCase);
+
+    public static bool HasStorage(string type) =>
+        !IsDrawing(type) && !IsShift(type) && !IsDeals(type) && !IsDensity(type);
 
     public static bool IsZigZag(string type) =>
         string.Equals(type, ZigZag, StringComparison.OrdinalIgnoreCase);
@@ -157,6 +201,9 @@ public static class IndicatorTypes
     public static bool IsEntryPoints(string type) =>
         string.Equals(type, EntryPoints, StringComparison.OrdinalIgnoreCase);
 
+    public static bool IsPriceAge(string type) =>
+        string.Equals(type, PriceAge, StringComparison.OrdinalIgnoreCase);
+
     public static bool NeedsSource(string type) => !IsIndex(type);
 
     public static bool SourceIsIndex(string type) => IsCurrency(type);
@@ -165,6 +212,7 @@ public static class IndicatorTypes
         IsIndex(type) ? "USD Index"
         : IsCurrency(type) ? "Currency Index"
         : IsEntryPoints(type) ? "Entry points"
+        : IsPriceAge(type) ? "Price age"
         : type;
 
     public static string FromLabel(string label) =>
@@ -180,6 +228,17 @@ public static class IndexMethods
 
     public static bool IsAverage(string method) =>
         string.Equals(method, Average, StringComparison.OrdinalIgnoreCase);
+}
+
+public static class IndexAlgorithms
+{
+    public const string Percent = "Percent";
+    public const string Pips = "Pips";
+
+    public static readonly string[] All = { Percent, Pips };
+
+    public static bool IsPips(string algorithm) =>
+        string.Equals(algorithm, Pips, StringComparison.OrdinalIgnoreCase);
 }
 
 public static class IndicatorUnits

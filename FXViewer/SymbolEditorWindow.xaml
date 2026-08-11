@@ -103,6 +103,7 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="0" Grid.Column="0" Text="Start" VerticalAlignment="Center" Margin="0,0,8,6" />
             <DatePicker x:Name="IndexStartDate" Grid.Row="0" Grid.Column="1" Width="115" Height="26" Margin="0,0,8,6" />
@@ -115,12 +116,15 @@
             <TextBlock Grid.Row="2" Grid.Column="0" Text="Method" VerticalAlignment="Center" Margin="0,0,8,6" />
             <ComboBox x:Name="MethodBox" Grid.Row="2" Grid.Column="1" Width="115" Height="26"
                       VerticalContentAlignment="Center" Margin="0,0,0,6" />
-            <TextBlock Grid.Row="3" Grid.Column="0" Text="Pairs" VerticalAlignment="Top" Margin="0,4,8,0" />
-            <Border Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" BorderBrush="#E0E0E0" BorderThickness="1"
+            <TextBlock Grid.Row="3" Grid.Column="0" Text="Algorithm" VerticalAlignment="Center" Margin="0,0,8,6" />
+            <ComboBox x:Name="AlgorithmBox" Grid.Row="3" Grid.Column="1" Width="115" Height="26"
+                      VerticalContentAlignment="Center" Margin="0,0,0,6" />
+            <TextBlock Grid.Row="4" Grid.Column="0" Text="Pairs" VerticalAlignment="Top" Margin="0,4,8,0" />
+            <Border Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" BorderBrush="#E0E0E0" BorderThickness="1"
                     Padding="6,4,6,4">
                 <UniformGrid x:Name="PairsPanel" Columns="2" />
             </Border>
-            <CheckBox x:Name="IndexMirrorBox" Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="3"
+            <CheckBox x:Name="IndexMirrorBox" Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="3"
                       Content="Mirror (min up, max down)" Margin="0,8,0,0" />
         </Grid>
 
@@ -141,6 +145,65 @@
             <Button x:Name="DealsBrowseBtn" Grid.Column="1" Content="Browse..." Width="80" Height="26"
                     Click="DealsBrowseBtn_Click" />
         </Grid>
+
+        <StackPanel x:Name="DensityParams" Grid.Row="3" Grid.Column="1" Margin="0,0,0,10">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="Key 1" VerticalAlignment="Center" Width="50" />
+                <TextBox x:Name="Density1Box" Width="60" Height="26" VerticalContentAlignment="Center" />
+                <ComboBox x:Name="Density1Unit" Width="90" Height="26" VerticalContentAlignment="Center"
+                          Margin="8,0,0,0" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <TextBlock Text="Key 2" VerticalAlignment="Center" Width="50" />
+                <TextBox x:Name="Density2Box" Width="60" Height="26" VerticalContentAlignment="Center" />
+                <ComboBox x:Name="Density2Unit" Width="90" Height="26" VerticalContentAlignment="Center"
+                          Margin="8,0,0,0" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <TextBlock Text="Key 3" VerticalAlignment="Center" Width="50" />
+                <TextBox x:Name="Density3Box" Width="60" Height="26" VerticalContentAlignment="Center" />
+                <ComboBox x:Name="Density3Unit" Width="90" Height="26" VerticalContentAlignment="Center"
+                          Margin="8,0,0,0" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <TextBlock Text="Key 4" VerticalAlignment="Center" Width="50" />
+                <TextBox x:Name="Density4Box" Width="60" Height="26" VerticalContentAlignment="Center" />
+                <ComboBox x:Name="Density4Unit" Width="90" Height="26" VerticalContentAlignment="Center"
+                          Margin="8,0,0,0" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <TextBlock Text="Key 5" VerticalAlignment="Center" Width="50" />
+                <TextBox x:Name="Density5Box" Width="60" Height="26" VerticalContentAlignment="Center" />
+                <ComboBox x:Name="Density5Unit" Width="90" Height="26" VerticalContentAlignment="Center"
+                          Margin="8,0,0,0" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <TextBlock Text="Key 6" VerticalAlignment="Center" Width="50" />
+                <TextBox x:Name="Density6Box" Width="60" Height="26" VerticalContentAlignment="Center" />
+                <ComboBox x:Name="Density6Unit" Width="90" Height="26" VerticalContentAlignment="Center"
+                          Margin="8,0,0,0" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <TextBlock Text="Key 7" VerticalAlignment="Center" Width="50" />
+                <TextBox x:Name="Density7Box" Width="60" Height="26" VerticalContentAlignment="Center" />
+                <ComboBox x:Name="Density7Unit" Width="90" Height="26" VerticalContentAlignment="Center"
+                          Margin="8,0,0,0" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <TextBlock Text="Key 8" VerticalAlignment="Center" Width="50" />
+                <TextBox x:Name="Density8Box" Width="60" Height="26" VerticalContentAlignment="Center" />
+                <ComboBox x:Name="Density8Unit" Width="90" Height="26" VerticalContentAlignment="Center"
+                          Margin="8,0,0,0" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <TextBlock Text="Key 9" VerticalAlignment="Center" Width="50" />
+                <TextBox x:Name="Density9Box" Width="60" Height="26" VerticalContentAlignment="Center" />
+                <ComboBox x:Name="Density9Unit" Width="90" Height="26" VerticalContentAlignment="Center"
+                          Margin="8,0,0,0" />
+            </StackPanel>
+            <TextBlock Text="lookback per option, keys 1-9 switch on the chart"
+                       Margin="0,6,0,0" Foreground="Gray" />
+        </StackPanel>
 
         <TextBlock Grid.Row="4" Grid.Column="0" Text="Color" VerticalAlignment="Top" Margin="0,2,10,10" />
         <Border Grid.Row="4" Grid.Column="1" BorderBrush="#E0E0E0" BorderThickness="1" Padding="3" Margin="0,0,0,10">

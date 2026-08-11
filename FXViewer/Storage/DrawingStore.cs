@@ -22,6 +22,11 @@ public static class DrawingStore
             try { File.Move(path, path + ".bad", true); } catch { }
             return Array.Empty<PivotPoint[]>();
         }
+        return FromRaw(raw);
+    }
+
+    public static PivotPoint[][] FromRaw(long[][][]? raw)
+    {
         if (raw == null) return Array.Empty<PivotPoint[]>();
         var lines = new List<PivotPoint[]>(raw.Length);
         foreach (var line in raw)
@@ -36,9 +41,8 @@ public static class DrawingStore
         return lines.ToArray();
     }
 
-    public static void Save(string symbolDir, PivotPoint[][] lines)
+    public static long[][][] ToRaw(PivotPoint[][] lines)
     {
-        Directory.CreateDirectory(symbolDir);
         var raw = new long[lines.Length][][];
         for (int i = 0; i < lines.Length; i++)
         {
@@ -46,6 +50,13 @@ public static class DrawingStore
             for (int j = 0; j < lines[i].Length; j++)
                 raw[i][j] = new[] { lines[i][j].UnixSeconds, lines[i][j].Value };
         }
+        return raw;
+    }
+
+    public static void Save(string symbolDir, PivotPoint[][] lines)
+    {
+        Directory.CreateDirectory(symbolDir);
+        var raw = ToRaw(lines);
         var path = Path.Combine(symbolDir, FileName);
         var tmp = path + ".tmp";
         File.WriteAllText(tmp, JsonSerializer.Serialize(raw));

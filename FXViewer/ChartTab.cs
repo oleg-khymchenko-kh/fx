@@ -5,12 +5,14 @@ namespace FXViewer;
 public sealed class ChartTab
 {
     public string Name { get; set; } = "";
+    public string NoteId { get; set; } = "";
     public ChartViewState? State { get; set; }
     public List<ShiftPlacement> Shifts { get; set; } = new();
 
     public ChartTab Clone() => new()
     {
         Name = Name,
+        NoteId = NoteId,
         State = State?.Clone(),
         Shifts = Shifts.Select(x => x.Clone()).ToList(),
     };

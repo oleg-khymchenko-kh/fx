@@ -18,7 +18,7 @@
         </DockPanel>
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
-            <CheckBox x:Name="RateOnlyBox" Content="USD rate decisions only" VerticalAlignment="Center"
+            <CheckBox x:Name="HighestOnlyBox" Content="Highest only" VerticalAlignment="Center"
                       Margin="0,0,16,0" Click="Filter_Changed" />
             <CheckBox x:Name="HighOnlyBox" Content="High impact and above" VerticalAlignment="Center"
                       Margin="0,0,16,0" Click="Filter_Changed" />

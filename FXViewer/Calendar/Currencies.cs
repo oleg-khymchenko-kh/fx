@@ -32,16 +32,35 @@ public static class Currencies
     public static int ColorArgb(byte id) =>
         id >= 1 && id <= Tracked.Length ? Tracked[id - 1].Argb : OtherArgb;
 
-    private const string RateCurrency = "USD";
-    private const string RateEventMarker = "Federal Funds Rate";
+    private const string HighestCurrency = "USD";
+
+    private const string RateDecisionEvent = "Federal Funds Rate";
+
+    private static readonly string[] HighestEventPrefixes =
+    {
+        RateDecisionEvent,
+        "Average Hourly Earnings",
+        "Non-Farm Employment Change",
+        "Unemployment Rate",
+    };
 
     public static bool IsRateDecision(string currency, string eventName) =>
-        string.Equals(currency, RateCurrency, StringComparison.OrdinalIgnoreCase)
+        string.Equals(currency, HighestCurrency, StringComparison.OrdinalIgnoreCase)
         && !string.IsNullOrEmpty(eventName)
-        && eventName.Contains(RateEventMarker, StringComparison.OrdinalIgnoreCase);
+        && eventName.StartsWith(RateDecisionEvent, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsHighest(string currency, string eventName)
+    {
+        if (!string.Equals(currency, HighestCurrency, StringComparison.OrdinalIgnoreCase)) return false;
+        if (string.IsNullOrEmpty(eventName)) return false;
+        foreach (var prefix in HighestEventPrefixes)
+            if (eventName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return true;
+        return false;
+    }
 
     public static CalendarImpact ParseImpact(string text, string currency, string eventName) =>
-        IsRateDecision(currency, eventName) ? CalendarImpact.Rate : ParseImpact(text);
+        IsHighest(currency, eventName) ? CalendarImpact.Highest : ParseImpact(text);
 
     public static CalendarImpact ParseImpact(string text)
     {

@@ -64,6 +64,14 @@ price range, so the view can scroll to lines drawn in the future.
   appear on every vertex of the selected polyline.
 - Dragging a circle moves that vertex (time and price, unconstrained,
   time snapped to the column minute).
+- Holding Shift while dragging a vertex keeps the line slope: only the
+  time follows the mouse, the price is recomputed so the point slides
+  along the original line. The slope anchor is the previous vertex
+  (the next one for the first vertex); slope is measured in trading
+  time, so the visual slope on the chart is preserved across weekend
+  gaps. Shift can be pressed or released mid-drag. A Shift-click that
+  starts on a vertex of the selected line begins this drag instead of
+  a range selection.
 - Dragging the line body (within 2 px, not on a circle) moves the whole
   polyline; all points shift by the same time/price delta.
 - During a drag the raster line is hidden and a WPF preview polyline

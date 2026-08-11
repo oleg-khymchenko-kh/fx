@@ -57,31 +57,48 @@ candle DB keeps `<SYMBOL>/<year>.m1`:
   byte offset and length, never fully loaded into memory for display.
   Fields are short: `T` unix, `C` currency, `I` impact, `E` event,
   `A` actual, `F` forecast, `P` previous, `D` detail.
-- `<year>.idx` - the light in-memory index for that year. Fixed 22-byte
+- `<year>.idx` - the light in-memory index for that year. Fixed 23-byte
   records `[int64 unix][byte impact][byte currency][int64 detailOffset]
-  [int32 detailLen]`, sorted by time. `detailOffset` is a byte offset
-  inside that same year's `.jsonl`. Only the 8 tracked currencies are
-  indexed (EUR, USD, GBP, JPY, CHF, AUD, NZD, CAD); other currencies stay
-  in the `.jsonl` but are never loaded.
+  [int32 detailLen][byte rateDecision]`, sorted by time. `detailOffset` is
+  a byte offset inside that same year's `.jsonl`. Only the 8 tracked
+  currencies are indexed (EUR, USD, GBP, JPY, CHF, AUD, NZD, CAD); other
+  currencies stay in the `.jsonl` but are never loaded.
 
 `Load` reads every `<year>.idx` in year order and concatenates them, so
 the in-memory index stays sorted by time. `ReadDetail` derives the year
 from the entry timestamp (UTC), so the entry does not need to store which
 file it came from.
 
-Impact byte: None=0, Low=1, Medium=2, High=3, Holiday=4, Rate=5. Currency
-byte: 1..8 in the tracked order above, 0 = other.
+Impact byte: None=0, Low=1, Medium=2, High=3, Holiday=4, Highest=5.
+Currency byte: 1..8 in the tracked order above, 0 = other.
 
-`Rate` is the top level, above `High`: a USD event whose title contains
-`Federal Funds Rate`. It is derived from the currency and the title, not
-from the source impact field, so `CalendarDetail.ImpactLevel` decides it
-and the index stores the result. The CSV writes holidays as
-`Non-Economic`, which maps to `Holiday`.
+`Highest` is the top level, above `High`: a USD event whose title starts
+with one of
 
-The index header carries a version (`CAL2`). `UpgradeOutdatedIndexes`
+- `Federal Funds Rate`
+- `Average Hourly Earnings` (the stored title is `... m/m`)
+- `Non-Farm Employment Change`
+- `Unemployment Rate`
+
+The match is on the start of the title, not anywhere inside it, so
+`ADP Non-Farm Employment Change` stays a normal high event. The level is
+derived from the currency and the title, not from the source impact
+field, so `CalendarDetail.ImpactLevel` decides it and the index stores
+the result. The CSV writes holidays as `Non-Economic`, which maps to
+`Holiday`.
+
+The `rateDecision` byte marks the `Federal Funds Rate` events alone. The
+titles are not in the index, so without this flag the renderer cannot
+tell a rate decision from the other three `Highest` titles. It is set the
+same way, from the currency and the title, when the index is written.
+
+The index header carries a version (`CAL4`). `UpgradeOutdatedIndexes`
 rewrites any `.idx` still on the old version straight from the year's
 `.jsonl` - it only touches the index, never the data. That is what pulls
-the `Rate` level into stores written before it existed.
+the `Highest` level into stores written before it existed, what picked up
+the three new titles when the level grew past rate decisions, and what
+fills the `rateDecision` byte. Records grew by that byte in `CAL4`, so
+`LoadYear` reads the older 22-byte layout without it.
 
 `WriteYear` dedups by (unix, currency, event), keeping the copy that has
 an `actual` value and filling its empty fields from the other copy, sorts,
@@ -146,8 +163,18 @@ Color is the currency, dash marks importance: high solid, medium dashed
 drawn. Within one column the levels are drawn low, then medium, then
 high, so a high event wins the shared pixels.
 
-Rate lines are solid and 1 px wide like the rest. Draw order is holiday,
-low, medium, high, rate, so the strongest level wins the shared pixels.
+Highest lines are solid and 1 px wide like the rest. Draw order is
+holiday, low, medium, high, highest, so the strongest level wins the
+shared pixels.
+
+A rate decision line - and only that one, not the rest of `Highest` -
+also carries a small black triangle pointing down: 7 px wide, 4 px high,
+its base on the very top row of the chart, and the line runs through the
+middle of it. Width and height are set apart from each other, so the
+shape is not tied to a 45 degree slope. All sizes are device pixels, like
+the rest of the raster. The triangle comes from the entry's
+`rateDecision` flag and is drawn with the line, so hiding the `Highest`
+level hides it too.
 
 Zoom gate: with `Show at any zoom` off, lines are drawn only when the
 hourly grid is visible, that is `ChartRasterizer.HourGridVisible(k)`
@@ -168,18 +195,24 @@ Right-click on the row opens its own menu with `Settings...` and
 otherwise the click reaches the tab item behind the chart and its
 Rename / Duplicate / Delete menu opens instead.
 
-`Settings...` picks which impact levels are drawn (rate, high, medium,
+`Settings...` picks which impact levels are drawn (highest, high, medium,
 low, holidays) and whether the lines show at any zoom. Unlike the on/off
 flag these live in `AppConfig.Calendar` - one setting for all tabs.
 Hidden levels are skipped by hover and by the popup too, not only by the
 renderer.
+
+Every checkbox applies at once: each click raises `SettingsChanged`, and
+`MainWindow` saves the config and pushes the new settings into the chart
+right away, so the lines change behind the still-open window. The window
+has one `Close` button and no OK / Cancel - there is nothing left to
+confirm or undo.
 
 ## Find window (stage 6)
 
 `Find...` opens a non-modal window listing every stored event, newest
 first: time (UTC), currency, impact, title, actual / forecast / previous.
 A text box filters by title or currency, and two checkboxes narrow it to
-USD rate decisions or to high-and-above. At most 3000 rows are rendered;
+the highest level or to high-and-above. At most 3000 rows are rendered;
 the counter says how many matched in total when the list is cut.
 
 The list is built from `CalendarStore.LoadSummaries`, which reads every

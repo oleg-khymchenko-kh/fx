@@ -6,9 +6,10 @@ public partial class TabNameWindow : Window
 {
     public string TabName { get; private set; } = "";
 
-    public TabNameWindow(string name)
+    public TabNameWindow(string name, string? title = null)
     {
         InitializeComponent();
+        if (title != null) Title = title;
         NameBox.Text = name;
         Loaded += (_, _) =>
         {

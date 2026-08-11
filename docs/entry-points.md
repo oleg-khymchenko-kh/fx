@@ -102,7 +102,8 @@ column with three bits (buy / none / sell), using the same level choice
 and column edges as `ChartColumns`, but with OR instead of averaging.
 
 `ChartRasterizer.DrawEntryPanel` draws three 3 px rows one under
-another, the lowest one 10 px above the bottom edge of the chart:
+another at the panel's slot in the bottom band (the lowest panel sits
+10 px above the bottom edge of the chart):
 
 - top row: green (#2E7D32) when the buy wins, background when it loses
 - middle row: black when neither side wins, background otherwise
@@ -115,8 +116,11 @@ background colour (white), not a skipped pixel. Columns with no data,
 and the undecided tail of the history, end up all background because
 their state byte is 0.
 
-Several entry point indicators stack upwards, 2 px apart. Hiding the
-symbol in the symbol bar hides its rows.
+Entry point panels share the bottom band with price age panels
+(docs/price-age.md). Visible panels stack upwards in series order,
+2 px apart, each advancing the stack by its own height (9 px for entry
+points, 101 px for price age). Hiding the symbol in the symbol bar
+hides its rows.
 
 Entry point series are skipped everywhere a price line is expected:
 `RenderLine` building, the initial auto scale, the global price range

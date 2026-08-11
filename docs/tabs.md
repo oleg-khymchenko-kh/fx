@@ -142,9 +142,15 @@ Renaming an **indicator** rewrites its name in every tab - in
 `SymbolOffsetPoints`, `HiddenSymbols`, `FlattenSymbol` and in the shift
 placements (`RenameChartStateKeys`).
 
+## Notes
+
+A tab can also show a **note** - a saved screen with a frozen copy of the
+view state and its own drawing snapshot, see docs/notes.md. `ChartTab.NoteId`
+says which note the tab shows; empty means the tab uses the live drawings.
+
 ## Not in v1 (next steps)
 
 - Reordering tabs by dragging.
 - Per tab Shift without a chart reload (re-shift the series in memory from
   the target that is already loaded, as `ApplyFindResultAsync` does).
-- Per tab drawings and per tab indicator set.
+- Per tab indicator set.

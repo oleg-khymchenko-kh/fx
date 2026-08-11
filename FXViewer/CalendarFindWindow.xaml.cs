@@ -39,15 +39,15 @@ public partial class CalendarFindWindow : Window
     {
         if (!IsInitialized) return;
         string query = SearchBox.Text.Trim();
-        bool rateOnly = RateOnlyBox.IsChecked == true;
+        bool highestOnly = HighestOnlyBox.IsChecked == true;
         bool highOnly = HighOnlyBox.IsChecked == true;
         var rows = new List<Row>();
         int matched = 0;
         for (int i = _all.Count - 1; i >= 0; i--)
         {
             var e = _all[i];
-            if (rateOnly && e.Impact != CalendarImpact.Rate) continue;
-            if (highOnly && e.Impact != CalendarImpact.Rate && e.Impact != CalendarImpact.High) continue;
+            if (highestOnly && e.Impact != CalendarImpact.Highest) continue;
+            if (highOnly && e.Impact != CalendarImpact.Highest && e.Impact != CalendarImpact.High) continue;
             if (query.Length > 0 && !Matches(e, query)) continue;
             matched++;
             if (rows.Count < MaxRows) rows.Add(ToRow(e));
@@ -78,7 +78,7 @@ public partial class CalendarFindWindow : Window
 
     private static string ImpactText(CalendarImpact impact) => impact switch
     {
-        CalendarImpact.Rate => "Rate",
+        CalendarImpact.Highest => "Highest",
         CalendarImpact.High => "High",
         CalendarImpact.Medium => "Medium",
         CalendarImpact.Low => "Low",

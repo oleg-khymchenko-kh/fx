@@ -138,6 +138,61 @@ public static class ChartRasterizer
             buffer[row * width + x] = color;
     }
 
+    public const int AgeBarMaxPx = 50;
+    public const int AgePanelHeightPx = 2 * AgeBarMaxPx + 1;
+    public const int AgeZeroLineArgb = unchecked((int)0xFFBDBDBD);
+    private const int AgeDayMinutes = 1440;
+
+    private static readonly (int Minutes, int Px)[] AgeAnchors =
+    {
+        (AgeDayMinutes, 5),
+        (2 * AgeDayMinutes, 10),
+        (5 * AgeDayMinutes, 15),
+        (10 * AgeDayMinutes, 20),
+        (20 * AgeDayMinutes, 30),
+        (40 * AgeDayMinutes, 40),
+        (80 * AgeDayMinutes, 50),
+    };
+
+    public static int AgeBarHeightPx(int ageMinutes)
+    {
+        long a = Math.Abs((long)ageMinutes);
+        if (a == 0) return 0;
+        if (a >= AgeAnchors[^1].Minutes) return AgeBarMaxPx;
+        var (firstMinutes, firstPx) = AgeAnchors[0];
+        if (a <= firstMinutes)
+            return Math.Max(1, (int)Math.Round(
+                firstPx * Math.Log(1 + (double)a) / Math.Log(1 + (double)firstMinutes)));
+        for (int i = 1; i < AgeAnchors.Length; i++)
+        {
+            var (hiMinutes, hiPx) = AgeAnchors[i];
+            if (a > hiMinutes) continue;
+            var (loMinutes, loPx) = AgeAnchors[i - 1];
+            double t = Math.Log((double)a / loMinutes) / Math.Log((double)hiMinutes / loMinutes);
+            return (int)Math.Round(loPx + (hiPx - loPx) * t);
+        }
+        return AgeBarMaxPx;
+    }
+
+    public static void DrawAgePanel(int[] buffer, int width, int height, AgeColumn[] columns,
+        int bottomRow, int colorArgb)
+    {
+        int top = bottomRow - AgePanelHeightPx + 1;
+        if (top < 0 || bottomRow >= height) return;
+        int zeroRow = bottomRow - AgeBarMaxPx;
+        for (int x = 0; x < width; x++)
+        {
+            buffer[zeroRow * width + x] = AgeZeroLineArgb;
+            var col = x < columns.Length ? columns[x] : default;
+            int upH = AgeBarHeightPx(col.Up);
+            for (int row = zeroRow - upH; row < zeroRow; row++)
+                buffer[row * width + x] = colorArgb;
+            int downH = AgeBarHeightPx(col.Down);
+            for (int row = zeroRow + 1; row <= zeroRow + downH; row++)
+                buffer[row * width + x] = colorArgb;
+        }
+    }
+
     public static void DrawVerticalDashed(int[] buffer, int width, int height,
         int x, int color, int on, int period)
     {
@@ -145,6 +200,23 @@ public static class ChartRasterizer
         for (int y = 0; y < height; y++)
             if (period <= 1 || y % period < on)
                 buffer[y * width + x] = color;
+    }
+
+    public static void DrawDownTriangle(int[] buffer, int width, int height,
+        int x, int topY, int halfWidth, int rows, int color)
+    {
+        if (halfWidth < 0 || rows < 1 || x < 0 || x >= width) return;
+        for (int row = 0; row < rows; row++)
+        {
+            int y = topY + row;
+            if (y < 0) continue;
+            if (y >= height) return;
+            int span = rows == 1 ? 0 : (int)Math.Round(
+                halfWidth * (double)(rows - 1 - row) / (rows - 1), MidpointRounding.AwayFromZero);
+            int from = Math.Max(0, x - span);
+            int to = Math.Min(width - 1, x + span);
+            for (int px = from; px <= to; px++) buffer[y * width + px] = color;
+        }
     }
 
     public static void DrawSegment(int[] buffer, int width, int height,
