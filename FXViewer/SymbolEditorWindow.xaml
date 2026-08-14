@@ -201,7 +201,7 @@
                 <ComboBox x:Name="Density9Unit" Width="90" Height="26" VerticalContentAlignment="Center"
                           Margin="8,0,0,0" />
             </StackPanel>
-            <TextBlock Text="lookback per option, keys 1-9 switch on the chart"
+            <TextBlock Text="lookback per option, keys 1-9 switch on the chart, 0 = all history"
                        Margin="0,6,0,0" Foreground="Gray" />
         </StackPanel>
 

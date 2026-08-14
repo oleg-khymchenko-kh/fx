@@ -26,8 +26,9 @@ Nine lookback options, each a period plus a unit (Minutes / Hours /
 Days). Defaults, in trading days: 1, 2, 5, 10, 20, 40, 60, 120, 240
 (a trading month is 20 trading days, so 60 is 3 months, 120 half a
 trading year, 240 a trading year). Keys 1-9 on the chart switch the
-active option at runtime. Plus the source symbol (a pair or a USD
-Index symbol) and the color.
+active option at runtime; key 0 is a fixed tenth option that uses the
+whole history. Plus the source symbol (a pair or a USD Index symbol)
+and the color.
 
 ## Definition
 
@@ -47,7 +48,11 @@ Index symbol) and the color.
 - Live provisional candles are not in the dense array, so they are not
   counted.
 - Only loaded history counts: if lazy loading has not brought the whole
-  window into memory, the profile uses what is loaded.
+  window into memory, the profile uses what is loaded. Picking the
+  all-history option (key 0) asks the loader for the full history of
+  every Density source (`EnsureFullAsync`), and the profile refreshes
+  as the years splice in; the same request runs at startup when the
+  saved selection is the all option.
 
 ## Algorithm
 
@@ -55,7 +60,9 @@ Index symbol) and the color.
 adds +1 at its low pip and -1 after its high pip, one prefix pass turns
 that into counts and the maximum. Cost is two array writes per bar plus
 one pass over the pip range - a 20 day window is about 29k bars, a
-trading year about 346k, still millisecond scale. Nothing is
+trading year about 346k, still millisecond scale. The all-history
+option scans every loaded bar (a 15 year pair is roughly 5.6M bars,
+around 10-30 ms), which is still fine per column change. Nothing is
 precomputed or cached; the histogram is
 rebuilt from scratch on every anchor change, which is fast enough for
 mouse-move updates without any debounce.
@@ -82,8 +89,10 @@ follows the mouse instantly:
   data load, tab switch).
 - Keys 1-9 and `MouseLeave` recompute immediately.
 
-Each pixel row maps to its pip range through `YToDisplay` (series
-offset chain and flatten shift at the anchor time included) and takes
+Each pixel row maps to its pip range through `YToDisplay` (the source
+symbol's offset chain and flatten shift at the anchor time included;
+the density row's own drag offset is ignored, so the profile always
+lines up with the source price line) and takes
 the biggest count among its pips. Bar length is `count / maxCount` of
 the window times 120 px; the fill is the indicator color at alpha 96
 (`DensityFillAlpha`) with an opaque pixel at the left edge of each bar.
@@ -101,13 +110,17 @@ also in the align-to-selection excluded set.
 
 ## Runtime switching
 
-Keys 1-9 (digit row and numpad) are handled in the ChartView KeyDown
+Keys 0-9 (digit row and numpad) are handled in the ChartView KeyDown
 lambda, so they work whenever the mouse is over the chart. The keys are
 consumed only when at least one Density indicator exists. The switch is
-global: every Density indicator follows the same selected index. The
-overlay and labels update at once; `DensitySelectedChanged` then writes
-`DensitySelected` into every Density indicator and saves config.json,
-so the choice survives restarts.
+global: every Density indicator follows the same selected index. Key 0
+selects the all-history option: internally the selected index equals
+`DensityWindows.Length` (`IndicatorSymbol.DensityAllOption`), the
+window becomes unbounded and the label shows `0: all`. The overlay and
+labels update at once; `DensitySelectedChanged` then writes
+`DensitySelected` into every Density indicator, saves config.json (so
+the choice survives restarts) and, for the all option, kicks off a
+full-history load of every Density source.
 
 ## Creation, compute and refresh
 
@@ -123,8 +136,8 @@ Deleting the indicator removes the config entry.
 
 - Live candles are not counted; the profile ends at the last stored
   minute.
-- A window reaching into unloaded years is silently truncated; no
-  background load is requested for it.
+- A finite window reaching into unloaded years is silently truncated;
+  only the all-history option (key 0) requests a full load.
 - No numeric scale on the profile, only relative lengths, and no
   tooltip with the exact count.
 - The symbol bar row prints a meaningless price for the density row.

@@ -1300,7 +1300,7 @@ public sealed class ChartView : Grid
         foreach (var s in series)
             if (s.DensityPanel && s.DensityWindows is { Length: > 0 })
             {
-                _densitySelected = Math.Clamp(s.DensitySelected, 0, s.DensityWindows.Length - 1);
+                _densitySelected = Math.Clamp(s.DensitySelected, 0, s.DensityWindows.Length);
                 break;
             }
         _densityAnchorColumn = long.MinValue;
@@ -2713,6 +2713,7 @@ public sealed class ChartView : Grid
         Key.D7 or Key.NumPad7 => 6,
         Key.D8 or Key.NumPad8 => 7,
         Key.D9 or Key.NumPad9 => 8,
+        Key.D0 or Key.NumPad0 => 9,
         _ => null,
     };
 
@@ -2761,11 +2762,14 @@ public sealed class ChartView : Grid
         {
             var minutes = GetSeries(s.SourceSymbol!)?.History.Minutes;
             if (minutes == null || minutes.Length == 0) continue;
-            int option = Math.Clamp(_densitySelected, 0, s.DensityWindows!.Length - 1);
-            var histogram = DensityProfile.Build(minutes, anchorUnix, s.DensityWindows[option]);
+            int option = Math.Clamp(_densitySelected, 0, s.DensityWindows!.Length);
+            int window = option == s.DensityWindows.Length
+                ? int.MaxValue
+                : s.DensityWindows[option];
+            var histogram = DensityProfile.Build(minutes, anchorUnix, window);
             if (histogram.MaxCount <= 0) continue;
             DrawDensity(_densityStaging, DensityMaxWidthPx, ph, histogram,
-                SeriesOffset(s.Symbol), anchorUnix, s.ColorArgb);
+                SeriesOffset(s.SourceSymbol!), anchorUnix, s.ColorArgb);
             drew = true;
         }
         if (_densityBmp == null || _densityBmp.PixelWidth != DensityMaxWidthPx
@@ -2842,8 +2846,10 @@ public sealed class ChartView : Grid
         {
             var s = panels[i];
             var label = (TextBlock)_densityLabelPanel.Children[i];
-            int option = Math.Clamp(_densitySelected, 0, s.DensityWindows!.Length - 1);
-            label.Text = $"{s.Symbol} {option + 1}: {FormatDensityWindow(s.DensityWindows[option])}";
+            int option = Math.Clamp(_densitySelected, 0, s.DensityWindows!.Length);
+            label.Text = option == s.DensityWindows.Length
+                ? $"{s.Symbol} 0: all"
+                : $"{s.Symbol} {option + 1}: {FormatDensityWindow(s.DensityWindows[option])}";
             label.Foreground = BrushFor(s.ColorArgb);
         }
         _densityLabelPanel.Visibility = Visibility.Visible;

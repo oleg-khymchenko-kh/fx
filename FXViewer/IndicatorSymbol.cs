@@ -46,6 +46,7 @@ public sealed class IndicatorSymbol
     public const int DefaultFindZoomPercent = 50;
     public const int DefaultFindStepMinutes = 60;
     public const int DensityOptionCount = 9;
+    public const int DensityAllOption = DensityOptionCount;
 
     public static readonly int[] DefaultDensityPeriods = { 1, 2, 5, 10, 20, 40, 60, 120, 240 };
 

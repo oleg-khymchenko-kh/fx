@@ -100,6 +100,21 @@ public sealed class CTraderClient : IAsyncDisposable
         return ParseResponse(msg, ProtoOAGetTrendbarsRes.Parser, ProtoOAPayloadType.ProtoOaGetTrendbarsRes);
     }
 
+    public async Task<ProtoOAGetTickDataRes> GetTickDataAsync(
+        long accountId, long symbolId, ProtoOAQuoteType type, long fromMs, long toMs, CancellationToken ct)
+    {
+        var req = new ProtoOAGetTickDataReq
+        {
+            CtidTraderAccountId = accountId,
+            SymbolId = symbolId,
+            Type = type,
+            FromTimestamp = fromMs,
+            ToTimestamp = toMs
+        };
+        var msg = await RequestAsync((uint)req.PayloadType, req, ct);
+        return ParseResponse(msg, ProtoOAGetTickDataRes.Parser, ProtoOAPayloadType.ProtoOaGetTickdataRes);
+    }
+
     public async Task<ProtoOADealListRes> GetDealsAsync(
         long accountId, long fromMs, long toMs, CancellationToken ct)
     {

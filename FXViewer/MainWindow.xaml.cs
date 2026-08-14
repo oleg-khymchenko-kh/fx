@@ -20,6 +20,7 @@ public partial class MainWindow : Window, INotesHost
     {
         ("EURUSD", unchecked((int)0xFF3366DD), false, 10, 1),
         ("GBPUSD", unchecked((int)0xFFD32F2F), false, 10, 1),
+        ("GBPUSD-ASK", unchecked((int)0xFF00A000), false, 10, 1),
         ("EURGBP", unchecked((int)0xFF0097A7), false, 10, 1),
         ("USDCHF", unchecked((int)0xFF7B1FA2), true, 10, 1),
         ("USDJPY", unchecked((int)0xFFB8860B), true, 1000, 1),
@@ -33,6 +34,13 @@ public partial class MainWindow : Window, INotesHost
     {
         ["GER40"] = new[] { "GERMANY40", "DE40", "DAX40" },
     };
+
+    private static readonly Dictionary<string, string> AskSources = new()
+    {
+        ["GBPUSD-ASK"] = "GBPUSD",
+    };
+
+    private static bool IsAskSymbol(string symbol) => AskSources.ContainsKey(symbol);
 
     private static readonly (string Symbol, int ColorArgb, int LimitPips)[] DerivedSymbolConfigs =
     {
@@ -237,6 +245,7 @@ public partial class MainWindow : Window, INotesHost
     private readonly Dictionary<string, long> _pendingAverageRedo = new(StringComparer.Ordinal);
     private readonly Dictionary<string, LiveState> _live = new();
     private readonly Dictionary<long, string> _idToSymbol = new();
+    private readonly Dictionary<long, string> _idToAskSymbol = new();
     private Dictionary<string, (long LastUnix, long MirrorBase, int PipPoints)> _baseInfo = new();
     private ConnState _connState = ConnState.Offline;
     private bool _firstSpotLogged;
@@ -282,6 +291,10 @@ public partial class MainWindow : Window, INotesHost
                     changed = true;
                 }
             if (changed) _config.Save();
+            if (option >= IndicatorSymbol.DensityAllOption && _loader != null)
+                foreach (var ind in _config.Indicators)
+                    if (IndicatorTypes.IsDensity(ind.Type))
+                        _ = _loader.EnsureFullAsync(ind.Source, "density all history");
         };
         SymbolBar.PriceOffsetWheel += Chart.ShiftSeriesOffset;
         SymbolBar.TimeShiftWheel += (symbol, delta, fine) =>
@@ -754,6 +767,10 @@ public partial class MainWindow : Window, INotesHost
                 AppendLog, OnMirrorBaseComputed);
             loader.JobsChanged += () => Dispatcher.BeginInvoke((Action)RefreshLoadIndicator);
             _loader = loader;
+            foreach (var ind in indicators)
+                if (IndicatorTypes.IsDensity(ind.Type)
+                    && ind.DensitySelected >= IndicatorSymbol.DensityAllOption)
+                    _ = loader.EnsureFullAsync(ind.Source, "density all history");
             AppendLog($"Chart load: UI setup {swUi.ElapsedMilliseconds} ms; total {swTotal.ElapsedMilliseconds} ms (first paint follows ~200 ms later)");
         }
         catch (OperationCanceledException)
@@ -1025,15 +1042,16 @@ public partial class MainWindow : Window, INotesHost
             _symbolIds.Clear();
             foreach (var (name, _, _, _, _) in SymbolConfigs)
             {
-                var found = symbols.FirstOrDefault(s => Normalize(s.SymbolName) == name);
-                if (found == null && BrokerAliases.TryGetValue(name, out var aliases))
+                var brokerName = AskSources.TryGetValue(name, out var askSource) ? askSource : name;
+                var found = symbols.FirstOrDefault(s => Normalize(s.SymbolName) == brokerName);
+                if (found == null && BrokerAliases.TryGetValue(brokerName, out var aliases))
                     found = aliases
                         .Select(a => symbols.FirstOrDefault(s => Normalize(s.SymbolName) == a))
                         .FirstOrDefault(s => s != null);
                 if (found == null)
                 {
-                    var letters = new string(name.Where(char.IsLetter).Take(3).ToArray());
-                    var digits = new string(name.Where(char.IsDigit).ToArray());
+                    var letters = new string(brokerName.Where(char.IsLetter).Take(3).ToArray());
+                    var digits = new string(brokerName.Where(char.IsDigit).ToArray());
                     var similar = symbols
                         .Select(s => s.SymbolName)
                         .Where(n => (letters.Length > 0
@@ -1048,9 +1066,11 @@ public partial class MainWindow : Window, INotesHost
                     continue;
                 }
                 _symbolIds[name] = found.SymbolId;
-                AppendLog(Normalize(found.SymbolName) == name
-                    ? $"{name} symbolId = {found.SymbolId}"
-                    : $"{name} symbolId = {found.SymbolId} (broker name {found.SymbolName})");
+                AppendLog(IsAskSymbol(name)
+                    ? $"{name} symbolId = {found.SymbolId} (ask side of {found.SymbolName})"
+                    : Normalize(found.SymbolName) == name
+                        ? $"{name} symbolId = {found.SymbolId}"
+                        : $"{name} symbolId = {found.SymbolId} (broker name {found.SymbolName})");
             }
             if (_symbolIds.Count == 0)
             {
@@ -1082,10 +1102,12 @@ public partial class MainWindow : Window, INotesHost
         try
         {
             _idToSymbol.Clear();
+            _idToAskSymbol.Clear();
             _live.Clear();
             foreach (var (name, id) in _symbolIds)
             {
-                _idToSymbol[id] = name;
+                if (IsAskSymbol(name)) _idToAskSymbol[id] = name;
+                else _idToSymbol[id] = name;
                 if (_baseInfo.TryGetValue(name, out var bi))
                     _live[name] = new LiveState
                     {
@@ -1094,7 +1116,8 @@ public partial class MainWindow : Window, INotesHost
                         PipPoints = bi.PipPoints,
                     };
             }
-            await client.SubscribeSpotsAsync(_accountId, _symbolIds.Values.ToList(), CancellationToken.None);
+            await client.SubscribeSpotsAsync(
+                _accountId, _symbolIds.Values.Distinct().ToList(), CancellationToken.None);
             SetStatus($"Streaming {_live.Count} pairs");
             SetConnState(ConnState.Online);
             _liveFlushTimer.Start();
@@ -1199,9 +1222,13 @@ public partial class MainWindow : Window, INotesHost
                 (int Total, long EarliestUnix) written;
                 try
                 {
-                    written = await Task.Run(() => HistoryDownloader.DownloadRangeToDbAsync(
-                        client, _accountId, symbolId, range.Symbol, db,
-                        range.FromUtc, range.ToUtc, _ => { }, ct, SymbolPriceDiv(range.Symbol)), ct);
+                    written = await Task.Run(() => IsAskSymbol(range.Symbol)
+                        ? AskHistoryDownloader.DownloadRangeToDbAsync(
+                            client, _accountId, symbolId, range.Symbol, db,
+                            range.FromUtc, range.ToUtc, _ => { }, ct, SymbolPriceDiv(range.Symbol))
+                        : HistoryDownloader.DownloadRangeToDbAsync(
+                            client, _accountId, symbolId, range.Symbol, db,
+                            range.FromUtc, range.ToUtc, _ => { }, ct, SymbolPriceDiv(range.Symbol)), ct);
                 }
                 catch (OperationCanceledException)
                 {
@@ -1335,25 +1362,33 @@ public partial class MainWindow : Window, INotesHost
         SetConnState(ConnState.Downloading);
         bool wrote = false;
         bool reload = false;
+        bool newSymbolData = false;
         try
         {
             var db = GetDb();
             foreach (var (symbol, _, _, _, priceDiv) in SymbolConfigs)
             {
                 if (!_symbolIds.TryGetValue(symbol, out var symbolId)) continue;
-                var (written, earliest) = await Task.Run(() => recentOnly
-                    ? HistoryDownloader.DownloadTailToDbAsync(
+                if (IsAskSymbol(symbol) && !recentOnly)
+                    AppendLog($"{symbol}: server has no ask trendbars, downloading recent ask ticks instead");
+                var (written, earliest) = await Task.Run(() => IsAskSymbol(symbol)
+                    ? AskHistoryDownloader.DownloadTailToDbAsync(
                         client, _accountId, symbolId, symbol, db,
                         m => Dispatcher.BeginInvoke(() => AppendLog(m)), ct, priceDiv)
-                    : HistoryDownloader.DownloadM1ToDbAsync(
-                        client, _accountId, symbolId, symbol, db,
-                        m => Dispatcher.BeginInvoke(() => AppendLog(m)), ct, priceDiv), ct);
+                    : recentOnly
+                        ? HistoryDownloader.DownloadTailToDbAsync(
+                            client, _accountId, symbolId, symbol, db,
+                            m => Dispatcher.BeginInvoke(() => AppendLog(m)), ct, priceDiv)
+                        : HistoryDownloader.DownloadM1ToDbAsync(
+                            client, _accountId, symbolId, symbol, db,
+                            m => Dispatcher.BeginInvoke(() => AppendLog(m)), ct, priceDiv), ct);
                 AppendLog($"{symbol}: {written} minutes written to DB");
                 if (written == 0 || earliest == 0) continue;
+                if (!_baseInfo.ContainsKey(symbol)) newSymbolData = true;
                 wrote = true;
                 QueueAverageRedo(symbol, earliest);
             }
-            reload = !recentOnly || _baseInfo.Count == 0;
+            reload = !recentOnly || _baseInfo.Count == 0 || newSymbolData;
         }
         catch (OperationCanceledException)
         {
@@ -1576,30 +1611,39 @@ public partial class MainWindow : Window, INotesHost
     {
         Dispatcher.BeginInvoke(() =>
         {
-            if (!_idToSymbol.TryGetValue(spot.SymbolId, out var symbol)) return;
+            bool hasBidName = _idToSymbol.TryGetValue(spot.SymbolId, out var symbol);
+            bool hasAskName = _idToAskSymbol.TryGetValue(spot.SymbolId, out var askSymbol);
+            if (!hasBidName && !hasAskName) return;
             if (!_firstSpotLogged)
             {
                 _firstSpotLogged = true;
-                AppendLog($"First live spot received ({symbol})");
+                AppendLog($"First live spot received ({(hasBidName ? symbol : askSymbol)})");
             }
-            if (spot.HasBid)
+            if (hasBidName && spot.HasBid)
             {
-                int div = SymbolPriceDiv(symbol);
+                int div = SymbolPriceDiv(symbol!);
                 int bidPoints = (int)(((long)spot.Bid + div / 2) / div);
-                FeedLive(symbol, bidPoints);
-                SymbolBar.SetLastPrice(symbol, bidPoints);
+                FeedLive(symbol!, bidPoints);
+                SymbolBar.SetLastPrice(symbol!, bidPoints);
                 if (symbol == "EURUSD")
                 {
                     _lastBid = spot.Bid;
                     BidText.Text = FormatPrice(spot.Bid);
                 }
             }
-            if (spot.HasAsk && symbol == "EURUSD")
+            if (hasAskName && spot.HasAsk)
+            {
+                int div = SymbolPriceDiv(askSymbol!);
+                int askPoints = (int)(((long)spot.Ask + div / 2) / div);
+                FeedLive(askSymbol!, askPoints);
+                SymbolBar.SetLastPrice(askSymbol!, askPoints);
+            }
+            if (hasBidName && spot.HasAsk && symbol == "EURUSD")
             {
                 _lastAsk = spot.Ask;
                 AskText.Text = FormatPrice(spot.Ask);
             }
-            if (symbol == "EURUSD" && _lastBid.HasValue && _lastAsk.HasValue)
+            if (hasBidName && symbol == "EURUSD" && _lastBid.HasValue && _lastAsk.HasValue)
             {
                 var pips = ((long)_lastAsk.Value - (long)_lastBid.Value) / 10.0;
                 SpreadText.Text = pips.ToString("0.0", CultureInfo.InvariantCulture);
@@ -1726,6 +1770,18 @@ public partial class MainWindow : Window, INotesHost
 
     private void ReconcileLive()
     {
+        foreach (var (symbol, bi) in _baseInfo)
+        {
+            if (_live.ContainsKey(symbol)) continue;
+            if (!_symbolIds.ContainsKey(symbol)) continue;
+            if (_idToSymbol.Count == 0 && _idToAskSymbol.Count == 0) continue;
+            _live[symbol] = new LiveState
+            {
+                BaseLastUnix = bi.LastUnix,
+                MirrorBase = bi.MirrorBase,
+                PipPoints = bi.PipPoints,
+            };
+        }
         foreach (var (symbol, s) in _live)
         {
             if (_baseInfo.TryGetValue(symbol, out var bi))
@@ -1756,6 +1812,7 @@ public partial class MainWindow : Window, INotesHost
                 Chart.SetLiveTail(ind.Name, Array.Empty<Candle>());
         _live.Clear();
         _idToSymbol.Clear();
+        _idToAskSymbol.Clear();
         _firstSpotLogged = false;
     }
 
