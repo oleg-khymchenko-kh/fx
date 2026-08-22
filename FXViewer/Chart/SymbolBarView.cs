@@ -20,7 +20,9 @@ public sealed class SymbolBarView : FrameworkElement
     private const double AddInnerPadY = 2;
     private const string AddLabel = "+ Add";
     private const string CalendarLabel = "Calendar";
+    private const string ForecastLabel = "Forecast";
     private const string WeekendsLabel = "No weekends";
+    private const string SessionsLabel = "Sessions";
     private const string UnflattenLabel = "Unflatten";
     private const double TiltedButtonSizeDip = 16;
     private const double TiltedButtonGapDip = 3;
@@ -45,6 +47,10 @@ public sealed class SymbolBarView : FrameworkElement
     private readonly HashSet<string> _indicatorSymbols = new();
     private readonly HashSet<string> _drawingSymbols = new();
     private readonly HashSet<string> _shiftSymbols = new();
+    private readonly HashSet<string> _spreadSymbols = new();
+    private readonly Dictionary<string, (int GroupMinutes, bool Locked)> _volumeGroups = new();
+    private readonly HashSet<string> _densitySymbols = new();
+    private readonly Dictionary<string, int> _averageWindows = new();
     private readonly HashSet<string> _sourcedSymbols = new();
     private readonly HashSet<string> _standaloneSymbols = new();
     private readonly Dictionary<string, List<string>> _alignableBySource = new();
@@ -53,10 +59,13 @@ public sealed class SymbolBarView : FrameworkElement
     private readonly HashSet<string> _collapsedSources = new();
     private readonly List<int> _visibleRows = new();
     private double[]? _cursorPrices;
-    private int _measuredTextLength;
+    private double[]? _cursorDeltas;
     private bool _calendarPresent;
     private bool _calendarEnabled;
+    private bool _forecastPresent;
+    private bool _forecastEnabled;
     private bool _weekendsHidden;
+    private bool _sessionsVisible;
     private bool _flattenActive;
     private int _tiltedUpIndex;
     private int _tiltedDownIndex;
@@ -65,6 +74,10 @@ public sealed class SymbolBarView : FrameworkElement
 
     public event Action<string, int>? PriceOffsetWheel;
     public event Action<string, int, bool>? TimeShiftWheel;
+    public event Action<string, int>? VolumeScaleWheel;
+    public event Action<string, int>? VolumeGroupWheel;
+    public event Action<string, int>? DensityScaleWheel;
+    public event Action<string, int, bool>? AveragePeriodWheel;
     public event Action<string>? SymbolClick;
     public event Action<string>? CollapseToggled;
     public event Action<string>? AlignToGrid;
@@ -77,12 +90,16 @@ public sealed class SymbolBarView : FrameworkElement
     public event Action<string>? RefreshSymbolRequested;
     public event Action<string>? RebuildSymbolRequested;
     public event Action<string>? DrawRequested;
+    public event Action<string>? DrawLevelRequested;
     public event Action<string>? FindRequested;
     public event Action<string>? ShowResultsRequested;
     public event Action? CalendarClick;
+    public event Action? ForecastClick;
+    public event Action? ForecastReloadRequested;
     public event Action? CalendarSettingsRequested;
     public event Action? CalendarFindRequested;
     public event Action? WeekendsClick;
+    public event Action? SessionsClick;
     public event Action? UnflattenClick;
     public event Action<bool, int>? TiltedGridSelected;
     public event Action? TiltedGridSettingsRequested;
@@ -107,6 +124,28 @@ public sealed class SymbolBarView : FrameworkElement
                     symbol, e.Delta, (Keyboard.Modifiers & ModifierKeys.Control) != 0);
                 return;
             }
+            if (_averageWindows.ContainsKey(symbol))
+            {
+                if ((Keyboard.Modifiers & ModifierKeys.Alt) != 0)
+                    AveragePeriodWheel?.Invoke(
+                        symbol, e.Delta, (Keyboard.Modifiers & ModifierKeys.Control) != 0);
+                return;
+            }
+            if ((Keyboard.Modifiers & ModifierKeys.Control) != 0
+                && (Keyboard.Modifiers & ModifierKeys.Alt) == 0
+                && _densitySymbols.Contains(symbol))
+            {
+                DensityScaleWheel?.Invoke(symbol, e.Delta);
+                return;
+            }
+            if (_volumeGroups.ContainsKey(symbol))
+            {
+                if ((Keyboard.Modifiers & ModifierKeys.Alt) != 0)
+                    VolumeGroupWheel?.Invoke(symbol, e.Delta);
+                else
+                    VolumeScaleWheel?.Invoke(symbol, e.Delta);
+                return;
+            }
             PriceOffsetWheel?.Invoke(symbol, e.Delta);
         };
         MouseLeftButtonDown += (_, e) =>
@@ -122,9 +161,19 @@ public sealed class SymbolBarView : FrameworkElement
                 CalendarClick?.Invoke();
                 return;
             }
+            if (_forecastPresent && RowHit(pos.Y, ForecastRowIndex))
+            {
+                ForecastClick?.Invoke();
+                return;
+            }
             if (RowHit(pos.Y, WeekendsRowIndex))
             {
                 WeekendsClick?.Invoke();
+                return;
+            }
+            if (RowHit(pos.Y, SessionsRowIndex))
+            {
+                SessionsClick?.Invoke();
                 return;
             }
             if (RowHit(pos.Y, TiltedUpRowIndex) || RowHit(pos.Y, TiltedDownRowIndex))
@@ -169,6 +218,16 @@ public sealed class SymbolBarView : FrameworkElement
                 calMenu.IsOpen = true;
                 return;
             }
+            if (_forecastPresent && RowHit(pos.Y, ForecastRowIndex))
+            {
+                e.Handled = true;
+                var fcMenu = new ContextMenu { PlacementTarget = this };
+                var fcReload = new MenuItem { Header = "Reload forecasts" };
+                fcReload.Click += (_, _) => ForecastReloadRequested?.Invoke();
+                fcMenu.Items.Add(fcReload);
+                fcMenu.IsOpen = true;
+                return;
+            }
             if (TiltedRowHit(pos.Y))
             {
                 e.Handled = true;
@@ -191,6 +250,9 @@ public sealed class SymbolBarView : FrameworkElement
                 var draw = new MenuItem { Header = "Draw line" };
                 draw.Click += (_, _) => DrawRequested?.Invoke(symbol);
                 menu.Items.Add(draw);
+                var level = new MenuItem { Header = "Draw level" };
+                level.Click += (_, _) => DrawLevelRequested?.Invoke(symbol);
+                menu.Items.Add(level);
                 menu.Items.Add(new Separator());
             }
             if (_shiftSymbols.Contains(symbol))
@@ -207,25 +269,28 @@ public sealed class SymbolBarView : FrameworkElement
                 menu.Items.Add(show);
                 menu.Items.Add(new Separator());
             }
-            var align = new MenuItem { Header = "Align to grid" };
-            align.Click += (_, _) => AlignToGrid?.Invoke(symbol);
-            menu.Items.Add(align);
-            var autoAlign = new MenuItem { Header = "Auto align" };
-            autoAlign.Click += (_, _) => AutoAlign?.Invoke(symbol);
-            menu.Items.Add(autoAlign);
-            if (_sourcedSymbols.Contains(symbol))
+            if (!_averageWindows.ContainsKey(symbol))
             {
-                var alignSource = new MenuItem { Header = "Align to source" };
-                alignSource.Click += (_, _) => AlignToSource?.Invoke(symbol);
-                menu.Items.Add(alignSource);
+                var align = new MenuItem { Header = "Align to grid" };
+                align.Click += (_, _) => AlignToGrid?.Invoke(symbol);
+                menu.Items.Add(align);
+                var autoAlign = new MenuItem { Header = "Auto align" };
+                autoAlign.Click += (_, _) => AutoAlign?.Invoke(symbol);
+                menu.Items.Add(autoAlign);
+                if (_sourcedSymbols.Contains(symbol))
+                {
+                    var alignSource = new MenuItem { Header = "Align to source" };
+                    alignSource.Click += (_, _) => AlignToSource?.Invoke(symbol);
+                    menu.Items.Add(alignSource);
+                }
+                if (_alignableBySource.TryGetValue(symbol, out var targets) && targets.Count > 0)
+                {
+                    var alignAll = new MenuItem { Header = "Align indicators" };
+                    alignAll.Click += (_, _) => AlignIndicatorsToSource?.Invoke(targets);
+                    menu.Items.Add(alignAll);
+                }
             }
-            if (_alignableBySource.TryGetValue(symbol, out var targets) && targets.Count > 0)
-            {
-                var alignAll = new MenuItem { Header = "Align indicators" };
-                alignAll.Click += (_, _) => AlignIndicatorsToSource?.Invoke(targets);
-                menu.Items.Add(alignAll);
-            }
-            menu.Items.Add(new Separator());
+            if (menu.Items.Count > 0) menu.Items.Add(new Separator());
             bool isIndicator = _indicatorSymbols.Contains(symbol);
             if (!isIndicator || _standaloneSymbols.Contains(symbol))
             {
@@ -260,6 +325,7 @@ public sealed class SymbolBarView : FrameworkElement
 
     private bool OwnsRightClick(Point pos) =>
         (_calendarPresent && RowHit(pos.Y, _visibleRows.Count))
+        || (_forecastPresent && RowHit(pos.Y, ForecastRowIndex))
         || TiltedRowHit(pos.Y)
         || SymbolAt(pos.Y) != null;
 
@@ -282,9 +348,24 @@ public sealed class SymbolBarView : FrameworkElement
         InvalidateVisual();
     }
 
+    public void SetForecastRow(bool present, bool enabled)
+    {
+        bool changed = _forecastPresent != present;
+        _forecastPresent = present;
+        _forecastEnabled = enabled;
+        if (changed) InvalidateMeasure();
+        InvalidateVisual();
+    }
+
     public void SetWeekendsRow(bool hidden)
     {
         _weekendsHidden = hidden;
+        InvalidateVisual();
+    }
+
+    public void SetSessionsRow(bool visible)
+    {
+        _sessionsVisible = visible;
         InvalidateVisual();
     }
 
@@ -337,8 +418,10 @@ public sealed class SymbolBarView : FrameworkElement
         }
     }
 
-    private int WeekendsRowIndex => _visibleRows.Count + (_calendarPresent ? 1 : 0);
-    private int TiltedUpRowIndex => WeekendsRowIndex + 1;
+    private int ForecastRowIndex => _visibleRows.Count + (_calendarPresent ? 1 : 0);
+    private int WeekendsRowIndex => ForecastRowIndex + (_forecastPresent ? 1 : 0);
+    private int SessionsRowIndex => WeekendsRowIndex + 1;
+    private int TiltedUpRowIndex => SessionsRowIndex + 1;
     private int TiltedDownRowIndex => TiltedUpRowIndex + 1;
     private int UnflattenRowIndex => TiltedDownRowIndex + 1;
 
@@ -482,35 +565,75 @@ public sealed class SymbolBarView : FrameworkElement
             var e = _entries[i];
             if (e.Symbol != symbol) continue;
             if (e.LastPricePoints == lastPricePoints) return;
-            int oldLen = Price(e.LastPricePoints, e.Format, e.PriceMul).Length;
-            int newLen = Price(lastPricePoints, e.Format, e.PriceMul).Length;
             _entries[i] = (e.Symbol, lastPricePoints, e.Brush, e.Format, e.PriceMul);
             if (_cursorPrices != null) return;
-            if (newLen != oldLen) InvalidateMeasure();
             InvalidateVisual();
             return;
         }
     }
 
-    public void SetCursorPrices(double[]? prices)
+    public void SetCursorPrices(double[]? prices, double[]? deltas = null)
     {
         _cursorPrices = prices;
-        if (_entries.Count > 0 && TotalTextLength() != _measuredTextLength) InvalidateMeasure();
+        _cursorDeltas = deltas;
+        InvalidateVisual();
+    }
+
+    public void SetSpreadSymbols(IEnumerable<string> symbols)
+    {
+        _spreadSymbols.Clear();
+        foreach (var s in symbols) _spreadSymbols.Add(s);
+        InvalidateVisual();
+    }
+
+    public void SetDensitySymbols(IEnumerable<string> symbols)
+    {
+        _densitySymbols.Clear();
+        foreach (var s in symbols) _densitySymbols.Add(s);
+    }
+
+    public void SetAverageSymbols(IEnumerable<(string Symbol, int WindowMinutes)> symbols)
+    {
+        _averageWindows.Clear();
+        foreach (var (symbol, window) in symbols) _averageWindows[symbol] = Math.Max(1, window);
+        InvalidateMeasure();
+        InvalidateVisual();
+    }
+
+    public void SetAverageWindow(string symbol, int windowMinutes)
+    {
+        if (!_averageWindows.ContainsKey(symbol)) return;
+        _averageWindows[symbol] = Math.Max(1, windowMinutes);
+        InvalidateMeasure();
+        InvalidateVisual();
+    }
+
+    public void SetVolumeSymbols(IEnumerable<(string Symbol, int GroupMinutes, bool Locked)> symbols)
+    {
+        _volumeGroups.Clear();
+        foreach (var (symbol, group, locked) in symbols)
+            _volumeGroups[symbol] = (Math.Max(1, group), locked);
+        InvalidateMeasure();
+        InvalidateVisual();
+    }
+
+    public void SetVolumeGroup(string symbol, int groupMinutes)
+    {
+        if (!_volumeGroups.TryGetValue(symbol, out var current)) return;
+        _volumeGroups[symbol] = (Math.Max(1, groupMinutes), current.Locked);
+        InvalidateMeasure();
         InvalidateVisual();
     }
 
     protected override Size MeasureOverride(Size availableSize)
     {
         double maxWidth = 0;
-        int totalLength = 0;
         foreach (var line in Rows())
         {
-            var ft = Format(line.Text, line.Brush);
+            var ft = Format(line.Widest, line.Brush);
             double w = ft.Width + (line.Group ? GroupButtonGapDip + GroupButtonSizeDip : 0);
             if (w > maxWidth) maxWidth = w;
-            totalLength += line.Text.Length;
         }
-        _measuredTextLength = totalLength;
         if (_connText != null)
         {
             double w = ConnDotDip + ConnDotGapDip + Format(_connText, ConnTextBrush).Width;
@@ -523,8 +646,15 @@ public sealed class SymbolBarView : FrameworkElement
             double calW = Format(CalendarLabel, ConnTextBrush).Width;
             if (calW > maxWidth) maxWidth = calW;
         }
+        if (_forecastPresent)
+        {
+            double fcW = Format(ForecastLabel, ConnTextBrush).Width;
+            if (fcW > maxWidth) maxWidth = fcW;
+        }
         double weekW = Format(WeekendsLabel, ConnTextBrush).Width;
         if (weekW > maxWidth) maxWidth = weekW;
+        double sessionW = Format(SessionsLabel, ConnTextBrush).Width;
+        if (sessionW > maxWidth) maxWidth = sessionW;
         if (TiltedButtonsWidth > maxWidth) maxWidth = TiltedButtonsWidth;
         if (_flattenActive)
         {
@@ -564,9 +694,19 @@ public sealed class SymbolBarView : FrameworkElement
             dc.DrawText(ft, new Point(PadLeftDip, y));
             y += ft.Height + RowGapDip;
         }
+        if (_forecastPresent)
+        {
+            var brush = _forecastEnabled ? ConnTextBrush : DisabledBrush;
+            var ft = Format(ForecastLabel, brush);
+            dc.DrawText(ft, new Point(PadLeftDip, y));
+            y += ft.Height + RowGapDip;
+        }
         var weekFt = Format(WeekendsLabel, _weekendsHidden ? ConnTextBrush : DisabledBrush);
         dc.DrawText(weekFt, new Point(PadLeftDip, y));
         y += weekFt.Height + RowGapDip;
+        var sessionFt = Format(SessionsLabel, _sessionsVisible ? ConnTextBrush : DisabledBrush);
+        dc.DrawText(sessionFt, new Point(PadLeftDip, y));
+        y += sessionFt.Height + RowGapDip;
         double tiltedLineHeight = Format("X", Brushes.Black).Height;
         DrawTiltedButtons(dc, y, tiltedLineHeight, _tiltedUpIndex);
         y += tiltedLineHeight + RowGapDip;
@@ -592,19 +732,85 @@ public sealed class SymbolBarView : FrameworkElement
         }
     }
 
-    private IEnumerable<(string Text, Brush Brush, bool Group, bool Collapsed)> Rows()
+    private static string FormatVolumeGroup(int minutes) =>
+        minutes % 1440 == 0 ? minutes / 1440 + "d"
+        : minutes % 60 == 0 ? minutes / 60 + "h"
+        : minutes + "m";
+
+    private const string SpreadWidest = "00.0";
+    private const string VolumeWidest = "0,000,000  +0,000,000";
+
+    private static string PriceWidest(string format) => new('0', format.Length + 3);
+
+    private IEnumerable<(string Text, string Widest, Brush Brush, bool Group, bool Collapsed)> Rows()
     {
         foreach (int i in _visibleRows)
         {
             var e = _entries[i];
+            var brush = _disabledSymbols.Contains(e.Symbol) ? DisabledBrush : e.Brush;
+            string prefix = Unaligned(e.Symbol) ? "*" : "";
+            if (_spreadSymbols.Contains(e.Symbol))
+            {
+                double pips = _cursorPrices != null && i < _cursorPrices.Length
+                    ? _cursorPrices[i]
+                    : double.NaN;
+                string spreadText = double.IsNaN(pips)
+                    ? "-"
+                    : pips.ToString("0.0", CultureInfo.InvariantCulture);
+                yield return (prefix + e.Symbol + ": " + spreadText,
+                    prefix + e.Symbol + ": " + SpreadWidest, brush,
+                    _groupSymbols.Contains(e.Symbol), _collapsedSources.Contains(e.Symbol));
+                continue;
+            }
+            if (_volumeGroups.TryGetValue(e.Symbol, out var volumeGroup))
+            {
+                double volume = _cursorPrices != null && i < _cursorPrices.Length
+                    ? _cursorPrices[i]
+                    : double.NaN;
+                string volumeText = double.IsNaN(volume)
+                    ? "-"
+                    : ((long)Math.Round(volume)).ToString("N0", CultureInfo.InvariantCulture);
+                double delta = _cursorDeltas != null && i < _cursorDeltas.Length
+                    ? _cursorDeltas[i]
+                    : double.NaN;
+                if (!double.IsNaN(delta))
+                {
+                    long d = (long)Math.Round(delta);
+                    volumeText += "  " + (d >= 0 ? "+" : "-")
+                        + Math.Abs(d).ToString("N0", CultureInfo.InvariantCulture);
+                }
+                string groupText = FormatVolumeGroup(volumeGroup.GroupMinutes)
+                    + (volumeGroup.Locked ? "*" : "");
+                yield return (prefix + e.Symbol + " " + groupText + ": " + volumeText,
+                    prefix + e.Symbol + " " + groupText + ": " + VolumeWidest, brush,
+                    _groupSymbols.Contains(e.Symbol), _collapsedSources.Contains(e.Symbol));
+                continue;
+            }
             double points = _cursorPrices != null && i < _cursorPrices.Length
                 ? _cursorPrices[i]
                 : e.LastPricePoints;
-            var brush = _disabledSymbols.Contains(e.Symbol) ? DisabledBrush : e.Brush;
-            string prefix = Unaligned(e.Symbol) ? "*" : "";
-            yield return (prefix + e.Symbol + ": " + Price(points, e.Format, e.PriceMul), brush,
+            if (_averageWindows.TryGetValue(e.Symbol, out var window))
+            {
+                string windowText = FormatAverageWindow(window);
+                yield return (prefix + e.Symbol + " " + windowText + ": " + Price(points, e.Format, e.PriceMul),
+                    prefix + e.Symbol + " " + windowText + ": " + PriceWidest(e.Format), brush,
+                    _groupSymbols.Contains(e.Symbol), _collapsedSources.Contains(e.Symbol));
+                continue;
+            }
+            yield return (prefix + e.Symbol + ": " + Price(points, e.Format, e.PriceMul),
+                prefix + e.Symbol + ": " + PriceWidest(e.Format), brush,
                 _groupSymbols.Contains(e.Symbol), _collapsedSources.Contains(e.Symbol));
         }
+    }
+
+    private static string FormatAverageWindow(int minutes)
+    {
+        int days = minutes / 1440;
+        int hours = minutes % 1440 / 60;
+        int mins = minutes % 60;
+        return days > 0
+            ? string.Create(CultureInfo.InvariantCulture, $"{days}:{hours:00}:{mins:00}")
+            : string.Create(CultureInfo.InvariantCulture, $"{hours}:{mins:00}");
     }
 
     private void RebuildVisibleRows()
@@ -638,13 +844,6 @@ public sealed class SymbolBarView : FrameworkElement
         _sourcedSymbols.Contains(symbol)
         && !_shiftSymbols.Contains(symbol)
         && IsAlignedToSource?.Invoke(symbol) == false;
-
-    private int TotalTextLength()
-    {
-        int total = 0;
-        foreach (var line in Rows()) total += line.Text.Length;
-        return total;
-    }
 
     private static string Price(double points, string format, int priceMul) =>
         (points * priceMul / 100000.0).ToString(format, CultureInfo.InvariantCulture);

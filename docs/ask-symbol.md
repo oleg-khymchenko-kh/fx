@@ -1,6 +1,6 @@
 # GBPUSD-ASK (ask side of a broker pair)
 
-Status: implemented, v1.
+Status: removed 2026-08-15 - the GBPUSD-ASK pair was deleted from SymbolConfigs; the AskSources machinery stays and a new ask pair is one SymbolConfigs line + one AskSources entry away. The data/GBPUSDASK folder is kept on disk.
 
 ## Goal
 

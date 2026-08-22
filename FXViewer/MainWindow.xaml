@@ -42,6 +42,7 @@
                         <Button x:Name="DownloadCalendarBtn" Content="Download calendar" Width="150" Height="30" Margin="0,0,8,6" Click="DownloadCalendarBtn_Click" />
                         <Button x:Name="BackfillCalendarBtn" Content="Backfill calendar gap" Width="160" Height="30" Margin="0,0,8,6" Click="BackfillCalendarBtn_Click" />
                         <Button x:Name="ExportDealsBtn" Content="Export deals" Width="120" Height="30" Margin="0,0,8,6" Click="ExportDealsBtn_Click" />
+                        <Button x:Name="BackfillSpreadBtn" Content="Backfill spread" Width="130" Height="30" Margin="0,0,8,6" Click="BackfillSpreadBtn_Click" />
                     </WrapPanel>
 
                     <Border Grid.Row="2" BorderBrush="#CCCCCC" BorderThickness="1" Padding="12" Margin="0,0,0,10">

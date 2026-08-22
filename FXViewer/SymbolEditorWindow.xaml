@@ -55,6 +55,7 @@
             <TextBox x:Name="PeriodBox" Width="60" Height="26" VerticalContentAlignment="Center" />
             <ComboBox x:Name="UnitBox" Width="90" Height="26" VerticalContentAlignment="Center" Margin="8,0,0,0" />
             <ComboBox x:Name="DirectionBox" Width="90" Height="26" VerticalContentAlignment="Center" Margin="8,0,0,0" />
+            <CheckBox x:Name="WeightedBox" Content="Volume weighted" VerticalAlignment="Center" Margin="14,0,0,0" />
         </StackPanel>
 
         <StackPanel x:Name="EntryParams" Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,10">
@@ -147,68 +148,129 @@
         </Grid>
 
         <StackPanel x:Name="DensityParams" Grid.Row="3" Grid.Column="1" Margin="0,0,0,10">
+            <StackPanel x:Name="VolumeParams" Orientation="Horizontal" Margin="0,0,0,8">
+                <TextBlock Text="Group, min" VerticalAlignment="Center" Margin="0,0,10,0" />
+                <TextBox x:Name="VolumeGroupBox" Width="60" Height="26" VerticalContentAlignment="Center" />
+                <CheckBox x:Name="VolumeLockBox" Content="Lock (Alt+wheel does not change it)"
+                          VerticalAlignment="Center" Margin="14,0,0,0" />
+                <CheckBox x:Name="VolumeSplitBox" Content="Split ask / bid by color"
+                          VerticalAlignment="Center" Margin="14,0,0,0" />
+            </StackPanel>
             <StackPanel Orientation="Horizontal">
                 <TextBlock Text="Key 1" VerticalAlignment="Center" Width="50" />
                 <TextBox x:Name="Density1Box" Width="60" Height="26" VerticalContentAlignment="Center" />
                 <ComboBox x:Name="Density1Unit" Width="90" Height="26" VerticalContentAlignment="Center"
                           Margin="8,0,0,0" />
+                <TextBox x:Name="Density1Pct" Width="50" Height="26" VerticalContentAlignment="Center"
+                         Margin="12,0,0,0" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                 <TextBlock Text="Key 2" VerticalAlignment="Center" Width="50" />
                 <TextBox x:Name="Density2Box" Width="60" Height="26" VerticalContentAlignment="Center" />
                 <ComboBox x:Name="Density2Unit" Width="90" Height="26" VerticalContentAlignment="Center"
                           Margin="8,0,0,0" />
+                <TextBox x:Name="Density2Pct" Width="50" Height="26" VerticalContentAlignment="Center"
+                         Margin="12,0,0,0" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                 <TextBlock Text="Key 3" VerticalAlignment="Center" Width="50" />
                 <TextBox x:Name="Density3Box" Width="60" Height="26" VerticalContentAlignment="Center" />
                 <ComboBox x:Name="Density3Unit" Width="90" Height="26" VerticalContentAlignment="Center"
                           Margin="8,0,0,0" />
+                <TextBox x:Name="Density3Pct" Width="50" Height="26" VerticalContentAlignment="Center"
+                         Margin="12,0,0,0" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                 <TextBlock Text="Key 4" VerticalAlignment="Center" Width="50" />
                 <TextBox x:Name="Density4Box" Width="60" Height="26" VerticalContentAlignment="Center" />
                 <ComboBox x:Name="Density4Unit" Width="90" Height="26" VerticalContentAlignment="Center"
                           Margin="8,0,0,0" />
+                <TextBox x:Name="Density4Pct" Width="50" Height="26" VerticalContentAlignment="Center"
+                         Margin="12,0,0,0" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                 <TextBlock Text="Key 5" VerticalAlignment="Center" Width="50" />
                 <TextBox x:Name="Density5Box" Width="60" Height="26" VerticalContentAlignment="Center" />
                 <ComboBox x:Name="Density5Unit" Width="90" Height="26" VerticalContentAlignment="Center"
                           Margin="8,0,0,0" />
+                <TextBox x:Name="Density5Pct" Width="50" Height="26" VerticalContentAlignment="Center"
+                         Margin="12,0,0,0" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                 <TextBlock Text="Key 6" VerticalAlignment="Center" Width="50" />
                 <TextBox x:Name="Density6Box" Width="60" Height="26" VerticalContentAlignment="Center" />
                 <ComboBox x:Name="Density6Unit" Width="90" Height="26" VerticalContentAlignment="Center"
                           Margin="8,0,0,0" />
+                <TextBox x:Name="Density6Pct" Width="50" Height="26" VerticalContentAlignment="Center"
+                         Margin="12,0,0,0" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                 <TextBlock Text="Key 7" VerticalAlignment="Center" Width="50" />
                 <TextBox x:Name="Density7Box" Width="60" Height="26" VerticalContentAlignment="Center" />
                 <ComboBox x:Name="Density7Unit" Width="90" Height="26" VerticalContentAlignment="Center"
                           Margin="8,0,0,0" />
+                <TextBox x:Name="Density7Pct" Width="50" Height="26" VerticalContentAlignment="Center"
+                         Margin="12,0,0,0" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                 <TextBlock Text="Key 8" VerticalAlignment="Center" Width="50" />
                 <TextBox x:Name="Density8Box" Width="60" Height="26" VerticalContentAlignment="Center" />
                 <ComboBox x:Name="Density8Unit" Width="90" Height="26" VerticalContentAlignment="Center"
                           Margin="8,0,0,0" />
+                <TextBox x:Name="Density8Pct" Width="50" Height="26" VerticalContentAlignment="Center"
+                         Margin="12,0,0,0" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                 <TextBlock Text="Key 9" VerticalAlignment="Center" Width="50" />
                 <TextBox x:Name="Density9Box" Width="60" Height="26" VerticalContentAlignment="Center" />
                 <ComboBox x:Name="Density9Unit" Width="90" Height="26" VerticalContentAlignment="Center"
                           Margin="8,0,0,0" />
+                <TextBox x:Name="Density9Pct" Width="50" Height="26" VerticalContentAlignment="Center"
+                         Margin="12,0,0,0" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <TextBlock Text="Key 0" VerticalAlignment="Center" Width="50" />
+                <TextBlock Text="all history" VerticalAlignment="Center" Width="158"
+                           Foreground="Gray" />
+                <TextBox x:Name="Density0Pct" Width="50" Height="26" VerticalContentAlignment="Center"
+                         Margin="12,0,0,0" />
+                <TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" />
             </StackPanel>
             <TextBlock Text="lookback per option, keys 1-9 switch on the chart, 0 = all history"
                        Margin="0,6,0,0" Foreground="Gray" />
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                <TextBlock Text="Scale" VerticalAlignment="Center" Width="50" />
+                <TextBox x:Name="DensityScaleBox" Width="90" Height="26"
+                         VerticalContentAlignment="Center" />
+                <TextBlock x:Name="DensityScaleHint" Text="per pixel" VerticalAlignment="Center"
+                           Margin="8,0,0,0" />
+            </StackPanel>
+            <TextBlock Text="right-edge bar length; empty = fit the window. Ctrl+wheel on the chart row changes it, the percents above shrink it per key"
+                       Margin="0,6,0,0" Foreground="Gray" TextWrapping="Wrap" />
         </StackPanel>
 
-        <TextBlock Grid.Row="4" Grid.Column="0" Text="Color" VerticalAlignment="Top" Margin="0,2,10,10" />
-        <Border Grid.Row="4" Grid.Column="1" BorderBrush="#E0E0E0" BorderThickness="1" Padding="3" Margin="0,0,0,10">
-            <UniformGrid x:Name="ColorPanel" Rows="4" HorizontalAlignment="Left" />
-        </Border>
+        <TextBlock x:Name="ColorLabel" Grid.Row="4" Grid.Column="0" Text="Color"
+                   VerticalAlignment="Top" Margin="0,2,10,10" />
+        <StackPanel Grid.Row="4" Grid.Column="1" Margin="0,0,0,10">
+            <Border BorderBrush="#E0E0E0" BorderThickness="1" Padding="3">
+                <UniformGrid x:Name="ColorPanel" Rows="4" HorizontalAlignment="Left" />
+            </Border>
+            <StackPanel x:Name="SellColorBlock" Visibility="Collapsed" Margin="0,8,0,0">
+                <TextBlock x:Name="SellColorLabel" Text="Sell color" Margin="0,0,0,4" />
+                <Border BorderBrush="#E0E0E0" BorderThickness="1" Padding="3">
+                    <UniformGrid x:Name="SellColorPanel" Rows="4" HorizontalAlignment="Left" />
+                </Border>
+            </StackPanel>
+        </StackPanel>
 
         <StackPanel x:Name="ProgressPanel" Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="2"
                     Visibility="Collapsed" Margin="0,0,0,10">

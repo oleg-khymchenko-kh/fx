@@ -1,3 +1,4 @@
+using FXViewer.Compute;
 using FXViewer.Storage;
 
 namespace FXViewer;
@@ -13,6 +14,7 @@ public sealed class IndicatorSymbol
     public int Period { get; set; } = 20;
     public string Unit { get; set; } = IndicatorUnits.Minutes;
     public bool FromFuture { get; set; }
+    public bool AverageWeighted { get; set; }
     public long SourceTimeUnix { get; set; }
     public long ChartTimeUnix { get; set; }
     public bool Flip { get; set; }
@@ -34,8 +36,16 @@ public sealed class IndicatorSymbol
     public List<string> FindZigZagTargets { get; set; } = new();
     public List<int> DensityPeriods { get; set; } = new();
     public List<string> DensityUnits { get; set; } = new();
+    public List<int> DensityScalePercents { get; set; } = new();
+    public double DensityScalePerPixel { get; set; }
     public int DensitySelected { get; set; }
+    public int VolumeGroupMinutes { get; set; } = 1;
+    public double VolumeBarScale { get; set; } = 1;
+    public double VolumeBarUnit { get; set; }
+    public bool VolumeGroupLocked { get; set; }
+    public bool VolumeSplitSides { get; set; } = true;
     public int ColorArgb { get; set; } = unchecked((int)0xFFFF8C00);
+    public int SellColorArgb { get; set; } = unchecked((int)0xFF00ACC1);
 
     public const int DefaultLimit1Pips = 50;
     public const int DefaultLimit2Pips = 20;
@@ -47,6 +57,26 @@ public sealed class IndicatorSymbol
     public const int DefaultFindStepMinutes = 60;
     public const int DensityOptionCount = 9;
     public const int DensityAllOption = DensityOptionCount;
+
+    public static readonly int[] VolumeGroupSteps =
+        { 1, 2, 3, 5, 10, 15, 30, 60, 120, 240, 480, 720, 1440 };
+
+    public int EffectiveVolumeGroupMinutes() => Math.Max(1, VolumeGroupMinutes);
+
+    public static int StepVolumeGroup(int minutes, int delta)
+    {
+        int current = Math.Clamp(minutes, VolumeGroupSteps[0], VolumeGroupSteps[^1]);
+        var steps = VolumeGroupSteps;
+        if (delta > 0)
+        {
+            for (int i = 0; i < steps.Length; i++)
+                if (steps[i] > current) return steps[i];
+            return steps[^1];
+        }
+        for (int i = steps.Length - 1; i >= 0; i--)
+            if (steps[i] < current) return steps[i];
+        return steps[0];
+    }
 
     public static readonly int[] DefaultDensityPeriods = { 1, 2, 5, 10, 20, 40, 60, 120, 240 };
 
@@ -66,6 +96,20 @@ public sealed class IndicatorSymbol
         option < DensityUnits.Count && !string.IsNullOrEmpty(DensityUnits[option])
             ? DensityUnits[option]
             : DefaultDensityUnits[option];
+
+    public const int DefaultDensityScalePercent = 100;
+
+    public int DensityScalePercentAt(int option) =>
+        option >= 0 && option < DensityScalePercents.Count && DensityScalePercents[option] > 0
+            ? DensityScalePercents[option]
+            : DefaultDensityScalePercent;
+
+    public int[] DensityScalePercentValues()
+    {
+        var percents = new int[DensityAllOption + 1];
+        for (int i = 0; i < percents.Length; i++) percents[i] = DensityScalePercentAt(i);
+        return percents;
+    }
 
     public int[] DensityWindowBars()
     {
@@ -91,6 +135,7 @@ public sealed class IndicatorSymbol
         Period = Period,
         Unit = Unit,
         FromFuture = FromFuture,
+        AverageWeighted = AverageWeighted,
         SourceTimeUnix = SourceTimeUnix,
         ChartTimeUnix = ChartTimeUnix,
         Flip = Flip,
@@ -112,8 +157,16 @@ public sealed class IndicatorSymbol
         FindZigZagTargets = new List<string>(FindZigZagTargets),
         DensityPeriods = new List<int>(DensityPeriods),
         DensityUnits = new List<string>(DensityUnits),
+        DensityScalePercents = new List<int>(DensityScalePercents),
+        DensityScalePerPixel = DensityScalePerPixel,
         DensitySelected = DensitySelected,
+        VolumeGroupMinutes = VolumeGroupMinutes,
+        VolumeBarScale = VolumeBarScale,
+        VolumeBarUnit = VolumeBarUnit,
+        VolumeGroupLocked = VolumeGroupLocked,
+        VolumeSplitSides = VolumeSplitSides,
         ColorArgb = ColorArgb,
+        SellColorArgb = SellColorArgb,
     };
 
     public bool SameData(IndicatorSymbol other)
@@ -131,15 +184,27 @@ public sealed class IndicatorSymbol
         if (IndicatorTypes.IsAverage(Type))
             return Period == other.Period
                 && string.Equals(Unit, other.Unit, StringComparison.OrdinalIgnoreCase)
-                && FromFuture == other.FromFuture;
+                && FromFuture == other.FromFuture
+                && AverageWeighted == other.AverageWeighted;
         if (IndicatorTypes.IsEntryPoints(Type))
             return StopLossPips == other.StopLossPips && TakeProfitPips == other.TakeProfitPips;
         if (IndicatorTypes.IsPriceAge(Type)) return true;
         if (IndicatorTypes.IsDrawing(Type) || IndicatorTypes.IsShift(Type)
-            || IndicatorTypes.IsDeals(Type) || IndicatorTypes.IsDensity(Type)) return true;
+            || IndicatorTypes.IsDeals(Type) || IndicatorTypes.IsDensity(Type)
+            || IndicatorTypes.IsSpread(Type) || IndicatorTypes.IsVolume(Type)
+            || IndicatorTypes.IsOrderBook(Type)) return true;
         return Limit1Pips == other.Limit1Pips
             && Limit2Pips == other.Limit2Pips
             && Limit2DelayMinutes == other.Limit2DelayMinutes;
+    }
+
+    public bool RebaseShiftAnchors(long anchorUnix)
+    {
+        if (!IndicatorTypes.IsShift(Type)) return false;
+        if (!ShiftedSymbol.AnchorsBroken(SourceTimeUnix, ChartTimeUnix)) return false;
+        (SourceTimeUnix, ChartTimeUnix) =
+            ShiftedSymbol.Rebase(SourceTimeUnix, ChartTimeUnix, anchorUnix);
+        return true;
     }
 
     public static string NameKey(string name) =>
@@ -168,9 +233,18 @@ public static class IndicatorTypes
     public const string PriceAge = "PriceAge";
     public const string Deals = "Deals";
     public const string Density = "Density";
+    public const string Spread = "Spread";
+    public const string Volume = "Volume";
+    public const string LegacyVolumeProfile = "VolumeProfile";
+    public const string PendingOrders = "PendingOrders";
+    public const string OpenPositions = "OpenPositions";
+    public const string MarketDepth = "MarketDepth";
 
     public static readonly string[] All =
-        { ZigZag, Average, Shift, Drawing, Index, Currency, EntryPoints, PriceAge, Deals, Density };
+    {
+        ZigZag, Average, Shift, Drawing, Index, Currency, EntryPoints, PriceAge, Deals, Density,
+        Spread, Volume, PendingOrders, OpenPositions, MarketDepth,
+    };
 
     public static bool IsDrawing(string type) =>
         string.Equals(type, Drawing, StringComparison.OrdinalIgnoreCase);
@@ -187,8 +261,30 @@ public static class IndicatorTypes
     public static bool IsDensity(string type) =>
         string.Equals(type, Density, StringComparison.OrdinalIgnoreCase);
 
+    public static bool IsSpread(string type) =>
+        string.Equals(type, Spread, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsVolume(string type) =>
+        string.Equals(type, Volume, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsLegacyVolumeProfile(string type) =>
+        string.Equals(type, LegacyVolumeProfile, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsPendingOrders(string type) =>
+        string.Equals(type, PendingOrders, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsOpenPositions(string type) =>
+        string.Equals(type, OpenPositions, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsMarketDepth(string type) =>
+        string.Equals(type, MarketDepth, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsOrderBook(string type) =>
+        IsPendingOrders(type) || IsOpenPositions(type) || IsMarketDepth(type);
+
     public static bool HasStorage(string type) =>
-        !IsDrawing(type) && !IsShift(type) && !IsDeals(type) && !IsDensity(type);
+        !IsDrawing(type) && !IsShift(type) && !IsDeals(type) && !IsDensity(type) && !IsSpread(type)
+        && !IsVolume(type) && !IsOrderBook(type) && !IsAverage(type);
 
     public static bool IsZigZag(string type) =>
         string.Equals(type, ZigZag, StringComparison.OrdinalIgnoreCase);
@@ -214,6 +310,9 @@ public static class IndicatorTypes
         : IsCurrency(type) ? "Currency Index"
         : IsEntryPoints(type) ? "Entry points"
         : IsPriceAge(type) ? "Price age"
+        : IsPendingOrders(type) ? "Pending orders"
+        : IsOpenPositions(type) ? "Open positions"
+        : IsMarketDepth(type) ? "Market depth"
         : type;
 
     public static string FromLabel(string label) =>

@@ -6,13 +6,21 @@ public readonly record struct AgeColumn(int Up, int Down);
 
 public static class PriceAgeColumns
 {
-    public static AgeColumn[] Build(CandleHistory history, int k, long firstBucket, int count,
+    public static AgeColumn[] Build(CandleHistory history, long columnSeconds, long firstBucket, int count,
         WeekendCompressor? map, bool mirror)
     {
         var columns = new AgeColumn[count];
         if (count <= 0) return columns;
-        var edges = ChartColumns.ColumnEdges(map, k, firstBucket, count);
-        int level = ChartColumns.LevelFor(k, map);
+        int run = ChartColumns.MinuteRun(columnSeconds);
+        if (run > 1)
+        {
+            long minuteFirst = ChartColumns.MinuteBucket(firstBucket, run);
+            var minutes = Build(history, ChartColumns.MinuteSeconds, minuteFirst,
+                ChartColumns.MinuteCount(count, run), map, mirror);
+            return ChartColumns.Expand(minutes, minuteFirst, run, firstBucket, count, default);
+        }
+        var edges = ChartColumns.ColumnEdges(map, columnSeconds, firstBucket, count);
+        int level = ChartColumns.LevelFor(columnSeconds, map);
         if (level >= 0) Fill(history.Levels[level], edges, columns);
         else Fill(history.Minutes, edges, columns);
         if (mirror)

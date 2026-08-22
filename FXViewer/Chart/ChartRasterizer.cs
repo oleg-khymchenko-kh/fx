@@ -1,7 +1,8 @@
 namespace FXViewer.Chart;
 
 public readonly record struct ChartPalette(int Background, int Weekend, int GridDay, int GridMonth, int GridYear,
-    int GridPrice100, int GridPrice50, int GridPrice10, int GridTilted = 0, int GridTiltedNear = 0);
+    int GridPrice100, int GridPrice50, int GridPrice10, int GridTilted = 0, int GridTiltedNear = 0,
+    int SessionEurope = 0, int SessionOverlap = 0, int SessionAmerica = 0, int WeekendSession = 0);
 
 public readonly record struct RenderLine(ChartSeries Series, int[] Chosen, int Color, int LastPrice, long LastBucket, double OffsetPoints, double[]? ColumnShift = null, int Width = 1);
 
@@ -22,22 +23,31 @@ public static class ChartRasterizer
     public const int GridPrice10StepPoints = 100;
     public const long DaySeconds = 86400;
     public const long HourSeconds = 3600;
+    public const long MinuteSeconds = 60;
     public const int MinDayGridSpacingPixels = 10;
     public const int MinHourGridSpacingPixels = 10;
+    public const int MinMinuteGridSpacingPixels = 10;
     public const int MinPriceGridSpacingPixels = 20;
 
-    public static bool HourGridVisible(int minutesPerColumn) =>
-        HourSeconds >= MinHourGridSpacingPixels * (minutesPerColumn * 60L);
+    public static bool HourGridVisible(long columnSeconds) =>
+        HourSeconds >= MinHourGridSpacingPixels * columnSeconds;
+
+    public static bool MinuteGridVisible(long columnSeconds) =>
+        columnSeconds > 0 && MinuteSeconds >= MinMinuteGridSpacingPixels * columnSeconds;
+
+    public static bool SessionBandsVisible(long columnSeconds) =>
+        columnSeconds > 0 && columnSeconds <= HourSeconds;
 
     public static void Render(int[] buffer, int width, int height,
         IReadOnlyList<RenderLine> lines, ChartPalette palette,
-        int minutesPerColumn, long startBucket, long[] columnEdges,
-        double topPrice, double pointsPerRow, TiltedGridSettings tiltedGrid = default)
+        long columnSeconds, long startBucket, long[] columnEdges,
+        double topPrice, double pointsPerRow, TiltedGridSettings tiltedGrid = default,
+        bool sessionBands = false)
     {
         Array.Fill(buffer, palette.Background, 0, width * height);
         if (pointsPerRow <= 0) return;
-        DrawGrid(buffer, width, height, minutesPerColumn, startBucket, columnEdges,
-            topPrice, pointsPerRow, palette, tiltedGrid);
+        DrawGrid(buffer, width, height, columnSeconds, startBucket, columnEdges,
+            topPrice, pointsPerRow, palette, tiltedGrid, sessionBands);
         for (int i = 0; i < lines.Count; i++)
             DrawLine(buffer, width, height, lines[i], startBucket, topPrice, pointsPerRow);
         for (int i = 0; i < lines.Count; i++)
@@ -110,7 +120,6 @@ public static class ChartRasterizer
     public const int EntryRowCount = 3;
     public const int EntryPanelHeightPx = EntryRowHeightPx * EntryRowCount;
     public const int EntryPanelGapPx = 2;
-    public const int EntryPanelBottomMarginPx = 10;
     public const int EntryBuyArgb = unchecked((int)0xFF2E7D32);
     public const int EntryBothLostArgb = unchecked((int)0xFF000000);
     public const int EntrySellArgb = unchecked((int)0xFFE65100);
@@ -191,6 +200,70 @@ public static class ChartRasterizer
             for (int row = zeroRow + 1; row <= zeroRow + downH; row++)
                 buffer[row * width + x] = colorArgb;
         }
+    }
+
+    public const int SpreadBarMaxPx = 40;
+    public const int SpreadPanelHeightPx = SpreadBarMaxPx + 1;
+    public const int SpreadBaseLineArgb = unchecked((int)0xFFBDBDBD);
+
+    public static int SpreadBarHeightPx(int tenths)
+    {
+        if (tenths < 0) return 0;
+        int px = (tenths + 5) / 10;
+        if (px < 1) px = 1;
+        return Math.Min(px, SpreadBarMaxPx);
+    }
+
+    public static void DrawSpreadPanel(int[] buffer, int width, int height, int[] columns,
+        int bottomRow, int colorArgb)
+    {
+        int top = bottomRow - SpreadPanelHeightPx + 1;
+        if (top < 0 || bottomRow >= height) return;
+        for (int x = 0; x < width; x++)
+        {
+            buffer[bottomRow * width + x] = SpreadBaseLineArgb;
+            int tenths = x < columns.Length ? columns[x] : -1;
+            int h = SpreadBarHeightPx(tenths);
+            for (int row = bottomRow - h; row < bottomRow; row++)
+                buffer[row * width + x] = colorArgb;
+        }
+    }
+
+    public const int VolumeBarMaxPx = 40;
+    public const int VolumePanelHeightPx = VolumeBarMaxPx;
+
+    public static double DrawVolumePanel(int[] buffer, int width, int height, VolumeColumnSet columns,
+        int bottomRow, int colorArgb, double scale, int bidColorArgb, double unit)
+    {
+        int top = bottomRow - VolumePanelHeightPx + 1;
+        if (top < 0 || bottomRow >= height) return 0;
+        var total = columns.Total;
+        if (!(unit > 0))
+        {
+            long max = 0;
+            for (int x = 0; x < width && x < total.Length; x++)
+                if (total[x] > max) max = total[x];
+            if (max <= 0) return 0;
+            unit = max;
+        }
+        for (int x = 0; x < width; x++)
+        {
+            long v = x < total.Length ? total[x] : -1;
+            if (v < 0) continue;
+            double px = v * VolumeBarMaxPx * scale / unit;
+            int h = px >= bottomRow ? bottomRow : px < 1 ? 1 : (int)Math.Round(px);
+            long bid = bidColorArgb != 0 && x < columns.Bid.Length ? columns.Bid[x] : 0;
+            long sides = bid + (x < columns.Ask.Length ? columns.Ask[x] : 0);
+            int bidRows = bid <= 0 || sides <= 0
+                ? 0
+                : Math.Min(h, (int)Math.Round((double)bid * h / sides));
+            int barTop = bottomRow - h + 1;
+            for (int row = barTop + bidRows; row <= bottomRow; row++)
+                buffer[row * width + x] = colorArgb;
+            for (int row = barTop; row < barTop + bidRows; row++)
+                buffer[row * width + x] = bidColorArgb;
+        }
+        return unit;
     }
 
     public static void DrawVerticalDashed(int[] buffer, int width, int height,
@@ -300,6 +373,22 @@ public static class ChartRasterizer
         }
     }
 
+    public static void FillRightTriangle(int[] buffer, int width, int height,
+        int cx, int cy, int half, int color)
+    {
+        for (int dx = -half; dx <= half; dx++)
+        {
+            int x = cx + dx;
+            if (x < 0 || x >= width) continue;
+            int span = (half - dx) / 2;
+            for (int dy = -span; dy <= span; dy++)
+            {
+                int y = cy + dy;
+                if (y >= 0 && y < height) buffer[y * width + x] = color;
+            }
+        }
+    }
+
     public static void FillDisc(int[] buffer, int width, int height,
         int cx, int cy, int radius, int color)
     {
@@ -311,6 +400,55 @@ public static class ChartRasterizer
             for (int dx = -radius; dx <= radius; dx++)
             {
                 if (dx * dx + dy * dy > r2) continue;
+                int x = cx + dx;
+                if (x >= 0 && x < width) buffer[y * width + x] = color;
+            }
+        }
+    }
+
+    public const int ForecastBandAlpha = 38;
+    public const int ForecastEdgeAlpha = 210;
+    public const int ForecastMarkerHalfPx = 3;
+    public const int ForecastMarkerHitPx = 4;
+    public const int ForecastEndCapHalfPx = 3;
+    public const int ForecastPointsPerPip = 10;
+    public const int ForecastFillMaxPips = 40;
+    public const int ForecastFillMaxPoints = ForecastFillMaxPips * ForecastPointsPerPip;
+
+    public static void BlendPixel(int[] buffer, int width, int height,
+        int x, int y, int color, int alpha)
+    {
+        if (x < 0 || x >= width || y < 0 || y >= height) return;
+        int idx = y * width + x;
+        buffer[idx] = Blend(buffer[idx], color, alpha);
+    }
+
+    public static void BlendColumn(int[] buffer, int width, int height,
+        int x, int yFrom, int yTo, int color, int alpha)
+    {
+        if (x < 0 || x >= width) return;
+        int y0 = Math.Max(0, Math.Min(yFrom, yTo));
+        int y1 = Math.Min(height - 1, Math.Max(yFrom, yTo));
+        for (int y = y0; y <= y1; y++)
+        {
+            int idx = y * width + x;
+            buffer[idx] = Blend(buffer[idx], color, alpha);
+        }
+    }
+
+    public static void StrokeDisc(int[] buffer, int width, int height,
+        int cx, int cy, int radius, int color)
+    {
+        int outer = radius * radius + radius / 2;
+        int inner = (radius - 1) * (radius - 1);
+        for (int dy = -radius; dy <= radius; dy++)
+        {
+            int y = cy + dy;
+            if (y < 0 || y >= height) continue;
+            for (int dx = -radius; dx <= radius; dx++)
+            {
+                int d = dx * dx + dy * dy;
+                if (d > outer || d < inner) continue;
                 int x = cx + dx;
                 if (x >= 0 && x < width) buffer[y * width + x] = color;
             }
@@ -360,10 +498,23 @@ public static class ChartRasterizer
         }
     }
 
+    public const double WeekendGridShade = 0.85;
+
+    private static int Shade(int argb, double factor)
+    {
+        int a = argb >> 24 & 0xFF;
+        int r = (int)((argb >> 16 & 0xFF) * factor);
+        int g = (int)((argb >> 8 & 0xFF) * factor);
+        int b = (int)((argb & 0xFF) * factor);
+        return a << 24 | r << 16 | g << 8 | b;
+    }
+
     private static void DrawPriceLines(int[] buffer, int width, int height,
-        double topPrice, double bottom, double pointsPerRow, int step, int color, bool dotted)
+        double topPrice, double bottom, double pointsPerRow, int step, int color, bool dotted,
+        bool[]? weekendMask)
     {
         int inc = dotted ? 2 : 1;
+        int weekendColor = weekendMask == null ? color : Shade(color, WeekendGridShade);
         long firstLine = (long)Math.Ceiling(bottom / step) * step;
         for (long p = firstLine; p <= topPrice; p += step)
         {
@@ -371,47 +522,86 @@ public static class ChartRasterizer
             if (y < 0 || y >= height) continue;
             int rowOff = y * width;
             for (int x = 0; x < width; x += inc)
-                buffer[rowOff + x] = color;
+                buffer[rowOff + x] = weekendMask != null && weekendMask[x] ? weekendColor : color;
         }
     }
 
     private static void DrawGrid(int[] buffer, int width, int height,
-        int minutesPerColumn, long startBucket, long[] columnEdges, double topPrice, double pointsPerRow,
-        ChartPalette palette, TiltedGridSettings tiltedGrid)
+        long columnSeconds, long startBucket, long[] columnEdges, double topPrice, double pointsPerRow,
+        ChartPalette palette, TiltedGridSettings tiltedGrid, bool sessionBands)
     {
-        long bucketSec = minutesPerColumn * 60L;
+        long bucketSec = columnSeconds;
+        bool bandsDrawn = sessionBands && SessionBandsVisible(columnSeconds);
+        if (bandsDrawn)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                long mid = columnEdges[x] + bucketSec / 2;
+                int color = SessionClock.At(mid) switch
+                {
+                    ChartSession.Europe => palette.SessionEurope,
+                    ChartSession.Overlap => palette.SessionOverlap,
+                    ChartSession.America => palette.SessionAmerica,
+                    _ => 0,
+                };
+                if (color == 0) continue;
+                for (int row = 0; row < height; row++)
+                    buffer[row * width + x] = color;
+            }
+        }
+        bool[]? weekendMask = null;
         if (bucketSec < 2 * DaySeconds)
         {
+            bool darkWeekend = bandsDrawn && palette.WeekendSession != 0;
+            int weekendColor = darkWeekend ? palette.WeekendSession : palette.Weekend;
+            if (darkWeekend) weekendMask = new bool[width];
             for (int x = 0; x < width; x++)
             {
                 long mid = columnEdges[x] + bucketSec / 2;
                 int dow = (int)((mid / DaySeconds + 4) % 7);
                 if (dow != 0 && dow != 6) continue;
+                if (weekendMask != null) weekendMask[x] = true;
                 for (int row = 0; row < height; row++)
-                    buffer[row * width + x] = palette.Weekend;
+                    buffer[row * width + x] = weekendColor;
             }
         }
+        int gridDayWeekend = Shade(palette.GridDay, WeekendGridShade);
+        int gridMonthWeekend = Shade(palette.GridMonth, WeekendGridShade);
+        int gridYearWeekend = Shade(palette.GridYear, WeekendGridShade);
         double bottom = topPrice - pointsPerRow * (height - 1);
         if (!tiltedGrid.Visible)
         {
             if (GridPrice10StepPoints / pointsPerRow >= MinPriceGridSpacingPixels)
-                DrawPriceLines(buffer, width, height, topPrice, bottom, pointsPerRow, GridPrice10StepPoints, palette.GridPrice10, true);
+                DrawPriceLines(buffer, width, height, topPrice, bottom, pointsPerRow, GridPrice10StepPoints, palette.GridPrice10, true, weekendMask);
             if (GridPrice50StepPoints / pointsPerRow >= MinPriceGridSpacingPixels)
-                DrawPriceLines(buffer, width, height, topPrice, bottom, pointsPerRow, GridPrice50StepPoints, palette.GridPrice50, true);
+                DrawPriceLines(buffer, width, height, topPrice, bottom, pointsPerRow, GridPrice50StepPoints, palette.GridPrice50, true, weekendMask);
         }
-        DrawPriceLines(buffer, width, height, topPrice, bottom, pointsPerRow, GridPriceStepPoints, palette.GridPrice100, false);
+        DrawPriceLines(buffer, width, height, topPrice, bottom, pointsPerRow, GridPriceStepPoints, palette.GridPrice100, false, weekendMask);
         if (tiltedGrid.Visible)
-            DrawTiltedGrid(buffer, width, height, minutesPerColumn, startBucket, topPrice, pointsPerRow,
-                tiltedGrid, palette.GridTilted, palette.GridTiltedNear);
-        if (HourGridVisible(minutesPerColumn))
+            DrawTiltedGrid(buffer, width, height, columnSeconds, startBucket, topPrice, pointsPerRow,
+                tiltedGrid, palette.GridTilted, palette.GridTiltedNear, weekendMask);
+        if (MinuteGridVisible(columnSeconds))
+        {
+            for (int x = 0; x < width; x++)
+            {
+                long ts = columnEdges[x];
+                long te = columnEdges[x + 1];
+                if ((ts - 1) / MinuteSeconds == (te - 1) / MinuteSeconds) continue;
+                int c = weekendMask != null && weekendMask[x] ? gridDayWeekend : palette.GridDay;
+                for (int row = 0; row < height; row += 4)
+                    buffer[row * width + x] = c;
+            }
+        }
+        if (HourGridVisible(columnSeconds))
         {
             for (int x = 0; x < width; x++)
             {
                 long ts = columnEdges[x];
                 long te = columnEdges[x + 1];
                 if ((ts - 1) / HourSeconds == (te - 1) / HourSeconds) continue;
+                int c = weekendMask != null && weekendMask[x] ? gridDayWeekend : palette.GridDay;
                 for (int row = 0; row < height; row += 2)
-                    buffer[row * width + x] = palette.GridDay;
+                    buffer[row * width + x] = c;
             }
         }
         bool drawDaily = DaySeconds >= MinDayGridSpacingPixels * bucketSec;
@@ -425,7 +615,12 @@ public static class ChartRasterizer
             bool yearChanged = before.Year != after.Year;
             bool monthChanged = yearChanged || before.Month != after.Month;
             if (!drawDaily && !monthChanged) continue;
-            int color = yearChanged ? palette.GridYear : monthChanged ? palette.GridMonth : palette.GridDay;
+            bool onWeekend = weekendMask != null && weekendMask[x];
+            int color = yearChanged
+                ? (onWeekend ? gridYearWeekend : palette.GridYear)
+                : monthChanged
+                    ? (onWeekend ? gridMonthWeekend : palette.GridMonth)
+                    : (onWeekend ? gridDayWeekend : palette.GridDay);
             for (int row = 0; row < height; row++)
                 buffer[row * width + x] = color;
         }
@@ -447,19 +642,19 @@ public static class ChartRasterizer
             : GridPriceStepPoints;
 
     private static void DrawTiltedGrid(int[] buffer, int width, int height,
-        int minutesPerColumn, long startBucket, double topPrice, double pointsPerRow,
-        TiltedGridSettings grid, int color, int nearColor)
+        long columnSeconds, long startBucket, double topPrice, double pointsPerRow,
+        TiltedGridSettings grid, int color, int nearColor, bool[]? weekendMask)
     {
-        double bucketSec = minutesPerColumn * 60.0;
+        double bucketSec = columnSeconds;
         DrawTiltedFamily(buffer, width, height, startBucket, bucketSec, topPrice, pointsPerRow,
-            grid.Up.Nearest ? grid.Down : grid.Up, color, nearColor);
+            grid.Up.Nearest ? grid.Down : grid.Up, color, nearColor, weekendMask);
         DrawTiltedFamily(buffer, width, height, startBucket, bucketSec, topPrice, pointsPerRow,
-            grid.Up.Nearest ? grid.Up : grid.Down, color, nearColor);
+            grid.Up.Nearest ? grid.Up : grid.Down, color, nearColor, weekendMask);
     }
 
     private static void DrawTiltedFamily(int[] buffer, int width, int height,
         long startBucket, double bucketSec, double topPrice, double pointsPerRow,
-        TiltedFamilySettings family, int color, int nearColor)
+        TiltedFamilySettings family, int color, int nearColor, bool[]? weekendMask)
     {
         if (!family.Visible) return;
         double anchorSeconds = family.AnchorSeconds;
@@ -485,13 +680,15 @@ public static class ChartRasterizer
             DrawTiltedLine(buffer, width, height, startBucket, bucketSec, topPrice, pointsPerRow,
                 anchorSeconds, anchorPoints + n * (double)step, slope,
                 highlight && n == family.NearestLine ? nearColor : color,
-                hasSubLines && (n & 1) != 0);
+                hasSubLines && (n & 1) != 0, weekendMask);
     }
 
     private static void DrawTiltedLine(int[] buffer, int width, int height,
         long startBucket, double bucketSec, double topPrice, double pointsPerRow,
-        double anchorSeconds, double linePoints, double slope, int color, bool dotted)
+        double anchorSeconds, double linePoints, double slope, int color, bool dotted,
+        bool[]? weekendMask)
     {
+        int weekendColor = weekendMask == null ? color : Shade(color, WeekendGridShade);
         double RowAt(double x) =>
             (topPrice - (linePoints + slope * ((startBucket + x) * bucketSec - anchorSeconds)))
             / pointsPerRow;
@@ -505,9 +702,10 @@ public static class ChartRasterizer
             int rowLo = (int)Math.Round(Math.Max(top, 0));
             int rowHi = (int)Math.Round(Math.Min(bot, height - 1));
             if (rowHi >= height) rowHi = height - 1;
+            int c = weekendMask != null && weekendMask[x] ? weekendColor : color;
             for (int row = rowLo; row <= rowHi; row++)
                 if (!dotted || ((x + row) & 1) == 0)
-                    buffer[row * width + x] = color;
+                    buffer[row * width + x] = c;
         }
     }
 }

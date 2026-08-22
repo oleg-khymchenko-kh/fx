@@ -1,10 +1,10 @@
 # Moving average (SMA) indicator
 
-Status: implemented, v1.
+Status: implemented, v3 (in-memory, no storage).
 
 ## Goal
 
-A new indicator type `Average` next to `ZigZag` and `Drawing`. It draws a
+An indicator type `Average` next to `ZigZag` and `Drawing`. It draws a
 plain simple moving average (SMA) of the source pair as a normal line.
 The user sets a period as a number plus a unit (minutes / hours / days)
 and a direction (past / future):
@@ -16,6 +16,24 @@ and a direction (past / future):
 
 "Plain" means simple average - each candle in the window has equal
 weight (no EMA / weighting).
+
+## Volume weighted variant
+
+A "Volume weighted" checkbox in the Average params row switches the
+same indicator to a rolling VWAP. Each minute is weighted by its real
+volume (the volume stored in the candle flags word, see docs/volume.md):
+
+    value(t) = sum(avg[i] * volume[i]) / sum(volume[i])   over the window
+
+Only plain arithmetic: multiply, add, divide. A minute without volume
+data gets weight 0 and does not affect the result; when the whole
+window has zero volume (history before CME coverage), the value falls
+back to the plain SMA of the same window, so the line stays continuous.
+The sliding window tracks four running sums (price sum + count, volume
+sum + price*volume sum), so weighted and plain cost the same O(n).
+When the volume collector patches fresh volume into the parent minutes,
+the diff sees the change (it compares volume too in weighted mode) and
+recomputes just the affected window.
 
 ## Window size (count-based)
 
@@ -37,95 +55,100 @@ does not fit; there the average uses whatever candles are available
 the line is continuous. This makes a future MA converge to the last
 candle at the right edge, and a past MA ramp up from the first candle.
 
-## Data model and storage
+## No storage - computed in memory
 
-Same per-minute candle store as the pairs. Each source minute gets one
-target candle with Min = Max = Avg = the MA value (a flat line value).
-Values are stored in raw source points (1/100000), before pip scaling
-and mirror, exactly like the ZigZag point list;
-the display transform (pip scale + mirror) is applied on load. Averaging
-in raw space then transforming is the same as transforming then
-averaging, because both scale and mirror are affine.
+An Average writes nothing to disk. The line is derived from the parent
+series that is already loaded in the chart, in display space (after pip
+scaling and mirror; averaging commutes with both because they are
+affine). One flat candle (Min = Max = Avg) per parent minute.
 
-`MovingAverageSymbol.ComputeSma` uses a prefix-sum so the whole series is
-O(n). `Generate` deletes the target folder and rewrites it, like
-ZigZagSymbol.Generate. Progress is reported during the write loop.
+`Chart/AverageSeries.cs` holds the math:
+
+- `Compute` / `ComputeRange` - sliding-window sum, O(n), no prefix
+  array allocation. `ComputeRange` seeds the running sum from up to
+  `window` candles before (or after) the range and produces values for
+  the requested index range only.
+- `Diff` - given the parent minutes array before and after a change,
+  finds the common prefix and suffix (comparing timestamp + Avg) and
+  returns the index range whose SMA values could have changed, already
+  widened by `window - 1` in the direction the window looks. Returns
+  null when nothing relevant changed (for example a volume-flag patch
+  that kept every Avg).
+- `LiveTail` - SMA values for the parent's live tail candles. A past MA
+  window reaches back through the tail into the loaded minutes; a
+  future MA shrinks toward the newest tick.
+
+`ChartView` owns the update points. Every average series carries
+`AverageWindowBars` / `AverageFromFuture` on `SymbolSeries`, and the
+chart keeps the parent minutes array reference each average was
+computed from (`_averageParents`):
+
+- `SetSeries` - full compute if the average arrived empty.
+- `ReplaceSeries` / `PatchSeriesHistory` (lazy year loads, volume
+  patches) - `UpdateAveragesOf(parent)` runs `Diff` and patches only
+  the changed index range via `CandleHistory.WithReplacedRange`, so a
+  year prepend recomputes that year plus one window, not the whole
+  history.
+- `SetLiveTail` - recomputes the average's live tail, so the line
+  follows live ticks now.
+
+The initial chart load computes averages on the background thread (in
+the derived-slot pass of `LoadChartAsync`) from the parent slot's
+already-transformed minutes, so the UI thread only picks up ready-made
+histories.
+
+If the parent pair is hidden but its average is visible, the parent's
+candles still load: the startup reader and the lazy loader treat such a
+parent as visible (`LoaderHidden` in MainWindow), the parent line just
+stays hidden on the chart.
+
+Old builds stored averages in the candle DB. On chart load
+`DropStoredAverageCandles` deletes those folders once.
+
+## Fixed vertical placement
+
+An Average is glued to its source: it has no own vertical offset, ever.
+`ChartView` keeps average symbols in `_offsetLockedSymbols` and ignores
+them in every offset path (label wheel, align to grid, auto align,
+align to source, align to selection, saved state restore). The label's
+context menu hides the align items. When the parent is offset, the
+average moves with it (offsets accumulate along the source chain).
+
+## Label
+
+The symbol bar label shows the averaging window between the name and
+the price as days:hours:minutes; the days part is dropped when zero:
+`EMA4 4:00: 1.08421` (4 hours), `EMA4 1:16:05: ...` (1 day 16 h 5 min),
+`EMA4 0:15: ...` (15 minutes). It updates immediately on the wheel,
+before the debounced recompute lands.
+
+## Mouse wheel on the label
+
+The plain wheel on an Average label does nothing (no vertical shift).
+With modifiers it changes the averaging window:
+
+- Alt + wheel: +/- 4 hours (240 bars) per notch.
+- Alt + Ctrl + wheel: +/- 15 minutes per notch.
+
+The window is clamped to 15 minutes .. 365 days. The new value is
+normalized back into Period + Unit (days if divisible by 1440, hours if
+divisible by 60, minutes otherwise), saved to config immediately, and
+the line recomputes after a 150 ms debounce
+(`MainWindow.OnAveragePeriodWheel` -> `ChartView.SetAverageWindow`), so
+rolling the wheel through several notches costs one recompute.
 
 ## Creation and editing
 
-The same Add/Edit dialog (SymbolEditorWindow). Type combo now has
-`ZigZag`, `Average`, `Drawing`. For `Average` the pips limit field is
-hidden and an "Average params" row shows instead: Period (number),
-Unit combo (Minutes / Hours / Days), Direction combo (Past / Future).
+The same Add/Edit dialog (SymbolEditorWindow). For `Average` the pips
+limit field is hidden and an "Average params" row shows instead: Period
+(number), Unit combo (Minutes / Hours / Days), Direction combo
+(Past / Future). Apply just saves config and reloads the chart; there
+is no Refresh or Rebuild anywhere (`IndicatorTypes.HasStorage` is false
+for Average), and Compute derived skips it.
 
-Model: IndicatorSymbol gains `Period`, `Unit`, `FromFuture` next to the
-existing `LimitPips`. IndicatorSymbol.SameData is type-aware: for Average
-it compares Source, Period, Unit, FromFuture; only a change in one of
-those (or Type / Source) recomputes the DB. A name-only change renames
-the folder, a color-only change just saves config (same smart-edit rule
-as ZigZag).
+## Not in v3 (next steps)
 
-## Rendering
-
-An Average symbol is NOT editable and has no points: DisplayConfigs marks
-only ZigZag indicators as editable, so the MA loads as a plain candle
-line series (SymbolSeries.Editable = false). It
-still counts as an indicator in the symbol bar, so it keeps the
-Edit / Delete / Align to source context menu, and its vertical offset is
-stored relative to its source pair like any indicator. On a non-mirror
-pair (EURUSD, GBPUSD) the MA overlays the source line directly.
-
-Compute derived (button) and Apply (dialog) both branch on the type:
-Drawing is skipped, Average calls MovingAverageSymbol.Generate, the rest
-call ZigZagSymbol.Generate.
-
-## Automatic refresh (v2)
-
-Averages are the only indicator type that recomputes itself. Whenever new
-broker candles land in the DB, `MainWindow.RefreshAveragesAsync` runs
-`MovingAverageSymbol.Refresh` for every Average indicator. Trigger points:
-after the once-a-minute repair pass described in docs/live-candles.md,
-after the tail download at connect, and after the manual history download.
-
-`Refresh` takes `redoFromUnix`. When it is greater than zero the method
-behaves as if the target ended at `redoFromUnix - 60`, so rows that were
-already written from provisional (tick derived) source values are
-recomputed once the broker replaces those source minutes. With
-`redoFromUnix = 0` it only extends past the last written row, which is
-what the manual Refresh does.
-
-An Average whose target has no data at all is skipped by the automatic
-path, so it never kicks off a full `Generate` in the background. Use
-Compute derived or the context menu Refresh for the first build.
-
-`Refresh` flushes only the target symbol, not the whole DB, because it
-runs once a minute.
-
-## Context menu
-
-Every indicator except ZigZag, Shift and Drawing has a `Refresh` item in
-the symbol bar context menu, between Edit and Delete. It runs the same
-code as the Refresh button in the editor dialog and reloads the chart when
-it finishes. Refreshing a USD Index also refreshes every Currency Index
-whose source is that index.
-
-Next to it, every indicator that has storage (ZigZag included) has a
-`Rebuild` item. It asks for confirmation first, then throws the stored
-data away and generates the symbol from scratch, the same as the Compute
-derived button does but for one indicator only. Use it when Refresh
-cannot help: Refresh trusts the rows that are already there, so it cannot
-repair data written by an older build whose meaning has changed.
-
-While it runs it posts a job line into the same loading indicator the
-chart load uses, so the spinner in the top left shows
-`Name · rebuilding 42%`. The percentage comes from the same
-`IProgress<double>` the editor dialog uses, so it only starts moving once
-the generator reaches its write loop.
-
-## Not in v1 (next steps)
-
-- The line still does not follow live ticks between refreshes, and a
-  refresh only updates the DB: the chart picks the new rows up on the next
-  full chart load.
 - Other average kinds (EMA / weighted), or time-based (wall-clock)
   windows.
+- The label price does not tick with the live tail (it is set once per
+  chart load).

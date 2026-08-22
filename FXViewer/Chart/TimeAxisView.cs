@@ -25,16 +25,16 @@ public sealed class TimeAxisView : FrameworkElement
         return brush;
     }
 
-    private int _minutesPerColumn;
+    private long _columnSeconds;
     private long _startBucket;
     private int _widthPx;
     private WeekendCompressor? _map;
     private long? _cursorUnix;
     private double _cursorXDip;
 
-    public void Update(int minutesPerColumn, long startBucket, int widthPx, WeekendCompressor? map)
+    public void Update(long columnSeconds, long startBucket, int widthPx, WeekendCompressor? map)
     {
-        _minutesPerColumn = minutesPerColumn;
+        _columnSeconds = columnSeconds;
         _startBucket = startBucket;
         _widthPx = widthPx;
         _map = map;
@@ -51,9 +51,9 @@ public sealed class TimeAxisView : FrameworkElement
     protected override void OnRender(DrawingContext dc)
     {
         dc.DrawRectangle(Brushes.White, null, new Rect(0, 0, ActualWidth, ActualHeight));
-        if (_minutesPerColumn <= 0 || _widthPx <= 0) return;
+        if (_columnSeconds <= 0 || _widthPx <= 0) return;
         var dpi = VisualTreeHelper.GetDpi(this);
-        long bucketSec = _minutesPerColumn * 60L;
+        long bucketSec = _columnSeconds;
         long viewStart = _startBucket * bucketSec;
         long viewEnd = (_startBucket + _widthPx) * bucketSec;
         double lastRight = double.MinValue;
@@ -92,6 +92,17 @@ public sealed class TimeAxisView : FrameworkElement
         double dpiScaleX, double scale)
     {
         double DipSpacing(double stepSec) => stepSec * scale / bucketSec / dpiScaleX;
+        if (bucketSec < ChartRasterizer.MinuteSeconds)
+        {
+            foreach (int m in new[] { 1, 2, 5, 10, 15, 30 })
+            {
+                long stepSec = m * ChartRasterizer.MinuteSeconds;
+                if (DipSpacing(stepSec) < MinLabelSpacingDip) continue;
+                for (long t = (viewStart + stepSec - 1) / stepSec * stepSec; t < viewEnd; t += stepSec)
+                    yield return (t, MinuteText(t));
+                yield break;
+            }
+        }
         if (ChartRasterizer.HourSeconds >= ChartRasterizer.MinHourGridSpacingPixels * bucketSec)
         {
             foreach (int h in new[] { 1, 2, 3, 6, 12 })
@@ -170,6 +181,14 @@ public sealed class TimeAxisView : FrameworkElement
                 yield return (unix, year.ToString(CultureInfo.InvariantCulture));
             year++;
         }
+    }
+
+    private static string MinuteText(long unix)
+    {
+        var d = DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime;
+        return d.Minute == 0
+            ? HourText(unix)
+            : d.ToString("HH:mm", CultureInfo.InvariantCulture);
     }
 
     private static string HourText(long unix)

@@ -11,6 +11,30 @@ public static class ShiftedSymbol
         return w.ToVirtual(chartTimeUnix) - w.ToVirtual(sourceTimeUnix);
     }
 
+    public static bool AnchorsBroken(long sourceTimeUnix, long chartTimeUnix)
+    {
+        long first = WeekendCompressor.Instance.FirstGapStart;
+        return sourceTimeUnix < first || chartTimeUnix < first;
+    }
+
+    public static long DefaultAnchorUnix()
+    {
+        var now = DateTime.UtcNow;
+        var day = new DateTime(now.Year, now.Month, now.Day, 0, 0, 0, DateTimeKind.Utc);
+        long unix = new DateTimeOffset(day).ToUnixTimeSeconds();
+        var w = WeekendCompressor.Instance;
+        return w.InGap(unix) ? w.ToRealEnd(w.ToVirtual(unix)) : unix;
+    }
+
+    public static (long Source, long Chart) Rebase(
+        long sourceTimeUnix, long chartTimeUnix, long anchorUnix)
+    {
+        var w = WeekendCompressor.Instance;
+        long delta = VirtualDelta(sourceTimeUnix, chartTimeUnix);
+        long chart = w.ToReal(w.ToVirtual(anchorUnix) + delta);
+        return chart < w.FirstGapStart ? (anchorUnix, anchorUnix) : (anchorUnix, chart);
+    }
+
     public static long FlipBase(Candle[] candles)
     {
         int mn = int.MaxValue;
@@ -35,9 +59,12 @@ public static class ShiftedSymbol
         for (int i = 0; i < candles.Length; i++)
         {
             var c = candles[i];
-            candles[i] = new Candle(c.MinuteUnixSeconds,
-                (int)(flipBase - c.Max), (int)(flipBase - c.Min), (int)(flipBase - c.Avg),
-                c.AvgApproximated);
+            candles[i] = c with
+            {
+                Min = (int)(flipBase - c.Max),
+                Max = (int)(flipBase - c.Min),
+                Avg = (int)(flipBase - c.Avg),
+            };
         }
     }
 

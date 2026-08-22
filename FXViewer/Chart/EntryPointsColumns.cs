@@ -9,13 +9,21 @@ public static class EntryPointsColumns
     public const byte Sell = 2;
     public const byte BothLost = 4;
 
-    public static byte[] Build(CandleHistory history, int k, long firstBucket, int count,
+    public static byte[] Build(CandleHistory history, long columnSeconds, long firstBucket, int count,
         WeekendCompressor? map)
     {
         var states = new byte[count];
         if (count <= 0) return states;
-        var edges = ChartColumns.ColumnEdges(map, k, firstBucket, count);
-        int level = ChartColumns.LevelFor(k, map);
+        int run = ChartColumns.MinuteRun(columnSeconds);
+        if (run > 1)
+        {
+            long minuteFirst = ChartColumns.MinuteBucket(firstBucket, run);
+            var minutes = Build(history, ChartColumns.MinuteSeconds, minuteFirst,
+                ChartColumns.MinuteCount(count, run), map);
+            return ChartColumns.Expand(minutes, minuteFirst, run, firstBucket, count, (byte)0);
+        }
+        var edges = ChartColumns.ColumnEdges(map, columnSeconds, firstBucket, count);
+        int level = ChartColumns.LevelFor(columnSeconds, map);
         if (level >= 0) Fill(history.Levels[level], edges, states);
         else Fill(history.Minutes, edges, states);
         return states;

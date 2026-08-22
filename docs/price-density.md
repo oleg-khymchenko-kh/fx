@@ -12,8 +12,10 @@ every pip level:
 
 A minute covers a pip when the pip is inside the candle range
 `[Min, Max]`. The answer is drawn as a horizontal profile at the right
-edge of the chart: one bar per pip level, growing to the left, the
-longest bar is the biggest count in the window (120 px).
+edge of the chart: one bar per pip level, growing to the left. By
+default the biggest count in the window is 120 px long; `Ctrl` + wheel
+over the indicator's row in the symbol bar pins that scale and then
+moves it (see "Scale" below).
 
 The anchor minute follows the mouse: the profile shows the window that
 ends at the candle under the cursor and updates as the cursor moves.
@@ -93,11 +95,43 @@ Each pixel row maps to its pip range through `YToDisplay` (the source
 symbol's offset chain and flatten shift at the anchor time included;
 the density row's own drag offset is ignored, so the profile always
 lines up with the source price line) and takes
-the biggest count among its pips. Bar length is `count / maxCount` of
-the window times 120 px; the fill is the indicator color at alpha 96
+the biggest count among its pips. Bar length is `count / unit` times
+120 px; the fill is the indicator color at alpha 96
 (`DensityFillAlpha`) with an opaque pixel at the left edge of each bar.
 Several visible Density indicators draw into the same bitmap,
 alpha-blended in series order.
+
+## Scale
+
+The scale is one number per indicator: **counts per pixel** - minutes
+per pixel for Density, contracts per pixel for Volume. At 80 per pixel
+a level holding 9,600 contracts draws a 120 px bar and one holding 800
+draws 10 px. It is set two ways, both writing the same config field:
+
+- `Ctrl` + wheel over the indicator's row in the symbol bar, 1.25 per
+  notch, saved immediately;
+- the `Scale` box in the Add / Edit dialog.
+
+Leave the box empty and the scale is automatic again: the window
+maximum fills the band, which is what the profile always did. As soon
+as the wheel moves it or a number is typed, it is fixed - the same
+count is the same bar length whatever the window, the cursor or a
+background year load does. The current value is shown in the profile
+label as `| 80/px`.
+
+Each key gets its own percent on top of that one scale, in the same
+dialog, `Key 1` through `Key 9` plus `Key 0` for the all-history
+option (`Key 0` has no period to edit). 100 means the scale as is, 50
+draws bars half as long, 200 twice as long. This is what keeps a
+240 day window readable next to a 1 day window without touching the
+wheel. The wheel never changes the percents.
+
+Bars are clamped to the chart width, not to the band: a pinned scale
+larger than the current data lets bars run left across the chart
+instead of being cut at 120 px. The overlay bitmap is therefore chart
+wide, but only the occupied strip is cleared and blitted per frame,
+and the overlay canvas has hit testing off so it never eats mouse
+input.
 
 A label per visible Density indicator sits at the top right and shows
 the active option as `Name 3: 1d` in the indicator color.
@@ -141,3 +175,13 @@ Deleting the indicator removes the config entry.
 - No numeric scale on the profile, only relative lengths, and no
   tooltip with the exact count.
 - The symbol bar row prints a meaningless price for the density row.
+
+## Selection mode
+
+While a time range is selected on the chart (Shift + drag), the
+profile ignores the lookback keys and the cursor anchor: it is built
+only from the minutes inside the selection, `[start, end of the last
+selected column]`. The label shows "NAME: selection". The profile
+follows the band live while the selection is dragged, and Escape
+returns to the normal cursor-anchored window. Applies to Density and
+Volume alike.

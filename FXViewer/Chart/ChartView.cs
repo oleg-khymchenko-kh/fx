@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -29,6 +31,12 @@ public sealed record SeriesTransform(bool Mirror, long MirrorBase, int PipPoints
     }
 }
 
+public sealed record ForecastMark(
+    string Pair, string Day, long FromUnix, long ToUnix, int TopValue, int BottomValue, bool Band,
+    ForecastRecord Record);
+
+public sealed record ForecastMarker(int X, int Y, int HalfPx, ForecastMark Mark, int ColorArgb);
+
 public sealed record DealMark(
     long EntryUnix, int EntryValue, long ExitUnix, int ExitValue, bool Buy, bool Win, bool Closed);
 
@@ -40,10 +48,31 @@ public sealed record SymbolSeries(string Symbol, CandleHistory History, int Colo
     public int PriceMul { get; init; } = 1;
     public bool TimeShift { get; init; }
     public bool AgeMirror { get; init; }
+    public int AverageWindowBars { get; init; }
+    public bool AverageFromFuture { get; init; }
+    public bool AverageVolumeWeighted { get; init; }
     public bool DensityPanel { get; init; }
     public int[]? DensityWindows { get; init; }
+    public int[]? DensityScalePercents { get; init; }
+    public double DensityScalePerPixel { get; init; }
     public int DensitySelected { get; init; }
-    public bool BottomPanel => EntryPanel || AgePanel || DensityPanel;
+    public bool SpreadPanel { get; init; }
+    public bool VolumePanel { get; init; }
+    public bool VolumeWeighted { get; init; }
+    public bool VolumeSplitSides { get; init; }
+    public ProfileSet? VolumeProfiles { get; init; }
+    public int VolumeGroupMinutes { get; init; } = 1;
+    public double VolumeBarScale { get; init; } = 1;
+    public double VolumeBarUnit { get; init; }
+    public bool VolumeGroupLocked { get; init; }
+    public bool OrderBookPanel { get; init; }
+    public bool OrderBookPositions { get; init; }
+    public int SellColorArgb { get; init; }
+    public OrderBook.OrderBookSnapshot[]? OrderBookSnapshots { get; init; }
+    public OrderBook.DepthSnapshot[]? DepthSnapshots { get; init; }
+    public int DepthPipPoints { get; init; } = 10;
+    public bool BottomPanel => EntryPanel || AgePanel || DensityPanel || SpreadPanel || VolumePanel
+        || OrderBookPanel;
 }
 
 public sealed record PivotEditRequest(string Symbol, IReadOnlyList<PivotPoint> Points);
@@ -60,7 +89,11 @@ public sealed class ChartView : Grid
         unchecked((int)0xFFC8C8C8),
         unchecked((int)0xFFE0E0E0),
         unchecked((int)0xFFC8C8C8),
-        unchecked((int)0xFF8C8C8C));
+        unchecked((int)0xFF8C8C8C),
+        unchecked((int)0xFFEAF2FB),
+        unchecked((int)0xFFF9EBD2),
+        unchecked((int)0xFFFCF3E5),
+        unchecked((int)0xFFDCDCDC));
 
     private const double TiltedAngleStepDegrees = 1;
     private const double TiltedAngleFineDegrees = 0.1;
@@ -76,7 +109,7 @@ public sealed class ChartView : Grid
     private const double ZoomStep = 1.25;
     private const double VerticalZoomShare = 1.0 / 1.75;
     private const int MinVisibleColumns = 10;
-    private const int NavigateMinutesPerColumn = 5;
+    private const long NavigateColumnSeconds = 300;
     private const int PipPoints = 10;
     private const int OffsetStepPips = 10;
     private const int OffsetStepPipsFine = 1;
@@ -87,6 +120,8 @@ public sealed class ChartView : Grid
     private const int MaxSourceDepth = 16;
     private const int DensityMaxWidthPx = 120;
     private const int DensityFillAlpha = 96;
+    private const int DensityCandleAlpha = 255;
+    private const int BookPriceLineArgb = unchecked((int)0xFFFF0000);
 
     private readonly Image _image;
     private readonly Image _crosshairV;
@@ -107,12 +142,14 @@ public sealed class ChartView : Grid
     private int _version;
     private bool _computing;
     private bool _pending;
-    private int _minutesPerColumn;
+    private long _columnSeconds;
     private long _viewStartBucket;
     private double _topPrice;
     private double _pointsPerRow;
     private double _priceOffsetPoints;
     private readonly Dictionary<string, double> _seriesOffsetPoints = new();
+    private readonly Dictionary<string, Candle[]> _averageParents = new();
+    private readonly HashSet<string> _offsetLockedSymbols = new();
     private readonly HashSet<string> _hiddenSymbols = new();
     private readonly HashSet<string> _collapsedSources = new();
     private readonly HashSet<string> _effectiveHidden = new();
@@ -124,11 +161,19 @@ public sealed class ChartView : Grid
     private CalendarSettings _calendarSettings = new();
     private bool[] _calendarShown = new CalendarSettings().ShownMask();
     private bool _weekendsHidden;
+    private bool _sessionsVisible;
     private readonly Ellipse _calHoverCircle = new()
     {
         Visibility = Visibility.Collapsed,
         Stroke = Brushes.White,
     };
+    private readonly List<ForecastMarker> _forecastMarkers = new();
+    private ForecastMark[] _forecastMarks = Array.Empty<ForecastMark>();
+    private ForecastMark[] _forecastHover = Array.Empty<ForecastMark>();
+    private string[] _forecastDays = Array.Empty<string>();
+    private string _forecastDay = "";
+    private bool _forecastHidden;
+    private Popup? _forecastPopup;
     private int _calHoverX = -1;
     private double _calCircleCenterX;
     private double _calCircleCenterY;
@@ -172,10 +217,11 @@ public sealed class ChartView : Grid
     private double _renderedPointsPerRow;
     private string? _hidePivotSymbol;
     private int _hidePivotIndex = -1;
-    private (object? Series, int K, long Start, double Top, double Ppr, double OffsetsHash,
+    private (object? Series, long ColumnSeconds, long Start, double Top, double Ppr, double OffsetsHash,
         int Hidden, int Pw, int Ph, double DpiX, bool Weekends, object? Flatten) _markerStamp;
 
     private string? _drawSymbol;
+    private bool _drawLevel;
     private readonly List<PivotPoint> _drawPoints = new();
     private readonly Polyline _drawPreview = new()
     {
@@ -262,18 +308,34 @@ public sealed class ChartView : Grid
     };
     private WriteableBitmap? _densityBmp;
     private int[] _densityStaging = Array.Empty<int>();
+    private int _densityUsedPx = DensityMaxWidthPx;
     private int _densitySelected;
     private long _densityAnchorColumn = long.MinValue;
 
     private const int ShiftHitRadiusPx = 2;
     private const int ShiftHotWidthPx = 2;
     private readonly List<(string Symbol, RenderLine Line)> _shiftLines = new();
+    private readonly Dictionary<string, int[]> _renderedSpreadColumns = new();
+    private readonly Dictionary<string, VolumeColumnSet> _renderedVolumeColumns = new();
+    private readonly Dictionary<string, double> _volumeScales = new();
+    private readonly Dictionary<string, int> _volumeGroups = new();
+    private readonly Dictionary<string, double> _volumeUnits = new();
+    private readonly Dictionary<string, int> _volumePanelBottoms = new();
+
+    private const int VolumeWheelBandPx = 10;
+
+    private const double VolumeScaleMin = 0.25;
+    private const double VolumeScaleMax = 64.0;
+    private readonly Dictionary<string, double> _densityUnits = new();
+    private readonly Dictionary<string, double> _densityAutoPerPixel = new();
+    private const double DensityUnitMin = 1e-6;
+    private const double DensityUnitMax = 1e9;
     private string? _shiftHotSymbol;
     private string? _shiftDragSymbol;
     private bool _shiftDragging;
     private int _shiftDragStartX;
     private int _shiftDragStartY;
-    private int _shiftDragColumns;
+    private long _shiftDragSentSeconds;
     private double _shiftDragStartOffset;
 
     public int EditHitRadiusPx { get; set; } = 3;
@@ -283,15 +345,19 @@ public sealed class ChartView : Grid
     public event Action<string, PivotPoint[][]>? DrawingLinesChanged;
 
     public event Action<string>? Info;
-    public event Action<int, long, int, WeekendCompressor?>? ViewChanged;
+    public event Action<long, long, int, WeekendCompressor?>? ViewChanged;
     public event Action<long?, double>? CursorTimeChanged;
-    public event Action<double[]?>? CursorPricesChanged;
+    public event Action<double[]?, double[]?>? CursorPricesChanged;
     public event Action<ChartViewState>? StateChanged;
     public event Action? SeriesOffsetsChanged;
     public event Action<string, long>? SeriesTimeShiftRequested;
     public event Action<int>? DensitySelectedChanged;
+    public event Action<string, int>? VolumeGroupChanged;
+    public event Action<string, double>? VolumeScaleChanged;
+    public event Action<string, double>? VolumeUnitChanged;
+    public event Action<string, double>? DensityScaleChanged;
 
-    private int _renderedK;
+    private long _renderedColumnSeconds;
     private long _renderedStartBucket;
     private bool _firstRenderLogged;
 
@@ -344,6 +410,7 @@ public sealed class ChartView : Grid
         Children.Add(_densityLabelPanel);
         Cursor = Cursors.None;
         Focusable = true;
+        FocusVisualStyle = null;
         MouseEnter += (_, _) =>
         {
             if (!IsKeyboardFocusWithin) Focus();
@@ -358,6 +425,11 @@ public sealed class ChartView : Grid
             else if (e.Key == Key.Escape && _statsPopup != null)
             {
                 CloseStatsPopup();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Escape && _forecastPopup != null)
+            {
+                CloseForecastPopup();
                 e.Handled = true;
             }
             else if (e.Key == Key.Escape && _drawSymbol != null)
@@ -378,6 +450,16 @@ public sealed class ChartView : Grid
             else if (e.Key == Key.Escape && _hasRange)
             {
                 ClearRange();
+                e.Handled = true;
+            }
+            else if (e.Key is Key.Right or Key.Left && _cursorOnChart)
+            {
+                MoveMouseColumns(e.Key == Key.Right ? 1 : -1);
+                e.Handled = true;
+            }
+            else if (e.Key is Key.Up or Key.Down && _cursorOnChart)
+            {
+                MoveMousePips(e.Key == Key.Up ? 1 : -1);
                 e.Handled = true;
             }
             else if (DensityOptionKey(e.Key) is { } option && SelectDensityOption(option))
@@ -401,9 +483,10 @@ public sealed class ChartView : Grid
             SetCrosshairVisible(false);
             HideHover();
             HideCalendarHover();
+            SetForecastHover(Array.Empty<ForecastMark>());
             _drawCursor.Visibility = Visibility.Collapsed;
             CursorTimeChanged?.Invoke(null, 0);
-            CursorPricesChanged?.Invoke(null);
+            CursorPricesChanged?.Invoke(null, null);
             _cursorOnChart = false;
             UpdateAltTarget(false);
             UpdateDensityOverlay();
@@ -474,6 +557,41 @@ public sealed class ChartView : Grid
         return key is Key.LeftAlt or Key.RightAlt;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out NativePoint point);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetCursorPos(int x, int y);
+
+    private static void MoveMouseColumns(int columns)
+    {
+        if (GetCursorPos(out var point)) SetCursorPos(point.X + columns, point.Y);
+    }
+
+    private void MoveMousePips(int pips)
+    {
+        if (_pointsPerRow <= 0 || pips == 0) return;
+        double price = _topPrice - _cursorPy * _pointsPerRow;
+        double level = pips > 0
+            ? Math.Floor(price / PipPoints)
+            : Math.Ceiling(price / PipPoints);
+        int dy = 0;
+        for (int step = 1; step <= 2 && dy == 0; step++)
+        {
+            double target = (level + pips * step) * PipPoints;
+            dy = (int)Math.Round((_topPrice - target) / _pointsPerRow) - _cursorPy;
+        }
+        if (dy == 0) dy = pips > 0 ? -1 : 1;
+        if (GetCursorPos(out var point)) SetCursorPos(point.X, point.Y + dy);
+    }
+
     private void OnCrosshairMove(object sender, MouseEventArgs e)
     {
         var dpi = VisualTreeHelper.GetDpi(this);
@@ -509,37 +627,63 @@ public sealed class ChartView : Grid
         _hClipLeft.Rect = new Rect(0, 0, Math.Max(0, holeLeft), 1);
         _hClipRight.Rect = new Rect(holeRight, 0, Math.Max(0, viewW - holeRight), 1);
         SetCrosshairVisible(true);
-        if (_renderedK > 0 && _renderedStartBucket + cx != _densityAnchorColumn)
+        if (_renderedColumnSeconds > 0 && _renderedStartBucket + cx != _densityAnchorColumn)
             UpdateDensityOverlay();
-        if (_renderedK > 0)
+        if (_renderedColumnSeconds > 0)
         {
-            long unix = ToReal((_renderedStartBucket + cx) * (_renderedK * 60L));
+            long unix = ToReal((_renderedStartBucket + cx) * _renderedColumnSeconds);
             CursorTimeChanged?.Invoke(unix, cx / dpi.DpiScaleX);
         }
         if (_pointsPerRow > 0 && _series != null)
         {
             double screenPrice = _topPrice - cy * _pointsPerRow;
-            if (_renderedK > 0)
-                screenPrice -= FlattenShiftVirtual((_renderedStartBucket + cx) * (_renderedK * 60L));
+            if (_renderedColumnSeconds > 0)
+                screenPrice -= FlattenShiftVirtual((_renderedStartBucket + cx) * _renderedColumnSeconds);
             var prices = new double[_series.Count];
+            var deltas = new double[_series.Count];
+            Array.Fill(deltas, double.NaN);
             for (int i = 0; i < _series.Count; i++)
-                prices[i] = screenPrice - SeriesOffset(_series[i].Symbol);
-            CursorPricesChanged?.Invoke(prices);
+            {
+                var s = _series[i];
+                if (s.SpreadPanel)
+                {
+                    prices[i] = _renderedSpreadColumns.TryGetValue(s.Symbol, out var cols)
+                        && cx >= 0 && cx < cols.Length && cols[cx] >= 0
+                        ? cols[cx] / 10.0
+                        : double.NaN;
+                    continue;
+                }
+                if (s.VolumePanel)
+                {
+                    bool hasVolume = _renderedVolumeColumns.TryGetValue(s.Symbol, out var vols)
+                        && cx >= 0 && cx < vols.Total.Length && vols.Total[cx] >= 0;
+                    prices[i] = hasVolume ? vols.Total[cx] : double.NaN;
+                    deltas[i] = hasVolume && cx < vols.Ask.Length
+                        && (vols.Ask[cx] > 0 || vols.Bid[cx] > 0)
+                        ? vols.Ask[cx] - vols.Bid[cx]
+                        : double.NaN;
+                    continue;
+                }
+                prices[i] = screenPrice - SeriesOffset(s.Symbol);
+            }
+            CursorPricesChanged?.Invoke(prices, deltas);
         }
     }
 
     public void RestoreState(ChartViewState state)
     {
         _weekendsHidden = state.WeekendsHidden;
-        if (state.MinutesPerColumn > 0)
+        _sessionsVisible = state.SessionsVisible;
+        long saved = state.RestoredColumnSeconds();
+        if (saved > 0)
         {
-            int k = Math.Max(1, ChartColumns.SnapK(state.MinutesPerColumn));
-            _minutesPerColumn = k;
-            _viewStartBucket = state.ViewStartBucket * state.MinutesPerColumn / k;
+            long columnSeconds = ChartColumns.Snap(saved);
+            _columnSeconds = columnSeconds;
+            _viewStartBucket = state.ViewStartBucket * saved / columnSeconds;
         }
         else
         {
-            _minutesPerColumn = 0;
+            _columnSeconds = 0;
             _viewStartBucket = 0;
         }
         if (double.IsFinite(state.TopPrice) && double.IsFinite(state.PointsPerRow) && state.PointsPerRow > 0)
@@ -560,6 +704,7 @@ public sealed class ChartView : Grid
                         && double.IsFinite(sourceAbs))
                         _seriesOffsetPoints[s.Symbol] =
                             _seriesOffsetPoints.GetValueOrDefault(s.Symbol) - sourceAbs;
+            foreach (var locked in _offsetLockedSymbols) _seriesOffsetPoints.Remove(locked);
         }
         if (state.HiddenSymbols != null)
         {
@@ -572,6 +717,7 @@ public sealed class ChartView : Grid
         RefreshHidden();
         SeriesOffsetsChanged?.Invoke();
         _calendarVisible = state.CalendarVisible;
+        _forecastHidden = state.ForecastHidden;
         _flattenSymbol = state.FlattenSymbol;
         _flattenLine = state.FlattenSymbol == null ? -1 : state.FlattenLine;
         state.EnsureTiltedGrids();
@@ -619,7 +765,7 @@ public sealed class ChartView : Grid
         return false;
     }
 
-    public bool IsFitView => _minutesPerColumn <= 0;
+    public bool IsFitView => _columnSeconds <= 0;
 
     public bool ToggleSeries(string symbol)
     {
@@ -657,20 +803,77 @@ public sealed class ChartView : Grid
 
     public bool ToggleWeekends()
     {
-        long anchor = _minutesPerColumn > 0 ? ToReal(_viewStartBucket * (_minutesPerColumn * 60L)) : 0;
+        long anchor = _columnSeconds > 0 ? ToReal(_viewStartBucket * _columnSeconds) : 0;
         _weekendsHidden = !_weekendsHidden;
-        if (_minutesPerColumn > 0)
-            _viewStartBucket = ToVirtual(anchor) / (_minutesPerColumn * 60L);
+        if (_columnSeconds > 0)
+            _viewStartBucket = ToVirtual(anchor) / _columnSeconds;
         CancelPivotDrag();
         CancelSelDrag();
         EndDrag();
         HideHover();
         HideCalendarHover();
-        CloseCalendarPopup();
+        CloseChartPopups();
         RebuildFlatten();
         Rebuild();
         return _weekendsHidden;
     }
+
+    public bool SessionsVisible => _sessionsVisible;
+
+    public bool ToggleSessions()
+    {
+        _sessionsVisible = !_sessionsVisible;
+        Rebuild();
+        return _sessionsVisible;
+    }
+
+    public bool HasForecasts => _forecastMarks.Length > 0;
+
+    public bool ForecastVisible => !_forecastHidden;
+
+    public string ForecastDay => _forecastDay;
+
+    public event Action? ForecastDaySelected;
+
+    public void SetForecasts(ForecastMark[] marks)
+    {
+        _forecastMarks = marks ?? Array.Empty<ForecastMark>();
+        _forecastDays = _forecastMarks
+            .Select(m => m.Day)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(d => d, StringComparer.Ordinal)
+            .ToArray();
+        if (!_forecastDays.Contains(_forecastDay, StringComparer.Ordinal))
+            _forecastDay = _forecastDays.Length > 0 ? _forecastDays[^1] : "";
+        _forecastHover = Array.Empty<ForecastMark>();
+        CloseForecastPopup();
+        Rebuild();
+    }
+
+    public bool ToggleForecasts()
+    {
+        _forecastHidden = !_forecastHidden;
+        _forecastHover = Array.Empty<ForecastMark>();
+        if (_forecastHidden) CloseForecastPopup();
+        Rebuild();
+        return !_forecastHidden;
+    }
+
+    public void SelectForecastDay(string day)
+    {
+        if (!_forecastDays.Contains(day, StringComparer.Ordinal)) return;
+        _forecastDay = day;
+        _forecastHidden = false;
+        _forecastHover = Array.Empty<ForecastMark>();
+        CloseForecastPopup();
+        Rebuild();
+        ForecastDaySelected?.Invoke();
+    }
+
+    private ForecastMark[] SelectedDayForecasts() =>
+        _forecastDay.Length == 0
+            ? Array.Empty<ForecastMark>()
+            : _forecastMarks.Where(m => m.Day == _forecastDay).ToArray();
 
     public bool HasCalendar => _calendarEntries.Length > 0;
 
@@ -687,12 +890,12 @@ public sealed class ChartView : Grid
         _calendarSettings = settings ?? new CalendarSettings();
         _calendarShown = _calendarSettings.ShownMask();
         HideCalendarHover();
-        CloseCalendarPopup();
+        CloseChartPopups();
         Rebuild();
     }
 
-    private bool CalendarLinesDrawn(int minutesPerColumn) =>
-        _calendarSettings.ShowAtAnyZoom || ChartRasterizer.HourGridVisible(minutesPerColumn);
+    private bool CalendarLinesDrawn(long columnSeconds) =>
+        _calendarSettings.ShowAtAnyZoom || ChartRasterizer.HourGridVisible(columnSeconds);
 
     private bool CalendarImpactShown(byte impact) =>
         impact < _calendarShown.Length && _calendarShown[impact];
@@ -703,7 +906,7 @@ public sealed class ChartView : Grid
         if (!_calendarVisible)
         {
             HideCalendarHover();
-            CloseCalendarPopup();
+            CloseChartPopups();
         }
         Rebuild();
         return _calendarVisible;
@@ -753,11 +956,11 @@ public sealed class ChartView : Grid
     {
         bool? nearest = null;
         long line = 0;
-        if (altDown && TiltedGridVisible && _cursorOnChart && _renderedK > 0 && _pointsPerRow > 0)
+        if (altDown && TiltedGridVisible && _cursorOnChart && _renderedColumnSeconds > 0 && _pointsPerRow > 0)
         {
             bool up = NearestTiltedLineIsUp(_cursorPx, _cursorPy);
             nearest = up;
-            line = NearestTiltedLine(up, _cursorPx, _cursorPy, _renderedK * 60.0).Line;
+            line = NearestTiltedLine(up, _cursorPx, _cursorPy, _renderedColumnSeconds).Line;
         }
         if (nearest == _tiltedNearestUp && line == _tiltedNearestLine) return false;
         _tiltedNearestUp = nearest;
@@ -775,7 +978,7 @@ public sealed class ChartView : Grid
     private bool RefreshShiftHot(bool altDown)
     {
         if (_shiftDragging) return false;
-        string? hot = altDown && _cursorOnChart && _renderedK > 0
+        string? hot = altDown && _cursorOnChart && _renderedColumnSeconds > 0
             ? FindShiftSeriesAt(_cursorPx, _cursorPy)
             : null;
         if (hot == _shiftHotSymbol) return false;
@@ -840,7 +1043,7 @@ public sealed class ChartView : Grid
         _shiftDragStartX = cx;
         _shiftDragStartY = cy;
         _shiftDragStartOffset = _seriesOffsetPoints.GetValueOrDefault(symbol);
-        _shiftDragColumns = 0;
+        _shiftDragSentSeconds = 0;
         _shiftDragging = true;
         CaptureMouse();
         Rebuild();
@@ -849,7 +1052,7 @@ public sealed class ChartView : Grid
     private void MoveShiftDrag(int cx, int cy)
     {
         var symbol = _shiftDragSymbol;
-        if (symbol == null || _renderedK <= 0 || _pointsPerRow <= 0) return;
+        if (symbol == null || _renderedColumnSeconds <= 0 || _pointsPerRow <= 0) return;
         double offset = _shiftDragStartOffset - (cy - _shiftDragStartY) * _pointsPerRow;
         bool changed = false;
         if (_seriesOffsetPoints.GetValueOrDefault(symbol) != offset)
@@ -858,11 +1061,12 @@ public sealed class ChartView : Grid
             SeriesOffsetsChanged?.Invoke();
             changed = true;
         }
-        int columns = cx - _shiftDragStartX;
-        if (columns != _shiftDragColumns)
+        long dragged = (long)(cx - _shiftDragStartX) * _renderedColumnSeconds;
+        dragged -= dragged % ChartColumns.MinuteSeconds;
+        if (dragged != _shiftDragSentSeconds)
         {
-            long step = (long)(columns - _shiftDragColumns) * _renderedK * 60L;
-            _shiftDragColumns = columns;
+            long step = dragged - _shiftDragSentSeconds;
+            _shiftDragSentSeconds = dragged;
             SeriesTimeShiftRequested?.Invoke(symbol, step);
         }
         if (changed) Rebuild();
@@ -903,8 +1107,8 @@ public sealed class ChartView : Grid
 
     private void MoveTiltedDrag(int cx, int cy)
     {
-        if (_renderedK <= 0 || _pointsPerRow <= 0) return;
-        double deltaSeconds = (cx - _tiltedDragStartX) * (_renderedK * 60.0);
+        if (_renderedColumnSeconds <= 0 || _pointsPerRow <= 0) return;
+        double deltaSeconds = (cx - _tiltedDragStartX) * _renderedColumnSeconds;
         double deltaPoints = -(cy - _tiltedDragStartY) * _pointsPerRow;
         bool moved = DragTiltedFamily(true, _tiltedDragUpSeconds + deltaSeconds,
             _tiltedDragUpPoints + deltaPoints);
@@ -936,7 +1140,7 @@ public sealed class ChartView : Grid
     {
         if (TiltedIndex(false) == 0) return true;
         if (TiltedIndex(true) == 0) return false;
-        double bucketSec = _renderedK * 60.0;
+        double bucketSec = _renderedColumnSeconds;
         return NearestTiltedLine(true, cursorX, cursorY, bucketSec).Gap
             <= NearestTiltedLine(false, cursorX, cursorY, bucketSec).Gap;
     }
@@ -963,7 +1167,7 @@ public sealed class ChartView : Grid
 
     public void RotateTiltedGrid(int wheelDelta, bool fine, double cursorX, double cursorY)
     {
-        if (!TiltedGridVisible || _renderedK <= 0 || _pointsPerRow <= 0) return;
+        if (!TiltedGridVisible || _renderedColumnSeconds <= 0 || _pointsPerRow <= 0) return;
         int notches = wheelDelta / 120;
         if (notches == 0) notches = Math.Sign(wheelDelta);
         if (notches == 0) return;
@@ -978,7 +1182,7 @@ public sealed class ChartView : Grid
         _tiltedLockReported = 0;
         double slopeOld = grid.Slope(up);
         if (!double.IsFinite(slopeOld) || slopeOld == 0) return;
-        double bucketSec = _renderedK * 60.0;
+        double bucketSec = _renderedColumnSeconds;
         double angle = TiltedAngleOf(slopeOld, bucketSec);
         double step = notches * (fine ? TiltedAngleFineDegrees : TiltedAngleStepDegrees)
             * Math.PI / 180.0;
@@ -1085,6 +1289,7 @@ public sealed class ChartView : Grid
 
     public void AlignSeriesOffsetToGrid(string symbol)
     {
+        if (_offsetLockedSymbols.Contains(symbol)) return;
         double total = SeriesOffset(symbol);
         double aligned = Math.Round(total / ChartRasterizer.GridPriceStepPoints)
             * ChartRasterizer.GridPriceStepPoints;
@@ -1097,9 +1302,10 @@ public sealed class ChartView : Grid
 
     public void AutoAlignSeries(string symbol)
     {
+        if (_offsetLockedSymbols.Contains(symbol)) return;
         var s = GetSeries(symbol);
         if (s == null || s.BottomPanel) return;
-        if (_renderedK <= 0 || _pointsPerRow <= 0) return;
+        if (_renderedColumnSeconds <= 0 || _pointsPerRow <= 0) return;
         var dpi = VisualTreeHelper.GetDpi(this);
         int pw = (int)Math.Round(ActualWidth * dpi.DpiScaleX);
         int ph = (int)Math.Round(ActualHeight * dpi.DpiScaleY);
@@ -1122,16 +1328,16 @@ public sealed class ChartView : Grid
     }
 
     private (double Lo, double Hi)? VisibleDisplayRange(SymbolSeries s, int pw) =>
-        DisplayRangeAt(s, _renderedK, _renderedStartBucket, pw);
+        DisplayRangeAt(s, _renderedColumnSeconds, _renderedStartBucket, pw);
 
-    private (double Lo, double Hi)? DisplayRangeAt(SymbolSeries s, int k, long viewStart, int pw)
+    private (double Lo, double Hi)? DisplayRangeAt(SymbolSeries s, long columnSeconds, long viewStart, int pw)
     {
         double lo = double.MaxValue;
         double hi = double.MinValue;
-        long bucketSec = k * 60L;
+        long bucketSec = columnSeconds;
         if (s.History.Minutes.Length > 0)
         {
-            var view = ChartColumns.BuildView(s.History, k, viewStart, pw, Compressor);
+            var view = ChartColumns.BuildView(s.History, columnSeconds, viewStart, pw, Compressor);
             var shifts = _flatten?.ColumnShifts(viewStart, pw, bucketSec);
             for (int i = 0; i < view.Columns.Length; i++)
             {
@@ -1164,32 +1370,31 @@ public sealed class ChartView : Grid
         int pw = (int)Math.Round(ActualWidth * dpi.DpiScaleX);
         int ph = (int)Math.Round(ActualHeight * dpi.DpiScaleY);
         if (pw < 1 || ph < 2) return false;
-        bool wasFitView = _minutesPerColumn <= 0;
-        int k = wasFitView ? NavigateMinutesPerColumn : _minutesPerColumn;
-        _minutesPerColumn = k;
-        long bucketSec = k * 60L;
+        bool wasFitView = _columnSeconds <= 0;
+        long bucketSec = wasFitView ? NavigateColumnSeconds : _columnSeconds;
+        _columnSeconds = bucketSec;
         long target = ToVirtual(unixSeconds);
         long start = ClampViewStart(
             target / bucketSec - pw / 2, ViewFirstUnix / bucketSec, ViewLastUnix / bucketSec, pw);
         _viewStartBucket = start;
         if (wasFitView) _pointsPerRow = 0;
-        else CenterSeriesVertically(centerSymbol, k, start, pw, ph);
+        else CenterSeriesVertically(centerSymbol, bucketSec, start, pw, ph);
         CancelPivotDrag();
         CancelSelDrag();
         EndDrag();
         HideHover();
         HideCalendarHover();
-        CloseCalendarPopup();
+        CloseChartPopups();
         Rebuild();
         return true;
     }
 
-    private void CenterSeriesVertically(string? symbol, int k, long viewStart, int pw, int ph)
+    private void CenterSeriesVertically(string? symbol, long columnSeconds, long viewStart, int pw, int ph)
     {
         if (symbol == null || _pointsPerRow <= 0) return;
         var s = GetSeries(symbol);
         if (s == null || s.BottomPanel) return;
-        if (DisplayRangeAt(s, k, viewStart, pw) is not { } range) return;
+        if (DisplayRangeAt(s, columnSeconds, viewStart, pw) is not { } range) return;
         double middle = (range.Lo + range.Hi) / 2 + SeriesOffset(symbol);
         _topPrice = middle + _pointsPerRow * (ph - 1) / 2;
     }
@@ -1198,6 +1403,8 @@ public sealed class ChartView : Grid
     {
         if (oldName == newName) return;
         if (_seriesOffsetPoints.Remove(oldName, out var offset)) _seriesOffsetPoints[newName] = offset;
+        if (_offsetLockedSymbols.Remove(oldName)) _offsetLockedSymbols.Add(newName);
+        if (_averageParents.Remove(oldName, out var parentMinutes)) _averageParents[newName] = parentMinutes;
         if (_hiddenSymbols.Remove(oldName)) _hiddenSymbols.Add(newName);
         if (_collapsedSources.Remove(oldName)) _collapsedSources.Add(newName);
         RefreshHidden();
@@ -1208,6 +1415,7 @@ public sealed class ChartView : Grid
 
     public void SetSeriesOffset(string symbol, double points)
     {
+        if (_offsetLockedSymbols.Contains(symbol)) return;
         if (_seriesOffsetPoints.GetValueOrDefault(symbol) == points) return;
         _seriesOffsetPoints[symbol] = points;
         SeriesOffsetsChanged?.Invoke();
@@ -1216,6 +1424,7 @@ public sealed class ChartView : Grid
 
     public void ShiftSeriesOffset(string symbol, int wheelDelta)
     {
+        if (_offsetLockedSymbols.Contains(symbol)) return;
         var shifted = ShiftedOffset(_seriesOffsetPoints.GetValueOrDefault(symbol), wheelDelta);
         if (shifted == null) return;
         _seriesOffsetPoints[symbol] = shifted.Value;
@@ -1281,13 +1490,39 @@ public sealed class ChartView : Grid
         HideHover();
         ClearRange();
         ForgetHiddenPivotSegments();
-        series = series.ToList();
+        var list = series.ToList();
+        _averageParents.Clear();
+        _offsetLockedSymbols.Clear();
+        for (int i = 0; i < list.Count; i++)
+        {
+            var s = list[i];
+            if (s.AverageWindowBars <= 0) continue;
+            _offsetLockedSymbols.Add(s.Symbol);
+            if (s.SourceSymbol == null) continue;
+            SymbolSeries? parent = null;
+            foreach (var candidate in list)
+                if (string.Equals(candidate.Symbol, s.SourceSymbol, StringComparison.OrdinalIgnoreCase))
+                {
+                    parent = candidate;
+                    break;
+                }
+            if (parent == null) continue;
+            if (s.History.Minutes.Length == 0 && parent.History.Minutes.Length > 0)
+                list[i] = s with
+                {
+                    History = CandleHistory.Build(AverageSeries.Compute(
+                        parent.History.Minutes, s.AverageWindowBars, s.AverageFromFuture,
+                        s.AverageVolumeWeighted)),
+                };
+            _averageParents[s.Symbol] = parent.History.Minutes;
+        }
+        series = list;
         _series = series.Count > 0 ? series : null;
         _shiftLines.Clear();
         _shiftHotSymbol = null;
         _shiftDragSymbol = null;
         _shiftDragging = false;
-        _minutesPerColumn = 0;
+        _columnSeconds = 0;
         _pointsPerRow = 0;
         _priceOffsetPoints = 0;
         _seriesOffsetPoints.Clear();
@@ -1297,6 +1532,19 @@ public sealed class ChartView : Grid
         _flattenSymbol = null;
         _flattenLine = -1;
         _flatten = null;
+        _volumeGroups.Clear();
+        _volumeScales.Clear();
+        _volumeUnits.Clear();
+        _volumePanelBottoms.Clear();
+        _densityUnits.Clear();
+        _densityAutoPerPixel.Clear();
+        foreach (var s in series)
+            if (s.VolumePanel)
+            {
+                _volumeGroups[s.Symbol] = Math.Max(1, s.VolumeGroupMinutes);
+                _volumeScales[s.Symbol] = ClampVolumeScale(s.VolumeBarScale);
+                if (s.VolumeBarUnit > 0) _volumeUnits[s.Symbol] = s.VolumeBarUnit;
+            }
         foreach (var s in series)
             if (s.DensityPanel && s.DensityWindows is { Length: > 0 })
             {
@@ -1327,11 +1575,146 @@ public sealed class ChartView : Grid
             Transform = transform ?? list[idx].Transform,
         };
         _series = list;
+        UpdateAveragesOf(symbol);
         if (transform != null) SeriesOffsetsChanged?.Invoke();
         RecomputeGlobalRange();
         RebuildPivots();
         RebuildFlatten();
         Rebuild();
+    }
+
+    public void PatchSeriesHistory(string symbol, CandleHistory history)
+    {
+        var series = _series;
+        if (series == null || history.Minutes.Length == 0) return;
+        int idx = -1;
+        for (int i = 0; i < series.Count; i++)
+            if (series[i].Symbol == symbol) { idx = i; break; }
+        if (idx < 0) return;
+        var list = new List<SymbolSeries>(series);
+        list[idx] = list[idx] with { History = history };
+        _series = list;
+        UpdateAveragesOf(symbol);
+        Rebuild();
+    }
+
+    private void UpdateAveragesOf(string parentSymbol)
+    {
+        var series = _series;
+        if (series == null) return;
+        SymbolSeries? parent = null;
+        foreach (var s in series)
+            if (string.Equals(s.Symbol, parentSymbol, StringComparison.OrdinalIgnoreCase))
+            {
+                parent = s;
+                break;
+            }
+        if (parent == null) return;
+        List<SymbolSeries>? list = null;
+        for (int i = 0; i < series.Count; i++)
+        {
+            var s = series[i];
+            if (s.AverageWindowBars <= 0
+                || !string.Equals(s.SourceSymbol, parentSymbol, StringComparison.OrdinalIgnoreCase))
+                continue;
+            var minutes = parent.History.Minutes;
+            var used = _averageParents.GetValueOrDefault(s.Symbol);
+            if (ReferenceEquals(used, minutes)) continue;
+            CandleHistory? updated = null;
+            if (used is { Length: > 0 } && s.History.Minutes.Length == used.Length)
+            {
+                var diff = AverageSeries.Diff(
+                    used, minutes, s.AverageWindowBars, s.AverageFromFuture, s.AverageVolumeWeighted);
+                if (diff == null)
+                {
+                    _averageParents[s.Symbol] = minutes;
+                    continue;
+                }
+                var replacement = AverageSeries.ComputeRange(
+                    minutes, s.AverageWindowBars, s.AverageFromFuture, s.AverageVolumeWeighted,
+                    diff.Value.NewFrom, diff.Value.NewToExcl);
+                updated = s.History.WithReplacedRange(
+                    diff.Value.OldFrom, diff.Value.OldToExcl - diff.Value.OldFrom, replacement);
+            }
+            updated ??= CandleHistory.Build(AverageSeries.Compute(
+                minutes, s.AverageWindowBars, s.AverageFromFuture, s.AverageVolumeWeighted));
+            updated.SetLive(AverageSeries.LiveTail(
+                minutes, parent.History.Live, s.AverageWindowBars, s.AverageFromFuture,
+                s.AverageVolumeWeighted));
+            _averageParents[s.Symbol] = minutes;
+            list ??= new List<SymbolSeries>(series);
+            list[i] = s with { History = updated };
+        }
+        if (list != null) _series = list;
+    }
+
+    public void SetAverageWindow(string symbol, int windowBars)
+    {
+        var series = _series;
+        if (series == null || windowBars <= 0) return;
+        int idx = -1;
+        for (int i = 0; i < series.Count; i++)
+            if (string.Equals(series[i].Symbol, symbol, StringComparison.OrdinalIgnoreCase))
+            {
+                idx = i;
+                break;
+            }
+        if (idx < 0) return;
+        var s = series[idx];
+        if (s.AverageWindowBars <= 0 || s.AverageWindowBars == windowBars || s.SourceSymbol == null)
+            return;
+        var list = new List<SymbolSeries>(series);
+        list[idx] = s with { AverageWindowBars = windowBars };
+        _series = list;
+        _averageParents.Remove(s.Symbol);
+        UpdateAveragesOf(s.SourceSymbol);
+        Rebuild();
+    }
+
+    public void MergeVolumeProfiles(string sourceSymbol, IReadOnlyList<ProfileRecord> fresh)
+    {
+        var series = _series;
+        if (series == null || fresh.Count == 0) return;
+        List<SymbolSeries>? list = null;
+        for (int i = 0; i < series.Count; i++)
+        {
+            var s = series[i];
+            if (!s.VolumeWeighted
+                || !string.Equals(s.SourceSymbol, sourceSymbol, StringComparison.OrdinalIgnoreCase))
+                continue;
+            list ??= new List<SymbolSeries>(series);
+            list[i] = s with { VolumeProfiles = (s.VolumeProfiles ?? ProfileSet.Empty).Merge(fresh) };
+        }
+        if (list == null) return;
+        _series = list;
+        Rebuild();
+    }
+
+    public void MergeDepthSnapshots(string sourceSymbol, IReadOnlyList<OrderBook.DepthSnapshot> fresh)
+    {
+        var series = _series;
+        if (series == null || fresh.Count == 0) return;
+        List<SymbolSeries>? list = null;
+        for (int i = 0; i < series.Count; i++)
+        {
+            var s = series[i];
+            if (!s.OrderBookPanel || s.DepthSnapshots == null
+                || !string.Equals(s.SourceSymbol, sourceSymbol, StringComparison.OrdinalIgnoreCase))
+                continue;
+            long last = s.DepthSnapshots.Length > 0
+                ? s.DepthSnapshots[^1].MinuteUnix
+                : long.MinValue;
+            var added = fresh.Where(x => x.MinuteUnix > last).ToArray();
+            if (added.Length == 0) continue;
+            var merged = new OrderBook.DepthSnapshot[s.DepthSnapshots.Length + added.Length];
+            s.DepthSnapshots.CopyTo(merged, 0);
+            added.CopyTo(merged, s.DepthSnapshots.Length);
+            list ??= new List<SymbolSeries>(series);
+            list[i] = s with { DepthSnapshots = merged };
+        }
+        if (list == null) return;
+        _series = list;
+        UpdateDensityOverlay();
     }
 
     public void ReplacePivots(string symbol, PivotPoint[] points)
@@ -1413,10 +1796,10 @@ public sealed class ChartView : Grid
     private const int RateMarkArgb = unchecked((int)0xFF000000);
 
     private static void DrawCalendar(int[] buffer, int width, int height,
-        CalendarEntry[] entries, int minutesPerColumn, long startBucket, WeekendCompressor? map,
+        CalendarEntry[] entries, long columnSeconds, long startBucket, WeekendCompressor? map,
         bool[] shown)
     {
-        long bucketSec = minutesPerColumn * 60L;
+        long bucketSec = columnSeconds;
         long tLo = map == null ? startBucket * bucketSec : map.ToReal(startBucket * bucketSec);
         long tHi = map == null ? (startBucket + width) * bucketSec
             : map.ToReal((startBucket + width) * bucketSec);
@@ -1531,6 +1914,12 @@ public sealed class ChartView : Grid
             if (s.Symbol == symbol) { match = s; break; }
         if (match == null) return;
         match.History.SetLive(tail);
+        foreach (var s in series)
+            if (s.AverageWindowBars > 0
+                && string.Equals(s.SourceSymbol, symbol, StringComparison.OrdinalIgnoreCase))
+                s.History.SetLive(AverageSeries.LiveTail(
+                    match.History.Minutes, tail, s.AverageWindowBars, s.AverageFromFuture,
+                    s.AverageVolumeWeighted));
         if (tail.Length > 0)
         {
             long last = tail[^1].MinuteUnixSeconds;
@@ -1593,7 +1982,7 @@ public sealed class ChartView : Grid
         var pos = e.GetPosition(this);
         int cx = (int)Math.Floor(pos.X * dpi.DpiScaleX);
         int cy = (int)Math.Floor(pos.Y * dpi.DpiScaleY);
-        if ((Keyboard.Modifiers & ModifierKeys.Alt) != 0 && _renderedK > 0)
+        if ((Keyboard.Modifiers & ModifierKeys.Alt) != 0 && _renderedColumnSeconds > 0)
         {
             if (_shiftHotSymbol != null)
             {
@@ -1606,7 +1995,7 @@ public sealed class ChartView : Grid
                 return;
             }
         }
-        if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 && _renderedK > 0)
+        if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 && _renderedColumnSeconds > 0)
         {
             if (_selSymbol != null)
             {
@@ -1620,6 +2009,12 @@ public sealed class ChartView : Grid
             BeginRangeSelect(cx);
             return;
         }
+        var forecastHits = FindForecastMarkersAt(cx, cy);
+        if (forecastHits.Count > 0)
+        {
+            ShowForecastPopup(forecastHits);
+            return;
+        }
         if (_calHoverCircle.Visibility == Visibility.Visible && _calHoverX >= 0)
         {
             double ddx = cx - _calCircleCenterX;
@@ -1631,6 +2026,7 @@ public sealed class ChartView : Grid
                 return;
             }
         }
+        CloseChartPopups();
         var hit = FindPivotAt(cx, cy);
         if (hit != null)
         {
@@ -1667,11 +2063,11 @@ public sealed class ChartView : Grid
         if (pw < 1) return;
         _dragStartX = cx;
         _dragStartY = cy;
-        if (_minutesPerColumn <= 0)
+        if (_columnSeconds <= 0)
         {
-            int fitK = ChartColumns.FitK(ViewFirstUnix, ViewLastUnix, pw);
-            _minutesPerColumn = fitK;
-            _viewStartBucket = ViewFirstUnix / (fitK * 60L);
+            long fit = ChartColumns.FitColumnSeconds(ViewFirstUnix, ViewLastUnix, pw);
+            _columnSeconds = fit;
+            _viewStartBucket = ViewFirstUnix / fit;
         }
         _dragStartViewBucket = _viewStartBucket;
         _dragStartTopPrice = _topPrice;
@@ -1724,11 +2120,10 @@ public sealed class ChartView : Grid
         int dx = (int)Math.Floor(pos.X * dpi.DpiScaleX) - _dragStartX;
         int dy = (int)Math.Floor(pos.Y * dpi.DpiScaleY) - _dragStartY;
         bool changed = false;
-        if (dx != 0 && _minutesPerColumn > 0)
+        if (dx != 0 && _columnSeconds > 0)
         {
-            int k = _minutesPerColumn;
-            long fb = ViewFirstUnix / (k * 60L);
-            long lb = ViewLastUnix / (k * 60L);
+            long fb = ViewFirstUnix / _columnSeconds;
+            long lb = ViewLastUnix / _columnSeconds;
             long newStart = ClampViewStart(_dragStartViewBucket - dx, fb, lb, pw);
             if (newStart != _viewStartBucket)
             {
@@ -1766,7 +2161,7 @@ public sealed class ChartView : Grid
         var dpi = VisualTreeHelper.GetDpi(this);
         int pw = (int)Math.Round(ActualWidth * dpi.DpiScaleX);
         int x = Math.Clamp(cx, 0, Math.Max(0, pw - 1));
-        return ToReal((_renderedStartBucket + x) * (_renderedK * 60L));
+        return ToReal((_renderedStartBucket + x) * _renderedColumnSeconds);
     }
 
     private void BeginRangeSelect(int cx)
@@ -1775,13 +2170,14 @@ public sealed class ChartView : Grid
         CloseStatsPopup();
         HideHover();
         HideCalendarHover();
-        CloseCalendarPopup();
+        CloseChartPopups();
         DeselectLine();
         _rangeSelecting = true;
         _hasRange = true;
         _rangeStartUnix = ColumnTime(cx);
         _rangeEndUnix = _rangeStartUnix;
         UpdateRangeVisuals();
+        UpdateDensityOverlay();
         Focusable = true;
         Focus();
         CaptureMouse();
@@ -1791,6 +2187,7 @@ public sealed class ChartView : Grid
     {
         _rangeEndUnix = ColumnTime(cx);
         UpdateRangeVisuals();
+        UpdateDensityOverlay();
     }
 
     private void EndRangeSelect()
@@ -1808,20 +2205,21 @@ public sealed class ChartView : Grid
         _hasRange = false;
         _rangeBand.Visibility = Visibility.Collapsed;
         _rangeLabel.Visibility = Visibility.Collapsed;
+        UpdateDensityOverlay();
     }
 
     private void UpdateRangeVisuals()
     {
         double viewW = ActualWidth;
         double viewH = ActualHeight;
-        if (!_hasRange || _renderedK <= 0 || viewW < 1 || viewH < 1)
+        if (!_hasRange || _renderedColumnSeconds <= 0 || viewW < 1 || viewH < 1)
         {
             _rangeBand.Visibility = Visibility.Collapsed;
             _rangeLabel.Visibility = Visibility.Collapsed;
             return;
         }
         var dpi = VisualTreeHelper.GetDpi(this);
-        long bucketSec = _renderedK * 60L;
+        long bucketSec = _renderedColumnSeconds;
         long lo = Math.Min(_rangeStartUnix, _rangeEndUnix);
         long hi = Math.Max(_rangeStartUnix, _rangeEndUnix);
         double x1 = (ToVirtual(lo) / bucketSec - _renderedStartBucket) / dpi.DpiScaleX;
@@ -1934,7 +2332,7 @@ public sealed class ChartView : Grid
             return;
         }
         var series = _series;
-        if (series == null || _renderedK <= 0) return;
+        if (series == null || _renderedColumnSeconds <= 0) return;
         var dpi = VisualTreeHelper.GetDpi(this);
         var mouse = Mouse.GetPosition(this);
         long lo;
@@ -1947,7 +2345,7 @@ public sealed class ChartView : Grid
             hi = ColumnTime(cx + StatsCursorRadiusPx);
             if (hi < lo) (lo, hi) = (hi, lo);
         }
-        var rows = ComputeRangeStats(lo, hi + _renderedK * 60L - 1);
+        var rows = ComputeRangeStats(MinuteFloor(lo), hi + _renderedColumnSeconds - 1);
         if (rows.Count == 0) return;
         CloseStatsPopup();
         var content = BuildStatsContent(lo, hi, rows);
@@ -1981,6 +2379,8 @@ public sealed class ChartView : Grid
     private static readonly string[] StatsHeaders =
         { "", "min", "max", "pips", "avg", "in", "out" };
 
+    private const double StatsTenthFontSize = 8;
+
     private FrameworkElement BuildStatsContent(long loUnix, long hiUnix, List<RangeStats> rows)
     {
         var table = new Grid();
@@ -2003,8 +2403,9 @@ public sealed class ChartView : Grid
                 continue;
             }
             string format = row.Digits > 0 ? "0." + new string('0', row.Digits) : "0";
-            table.Children.Add(StatsCell(PriceText(row.Min, format), r + 1, 1, brush, true));
-            table.Children.Add(StatsCell(PriceText(row.Max, format), r + 1, 2, brush, true));
+            string tenthFormat = "0." + new string('0', row.Digits + 1);
+            table.Children.Add(StatsTenthCell(PriceText(row.Min, tenthFormat), r + 1, 1, brush));
+            table.Children.Add(StatsTenthCell(PriceText(row.Max, tenthFormat), r + 1, 2, brush));
             table.Children.Add(StatsCell(
                 row.SizePips.ToString("0.0", CultureInfo.InvariantCulture), r + 1, 3, brush, true));
             table.Children.Add(StatsCell(PriceText(row.Avg, format), r + 1, 4, brush, true));
@@ -2069,6 +2470,13 @@ public sealed class ChartView : Grid
         return block;
     }
 
+    private static TextBlock StatsTenthCell(string text, int row, int column, Brush brush)
+    {
+        var block = StatsCell(text[..^1], row, column, brush, true);
+        block.Inlines.Add(new Run(text[^1..]) { FontSize = StatsTenthFontSize });
+        return block;
+    }
+
     private static string PriceText(double points, string format) =>
         (points / 100000.0).ToString(format, CultureInfo.InvariantCulture);
 
@@ -2097,7 +2505,7 @@ public sealed class ChartView : Grid
     private void AlignSeriesToGrid(Point pos)
     {
         var seriesList = _series;
-        if (seriesList == null || _pointsPerRow <= 0 || _renderedK <= 0) return;
+        if (seriesList == null || _pointsPerRow <= 0 || _renderedColumnSeconds <= 0) return;
         var dpi = VisualTreeHelper.GetDpi(this);
         int pw = (int)Math.Round(ActualWidth * dpi.DpiScaleX);
         int ph = (int)Math.Round(ActualHeight * dpi.DpiScaleY);
@@ -2108,17 +2516,18 @@ public sealed class ChartView : Grid
         double cursorPrice = _topPrice - cy * _pointsPerRow;
         double gridPrice = Math.Round(cursorPrice / ChartRasterizer.GridPriceStepPoints)
             * ChartRasterizer.GridPriceStepPoints;
-        double flattenShift = FlattenShiftVirtual(bucket * (_renderedK * 60L));
+        double flattenShift = FlattenShiftVirtual(bucket * _renderedColumnSeconds);
         var desired = new Dictionary<string, double>();
         foreach (var s in seriesList)
         {
-            var column = ChartColumns.NearestColumn(s.History.Minutes, _renderedK, bucket, Compressor);
+            var column = ChartColumns.NearestColumn(s.History.Minutes, _renderedColumnSeconds, bucket, Compressor);
             if (!column.HasData) continue;
             desired[s.Symbol] = gridPrice - flattenShift - column.Avg - _priceOffsetPoints;
         }
         bool changed = false;
         foreach (var s in seriesList)
         {
+            if (_offsetLockedSymbols.Contains(s.Symbol)) continue;
             if (!desired.TryGetValue(s.Symbol, out var effective)) continue;
             double sourceEffective = s.SourceSymbol == null ? 0
                 : desired.TryGetValue(s.SourceSymbol, out var se) ? se
@@ -2137,8 +2546,8 @@ public sealed class ChartView : Grid
 
     private bool RangeContainsColumn(int cx)
     {
-        if (!_hasRange || _rangeSelecting || _renderedK <= 0) return false;
-        long bucketSec = _renderedK * 60L;
+        if (!_hasRange || _rangeSelecting || _renderedColumnSeconds <= 0) return false;
+        long bucketSec = _renderedColumnSeconds;
         long lo = Math.Min(_rangeStartUnix, _rangeEndUnix);
         long hi = Math.Max(_rangeStartUnix, _rangeEndUnix);
         long x1 = ToVirtual(lo) / bucketSec - _renderedStartBucket;
@@ -2202,13 +2611,13 @@ public sealed class ChartView : Grid
     {
         var seriesList = _series;
         if (seriesList == null || SelectedRange is not { } range) return;
-        if (_pointsPerRow <= 0 || _renderedK <= 0) return;
+        if (_pointsPerRow <= 0 || _renderedColumnSeconds <= 0) return;
         var dpi = VisualTreeHelper.GetDpi(this);
         int ph = (int)Math.Round(ActualHeight * dpi.DpiScaleY);
         if (ph < 2) return;
         int cy = Math.Clamp((int)Math.Floor(pos.Y * dpi.DpiScaleY), 0, ph - 1);
-        long loUnix = range.StartUnix;
-        long hiUnix = range.EndUnix + _renderedK * 60L - 1;
+        long loUnix = MinuteFloor(range.StartUnix);
+        long hiUnix = range.EndUnix + _renderedColumnSeconds - 1;
         var desired = new Dictionary<string, double>();
         double screenRange = _pointsPerRow * (ph - 1);
         var (target, pan) = GridTarget(_topPrice - cy * _pointsPerRow, screenRange, toMax);
@@ -2264,6 +2673,79 @@ public sealed class ChartView : Grid
         return Math.Clamp(start, lo, hi);
     }
 
+    public void ShiftDensityScale(string symbol, int delta)
+    {
+        double current = _densityUnits.TryGetValue(symbol, out var live) && live > 0
+            ? live
+            : DensityPerPixelOf(symbol);
+        if (current <= 0) return;
+        double next = Math.Clamp(
+            delta > 0 ? current / ZoomStep : current * ZoomStep, DensityUnitMin, DensityUnitMax);
+        _densityUnits[symbol] = next;
+        DensityScaleChanged?.Invoke(symbol, next);
+        UpdateDensityOverlay();
+    }
+
+    private double DensityPerPixelOf(string symbol)
+    {
+        var s = GetSeries(symbol);
+        if (s != null && s.DensityScalePerPixel > 0) return s.DensityScalePerPixel;
+        return _densityAutoPerPixel.TryGetValue(symbol, out var auto) ? auto : 0;
+    }
+
+    public void ShiftVolumeScale(string symbol, int delta)
+    {
+        var series = VolumeSeries(symbol);
+        if (series == null) return;
+        double scale = VolumeScaleOf(series);
+        double next = ClampVolumeScale(delta > 0 ? scale * ZoomStep : scale / ZoomStep);
+        if (next == scale) return;
+        _volumeScales[symbol] = next;
+        VolumeScaleChanged?.Invoke(symbol, next);
+        Rebuild();
+    }
+
+    private static double ClampVolumeScale(double scale) =>
+        double.IsFinite(scale) && scale > 0
+            ? Math.Clamp(scale, VolumeScaleMin, VolumeScaleMax)
+            : 1.0;
+
+    private double VolumeScaleOf(SymbolSeries s) =>
+        _volumeScales.TryGetValue(s.Symbol, out var v)
+            ? ClampVolumeScale(v)
+            : ClampVolumeScale(s.VolumeBarScale);
+
+    public void ShiftVolumeGroup(string symbol, int delta)
+    {
+        var series = VolumeSeries(symbol);
+        if (series == null || series.VolumeGroupLocked) return;
+        int current = VolumeGroupOf(series);
+        int next = IndicatorSymbol.StepVolumeGroup(current, delta);
+        if (next == current) return;
+        _volumeGroups[symbol] = next;
+        VolumeGroupChanged?.Invoke(symbol, next);
+        if (_volumeUnits.TryGetValue(symbol, out var unit) && unit > 0)
+        {
+            double scaled = unit * next / current;
+            _volumeUnits[symbol] = scaled;
+            VolumeUnitChanged?.Invoke(symbol, scaled);
+        }
+        Rebuild();
+    }
+
+    private string? VolumeBandSymbolAt(double y)
+    {
+        foreach (var (symbol, bottom) in _volumePanelBottoms)
+            if (y <= bottom && y > bottom - VolumeWheelBandPx) return symbol;
+        return null;
+    }
+
+    private SymbolSeries? VolumeSeries(string symbol) =>
+        _series?.FirstOrDefault(s => s.VolumePanel && s.Symbol == symbol);
+
+    private int VolumeGroupOf(SymbolSeries s) =>
+        _volumeGroups.TryGetValue(s.Symbol, out var g) ? g : Math.Max(1, s.VolumeGroupMinutes);
+
     private void OnZoom(object sender, MouseWheelEventArgs e)
     {
         if (_pivotDragging || _selDragging)
@@ -2272,6 +2754,19 @@ public sealed class ChartView : Grid
             return;
         }
         HideHover();
+        CloseChartPopups();
+        if (Keyboard.Modifiers == ModifierKeys.None || Keyboard.Modifiers == ModifierKeys.Alt)
+        {
+            var dpiBand = VisualTreeHelper.GetDpi(this);
+            string? banded = VolumeBandSymbolAt(e.GetPosition(this).Y * dpiBand.DpiScaleY);
+            if (banded != null)
+            {
+                e.Handled = true;
+                if (Keyboard.Modifiers == ModifierKeys.Alt) ShiftVolumeGroup(banded, e.Delta);
+                else ShiftVolumeScale(banded, e.Delta);
+                return;
+            }
+        }
         if (TiltedGridVisible && (Keyboard.Modifiers & ModifierKeys.Alt) != 0)
         {
             var dpiRot = VisualTreeHelper.GetDpi(this);
@@ -2293,43 +2788,36 @@ public sealed class ChartView : Grid
         if (pw < 1) return;
         long firstUnix = ViewFirstUnix;
         long lastUnix = ViewLastUnix;
-        int fitK = ChartColumns.FitK(firstUnix, lastUnix, pw);
-        int k = _minutesPerColumn <= 0 || _minutesPerColumn > fitK ? fitK : _minutesPerColumn;
-        long startBucket = _minutesPerColumn <= 0 ? firstUnix / (k * 60L) : _viewStartBucket;
+        long fit = ChartColumns.FitColumnSeconds(firstUnix, lastUnix, pw);
+        long cs = _columnSeconds <= 0 || _columnSeconds > fit ? fit : _columnSeconds;
+        long startBucket = _columnSeconds <= 0 ? firstUnix / cs : _viewStartBucket;
         var pos = e.GetPosition(this);
         int xm = Math.Clamp((int)Math.Floor(pos.X * dpi.DpiScaleX), 0, pw - 1);
-        long anchorTime = (startBucket + xm) * (k * 60L);
-        int newK = e.Delta > 0
-            ? (int)Math.Round(k / ZoomStep)
-            : (int)Math.Round(k * ZoomStep);
-        if (newK == k) newK = e.Delta > 0 ? k - 1 : k + 1;
-        if (newK < 1) newK = 1;
-        newK = ChartColumns.SnapK(newK);
-        if (newK == k)
-            newK = e.Delta > 0
-                ? Math.Max(1, ChartColumns.SnapK(k - ChartColumns.Quantum(k)))
-                : k + ChartColumns.Quantum(k);
+        long anchorTime = (startBucket + xm) * cs;
+        long next = ChartColumns.Zoomed(cs, e.Delta > 0, ZoomStep);
         e.Handled = true;
-        if (newK >= fitK)
+        bool subMinute = cs <= ChartColumns.MinuteSeconds || next <= ChartColumns.MinuteSeconds;
+        bool zoomVertical = !horizontalOnly && !subMinute;
+        if (next >= fit)
         {
-            if (_minutesPerColumn <= 0) return;
-            _minutesPerColumn = 0;
-            if (!horizontalOnly) ApplyVerticalZoom(PairedVerticalFactor((double)fitK / k), pos.Y);
+            if (_columnSeconds <= 0) return;
+            _columnSeconds = 0;
+            if (zoomVertical) ApplyVerticalZoom(PairedVerticalFactor((double)fit / cs), pos.Y);
             Rebuild();
             return;
         }
-        if (newK == k && _minutesPerColumn > 0) return;
-        long newFirstBucket = firstUnix / (newK * 60L);
-        long newLastBucket = lastUnix / (newK * 60L);
-        long newStart = ClampViewStart(anchorTime / (newK * 60L) - xm, newFirstBucket, newLastBucket, pw);
-        _minutesPerColumn = newK;
+        if (next == cs && _columnSeconds > 0) return;
+        long newFirstBucket = firstUnix / next;
+        long newLastBucket = lastUnix / next;
+        long newStart = ClampViewStart(anchorTime / next - xm, newFirstBucket, newLastBucket, pw);
+        _columnSeconds = next;
         _viewStartBucket = newStart;
         if (_dragging)
         {
             _dragStartX = (int)Math.Floor(pos.X * dpi.DpiScaleX);
             _dragStartViewBucket = newStart;
         }
-        if (!horizontalOnly) ApplyVerticalZoom(PairedVerticalFactor((double)newK / k), pos.Y);
+        if (zoomVertical) ApplyVerticalZoom(PairedVerticalFactor((double)next / cs), pos.Y);
         Rebuild();
     }
 
@@ -2363,23 +2851,27 @@ public sealed class ChartView : Grid
             return;
         }
         _computing = true;
-        int k;
+        long k;
         long startBucket;
-        if (_minutesPerColumn <= 0)
+        if (_columnSeconds <= 0)
         {
-            k = ChartColumns.FitK(ViewFirstUnix, ViewLastUnix, pw);
-            startBucket = ViewFirstUnix / (k * 60L);
+            k = ChartColumns.FitColumnSeconds(ViewFirstUnix, ViewLastUnix, pw);
+            startBucket = ViewFirstUnix / k;
         }
         else
         {
-            k = _minutesPerColumn;
-            long fb = ViewFirstUnix / (k * 60L);
-            long lb = ViewLastUnix / (k * 60L);
+            k = _columnSeconds;
+            long fb = ViewFirstUnix / k;
+            long lb = ViewLastUnix / k;
             startBucket = ClampViewStart(_viewStartBucket, fb, lb, pw);
             _viewStartBucket = startBucket;
         }
         double topPrice = _topPrice;
         double pointsPerRow = _pointsPerRow;
+        var forecastMarkers = new List<ForecastMarker>();
+        var forecastMarks = _forecastHidden ? Array.Empty<ForecastMark>() : SelectedDayForecasts();
+        var forecastHover =
+            _forecastHidden ? Array.Empty<ForecastMark>() : _forecastHover;
         var lineOffsets = new double[visibleSeries.Count];
         for (int i = 0; i < visibleSeries.Count; i++)
             lineOffsets[i] = SeriesOffset(visibleSeries[i].Symbol);
@@ -2392,6 +2884,7 @@ public sealed class ChartView : Grid
         var calEntries = _calendarEntries;
         var calShown = _calendarShown;
         var map = Compressor;
+        bool sessionBands = _sessionsVisible;
         var flatten = _flatten;
         var tiltedGrid = new TiltedGridSettings(
             TiltedRenderSettings(true), TiltedRenderSettings(false));
@@ -2400,24 +2893,31 @@ public sealed class ChartView : Grid
         string? hotShift = _shiftHotSymbol;
         int hotShiftWidth = _shiftDragging ? 1 : ShiftHotWidthPx;
         var shiftLines = new List<(string Symbol, RenderLine Line)>();
+        var spreadCols = new List<(string Symbol, int[] Columns)>();
+        var volumeCols = new List<(string Symbol, VolumeColumnSet Columns)>();
+        var volumeUnitsUsed = new List<(string Symbol, double Unit, int Bottom)>();
+        var volumeScales = new Dictionary<string, double>(_volumeScales);
+        var volumeGroups = new Dictionary<string, int>(_volumeGroups);
+        var volumeUnits = new Dictionary<string, double>(_volumeUnits);
         RenderLine? hotLine = null;
         try
         {
             await Task.Run(() =>
             {
                 var lines = new List<RenderLine>(visibleSeries.Count);
-                var columnShifts = flatten?.ColumnShifts(startBucket - pw, pw * 2, k * 60L);
+                var columnShifts = flatten?.ColumnShifts(startBucket - pw, pw * 2, k);
                 int hotIndex = -1;
                 for (int si = 0; si < visibleSeries.Count; si++)
                 {
                     var s = visibleSeries[si];
                     if (s.History.Minutes.Length == 0 || s.BottomPanel) continue;
-                    var view = ChartColumns.BuildView(s.History, k, startBucket - pw, pw * 2, map);
-                    var chosen = LineDecimator.ChooseValues(view.Columns, pw, NoiseThreshold);
+                    var (view, chosen) = ChartColumns.BuildLine(
+                        s.History, k, startBucket - pw, pw * 2, map, pw, NoiseThreshold);
                     var last = s.History.LastCandle;
                     int lastPrice = s.History.HasLastTick ? s.History.LastTick : last.Avg;
+                    long lastVirtual = map?.ToVirtual(last.MinuteUnixSeconds) ?? last.MinuteUnixSeconds;
                     var line = new RenderLine(view, chosen, s.ColorArgb, lastPrice,
-                        (map?.ToVirtual(last.MinuteUnixSeconds) ?? last.MinuteUnixSeconds) / (k * 60L),
+                        (lastVirtual + ChartColumns.MinuteSeconds - 1) / k,
                         lineOffsets[si], columnShifts);
                     if (s.TimeShift) shiftLines.Add((s.Symbol, line));
                     if (s.Symbol == hotShift) hotIndex = lines.Count;
@@ -2446,7 +2946,7 @@ public sealed class ChartView : Grid
                             foreach (var p in poly)
                             {
                                 long v = map?.ToVirtual(p.UnixSeconds) ?? p.UnixSeconds;
-                                long b = v / (k * 60L);
+                                long b = v / k;
                                 if (b < startBucket || b >= startBucket + pw) continue;
                                 int d = s.Transform.ToDisplay(p.Value)
                                     + (int)Math.Round(flatten?.ShiftAt(v) ?? 0);
@@ -2468,7 +2968,7 @@ public sealed class ChartView : Grid
                 }
                 if (_staging.Length < pw * ph) _staging = new int[pw * ph];
                 ChartRasterizer.Render(_staging, pw, ph, lines, Palette, k, startBucket, edges,
-                    topPrice, pointsPerRow, tiltedGrid);
+                    topPrice, pointsPerRow, tiltedGrid, sessionBands);
                 if (pointsPerRow > 0)
                     for (int si = 0; si < visibleSeries.Count; si++)
                     {
@@ -2505,15 +3005,62 @@ public sealed class ChartView : Grid
                         DrawDealMarks(_staging, pw, ph, s, flatten, map, k, startBucket,
                             topPrice, pointsPerRow, lineOffsets[si]);
                     }
+                if (pointsPerRow > 0 && forecastMarks.Length > 0)
+                    DrawForecasts(_staging, pw, ph, forecastMarks, forecastHover, visibleSeries,
+                        lineOffsets, flatten, map, k, startBucket, topPrice, pointsPerRow,
+                        forecastMarkers);
                 if (calVisible && calEntries.Length > 0)
                     DrawCalendar(_staging, pw, ph, calEntries, k, startBucket, map, calShown);
                 if (hotLine != null && pointsPerRow > 0)
                     ChartRasterizer.DrawSeries(_staging, pw, ph, hotLine.Value, startBucket,
                         topPrice, pointsPerRow);
-                int panelBottom = ph - 1 - ChartRasterizer.EntryPanelBottomMarginPx;
+                int panelBottom = ph - 1;
                 foreach (var s in visibleSeries)
                 {
-                    if (!s.BottomPanel || s.History.Minutes.Length == 0) continue;
+                    if (!s.BottomPanel) continue;
+                    if (s.SpreadPanel)
+                    {
+                        var src = s.SourceSymbol == null
+                            ? null
+                            : seriesList.FirstOrDefault(x => x.Symbol == s.SourceSymbol);
+                        if (src == null
+                            || (src.History.Minutes.Length == 0 && src.History.Live.Length == 0))
+                            continue;
+                        var tenths = SpreadColumns.Build(src.History, k, startBucket, pw, map);
+                        spreadCols.Add((s.Symbol, tenths));
+                        ChartRasterizer.DrawSpreadPanel(
+                            _staging, pw, ph, tenths, panelBottom, s.ColorArgb);
+                        panelBottom -=
+                            ChartRasterizer.SpreadPanelHeightPx + ChartRasterizer.EntryPanelGapPx;
+                        continue;
+                    }
+                    if (s.VolumePanel)
+                    {
+                        var src = s.SourceSymbol == null
+                            ? null
+                            : seriesList.FirstOrDefault(x => x.Symbol == s.SourceSymbol);
+                        if (src == null
+                            || (src.History.Minutes.Length == 0 && src.History.Live.Length == 0))
+                            continue;
+                        int group = volumeGroups.TryGetValue(s.Symbol, out var vg)
+                            ? vg
+                            : Math.Max(1, s.VolumeGroupMinutes);
+                        var vols = VolumeColumns.Build(src.History, s.VolumeProfiles,
+                            k, startBucket, pw, map, group);
+                        volumeCols.Add((s.Symbol, vols));
+                        double used = ChartRasterizer.DrawVolumePanel(
+                            _staging, pw, ph, vols, panelBottom, s.ColorArgb,
+                            volumeScales.TryGetValue(s.Symbol, out var vs)
+                                ? vs
+                                : ClampVolumeScale(s.VolumeBarScale),
+                            s.VolumeSplitSides ? s.SellColorArgb : 0,
+                            volumeUnits.TryGetValue(s.Symbol, out var vu) ? vu : 0);
+                        volumeUnitsUsed.Add((s.Symbol, used, panelBottom));
+                        panelBottom -=
+                            ChartRasterizer.VolumePanelHeightPx + ChartRasterizer.EntryPanelGapPx;
+                        continue;
+                    }
+                    if (s.History.Minutes.Length == 0) continue;
                     if (s.AgePanel)
                     {
                         var ages = PriceAgeColumns.Build(
@@ -2521,7 +3068,7 @@ public sealed class ChartView : Grid
                         ChartRasterizer.DrawAgePanel(_staging, pw, ph, ages, panelBottom, s.ColorArgb);
                         panelBottom -= ChartRasterizer.AgePanelHeightPx + ChartRasterizer.EntryPanelGapPx;
                     }
-                    else
+                    else if (s.EntryPanel)
                     {
                         var states = EntryPointsColumns.Build(s.History, k, startBucket, pw, map);
                         ChartRasterizer.DrawEntryPanel(
@@ -2537,12 +3084,26 @@ public sealed class ChartView : Grid
                     _topPrice = topPrice;
                     _pointsPerRow = pointsPerRow;
                 }
-                _renderedK = k;
+                _renderedColumnSeconds = k;
                 _renderedStartBucket = startBucket;
                 _renderedTopPrice = topPrice;
                 _renderedPointsPerRow = pointsPerRow;
                 _shiftLines.Clear();
                 _shiftLines.AddRange(shiftLines);
+                _renderedSpreadColumns.Clear();
+                foreach (var (sym, cols) in spreadCols) _renderedSpreadColumns[sym] = cols;
+                _renderedVolumeColumns.Clear();
+                foreach (var (sym, cols) in volumeCols) _renderedVolumeColumns[sym] = cols;
+                _volumePanelBottoms.Clear();
+                foreach (var (sym, unit, bottom) in volumeUnitsUsed)
+                {
+                    _volumePanelBottoms[sym] = bottom;
+                    if (unit <= 0 || (_volumeUnits.TryGetValue(sym, out var have) && have > 0)) continue;
+                    _volumeUnits[sym] = unit;
+                    VolumeUnitChanged?.Invoke(sym, unit);
+                }
+                _forecastMarkers.Clear();
+                _forecastMarkers.AddRange(forecastMarkers);
                 Present(pw, ph, dpi);
                 if (swRender != null)
                 {
@@ -2554,7 +3115,8 @@ public sealed class ChartView : Grid
                 StateChanged?.Invoke(new ChartViewState
                 {
                     WeekendsHidden = _weekendsHidden,
-                    MinutesPerColumn = _minutesPerColumn,
+                    SessionsVisible = _sessionsVisible,
+                    ColumnSeconds = _columnSeconds,
                     ViewStartBucket = _viewStartBucket,
                     TopPrice = _topPrice,
                     PointsPerRow = _pointsPerRow,
@@ -2564,6 +3126,7 @@ public sealed class ChartView : Grid
                     HiddenSymbols = new List<string>(_hiddenSymbols),
                     CollapsedSymbols = new List<string>(_collapsedSources),
                     CalendarVisible = _calendarVisible,
+                    ForecastHidden = _forecastHidden,
                     FlattenSymbol = _flattenSymbol,
                     FlattenLine = _flattenLine,
                     TiltedUpGridIndex = _tiltedUpIndex,
@@ -2587,11 +3150,297 @@ public sealed class ChartView : Grid
         }
     }
 
+    private static void DrawForecasts(int[] buffer, int pw, int ph, ForecastMark[] marks,
+        ForecastMark[] hover, List<SymbolSeries> all, double[] offsets, FlattenMap? flatten,
+        WeekendCompressor? map, long columnSeconds, long startBucket, double topPrice,
+        double pointsPerRow, List<ForecastMarker> markers)
+    {
+        double bucketSec = columnSeconds;
+        int half = ChartRasterizer.ForecastMarkerHalfPx;
+        foreach (var mark in marks)
+        {
+            int ti = -1;
+            for (int i = 0; i < all.Count; i++)
+            {
+                if (all[i].Transform == null || all[i].BottomPanel) continue;
+                if (IndicatorSymbol.NameKey(all[i].Symbol) != IndicatorSymbol.NameKey(mark.Pair))
+                    continue;
+                ti = i;
+                break;
+            }
+            if (ti < 0) continue;
+            var target = all[ti];
+            double offset = offsets[ti];
+            int color = target.ColorArgb;
+            long va = map?.ToVirtual(mark.FromUnix) ?? mark.FromUnix;
+            long vb = map?.ToVirtual(mark.ToUnix) ?? mark.ToUnix;
+            if (vb <= va) continue;
+            double xa = va / bucketSec - startBucket;
+            double xb = vb / bucketSec - startBucket;
+            if (xb < -half || xa >= pw + half) continue;
+            double d1 = target.Transform!.ToDisplay(mark.TopValue);
+            double d2 = target.Transform.ToDisplay(mark.BottomValue);
+            double hiDisplay = Math.Max(d1, d2);
+            double loDisplay = Math.Min(d1, d2);
+            bool filled = mark.Band
+                && hiDisplay - loDisplay <= ChartRasterizer.ForecastFillMaxPoints;
+            bool hot = HasMark(hover, mark);
+            int xs = Math.Max(0, (int)Math.Floor(xa + 0.5));
+            int xe = Math.Min(pw - 1, (int)Math.Floor(xb + 0.5));
+            for (int px = xs; px <= xe; px++)
+            {
+                long v = (long)((px + startBucket) * bucketSec);
+                double shift = flatten?.ShiftAt(v) ?? 0;
+                int yHi = (int)Math.Floor((topPrice - offset - hiDisplay - shift) / pointsPerRow + 0.5);
+                int yLo = (int)Math.Floor((topPrice - offset - loDisplay - shift) / pointsPerRow + 0.5);
+                if (filled && yLo - yHi > 1)
+                    ChartRasterizer.BlendColumn(buffer, pw, ph, px, yHi + 1, yLo - 1,
+                        color, ChartRasterizer.ForecastBandAlpha);
+                ChartRasterizer.BlendPixel(buffer, pw, ph, px, yHi, color,
+                    ChartRasterizer.ForecastEdgeAlpha);
+                if (hot && (!mark.Band || yHi + 1 < yLo))
+                    ChartRasterizer.BlendPixel(buffer, pw, ph, px, yHi + 1, color,
+                        ChartRasterizer.ForecastEdgeAlpha);
+                if (mark.Band)
+                {
+                    ChartRasterizer.BlendPixel(buffer, pw, ph, px, yLo, color,
+                        ChartRasterizer.ForecastEdgeAlpha);
+                    if (hot && yLo - 1 > yHi + 1)
+                        ChartRasterizer.BlendPixel(buffer, pw, ph, px, yLo - 1, color,
+                            ChartRasterizer.ForecastEdgeAlpha);
+                }
+            }
+            if (xb >= 0 && xb < pw)
+            {
+                double endShift = flatten?.ShiftAt(vb) ?? 0;
+                int xEnd = (int)Math.Round(xb);
+                DrawForecastEndCap(buffer, pw, ph, xEnd,
+                    (topPrice - offset - hiDisplay - endShift) / pointsPerRow, color);
+                if (mark.Band)
+                    DrawForecastEndCap(buffer, pw, ph, xEnd,
+                        (topPrice - offset - loDisplay - endShift) / pointsPerRow, color);
+            }
+            if (xa < -half || xa >= pw + half) continue;
+            double startShift = flatten?.ShiftAt(va) ?? 0;
+            double Y(double display) =>
+                (topPrice - offset - display - startShift) / pointsPerRow;
+            if (mark.Band && !filled)
+            {
+                AddForecastMarker(buffer, pw, ph, markers, mark, color, half, xa, Y(hiDisplay));
+                AddForecastMarker(buffer, pw, ph, markers, mark, color, half, xa, Y(loDisplay));
+                continue;
+            }
+            AddForecastMarker(buffer, pw, ph, markers, mark, color, half, xa,
+                Y(mark.Band ? (hiDisplay + loDisplay) / 2 : hiDisplay));
+        }
+    }
+
+    private static void DrawForecastEndCap(int[] buffer, int pw, int ph,
+        int x, double y, int color)
+    {
+        int cy = (int)Math.Round(y);
+        int half = ChartRasterizer.ForecastEndCapHalfPx;
+        for (int dy = -half; dy <= half; dy++)
+            ChartRasterizer.BlendPixel(buffer, pw, ph, x, cy + dy, color,
+                ChartRasterizer.ForecastEdgeAlpha);
+    }
+
+    private static void AddForecastMarker(int[] buffer, int pw, int ph,
+        List<ForecastMarker> markers, ForecastMark mark, int color, int half,
+        double x, double y)
+    {
+        int cxp = (int)Math.Round(x);
+        int cyp = (int)Math.Round(y);
+        if (cyp < -half || cyp >= ph + half) return;
+        int outline = unchecked((int)0xFFFFFFFF);
+        if (mark.Record.IsOwn)
+        {
+            ChartRasterizer.FillRightTriangle(buffer, pw, ph, cxp, cyp, half + 1, outline);
+            ChartRasterizer.FillRightTriangle(buffer, pw, ph, cxp, cyp, half, color);
+        }
+        else
+        {
+            ChartRasterizer.StrokeDisc(buffer, pw, ph, cxp, cyp, half + 1, outline);
+            ChartRasterizer.FillDisc(buffer, pw, ph, cxp, cyp, half, color);
+        }
+        markers.Add(new ForecastMarker(cxp, cyp, half, mark, color));
+    }
+
+    private List<ForecastMarker> FindForecastMarkersAt(int x, int y)
+    {
+        var hits = new List<(double Dist, ForecastMarker Marker)>();
+        foreach (var c in _forecastMarkers)
+        {
+            double dx = x - c.X;
+            double dy = y - c.Y;
+            double r = c.HalfPx + ChartRasterizer.ForecastMarkerHitPx;
+            double d = dx * dx + dy * dy;
+            if (d <= r * r) hits.Add((d, c));
+        }
+        return hits.OrderBy(h => h.Dist).Select(h => h.Marker).ToList();
+    }
+
+    private void ShowForecastPopup(List<ForecastMarker> markers)
+    {
+        if (markers.Count == 0) return;
+        var marker = markers[0];
+        CloseChartPopups();
+        var dpi = VisualTreeHelper.GetDpi(this);
+        double cxDip = marker.X / dpi.DpiScaleX;
+        double cyDip = marker.Y / dpi.DpiScaleY;
+        _forecastPopup = new Popup
+        {
+            PlacementTarget = this,
+            Placement = PlacementMode.Top,
+            PlacementRectangle = new Rect(
+                cxDip - marker.HalfPx, cyDip - marker.HalfPx,
+                2 * marker.HalfPx, 2 * marker.HalfPx),
+            StaysOpen = true,
+            AllowsTransparency = true,
+            Child = BuildForecastPopupContent(markers),
+        };
+        _forecastPopup.IsOpen = true;
+    }
+
+    private void CloseForecastPopup()
+    {
+        if (_forecastPopup == null) return;
+        _forecastPopup.IsOpen = false;
+        _forecastPopup = null;
+    }
+
+    private void CloseChartPopups()
+    {
+        CloseCalendarPopup();
+        CloseForecastPopup();
+    }
+
+    private static string ForecastPriceText(double price, string pair)
+    {
+        int digits = pair.EndsWith("JPY", StringComparison.OrdinalIgnoreCase) ? 3 : 5;
+        return price.ToString("F" + digits, CultureInfo.InvariantCulture);
+    }
+
+    private FrameworkElement BuildForecastPopupContent(List<ForecastMarker> markers)
+    {
+        var panel = new StackPanel();
+        for (int ci = 0; ci < markers.Count; ci++)
+        {
+            if (ci > 0)
+                panel.Children.Add(new Border
+                {
+                    Height = 1,
+                    Background = BrushFor(unchecked((int)0xFFDDDDDD)),
+                    Margin = new Thickness(0, 10, 0, 10),
+                });
+            AddForecastBlock(panel, markers[ci]);
+        }
+        var closeButton = new Button
+        {
+            Content = "\u2715",
+            Width = 18,
+            Height = 18,
+            Padding = new Thickness(0),
+            FontSize = 11,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Cursor = Cursors.Hand,
+            ToolTip = "Close",
+        };
+        closeButton.Click += (_, _) => CloseForecastPopup();
+        var scroll = new ScrollViewer
+        {
+            Content = panel,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            MaxHeight = 420,
+            Margin = new Thickness(0, 2, 0, 0),
+        };
+        var grid = new Grid();
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        Grid.SetRow(closeButton, 0);
+        Grid.SetRow(scroll, 1);
+        grid.Children.Add(closeButton);
+        grid.Children.Add(scroll);
+        return new Border
+        {
+            Background = Brushes.White,
+            BorderBrush = BrushFor(unchecked((int)0xFF888888)),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(10, 6, 10, 10),
+            MaxWidth = 420,
+            Child = grid,
+        };
+    }
+
+    private void AddForecastBlock(StackPanel panel, ForecastMarker marker)
+    {
+        var mark = marker.Mark;
+        var r = mark.Record;
+        var made = DateTimeOffset.FromUnixTimeSeconds(r.MadeAtUnix).UtcDateTime;
+        var until = DateTimeOffset.FromUnixTimeSeconds(r.UntilUnix).UtcDateTime;
+        string levelText = mark.Band
+            ? ForecastPriceText(r.BottomPrice, r.Pair) + " - " + ForecastPriceText(r.TopPrice, r.Pair)
+            : ForecastPriceText(r.Price, r.Pair);
+        panel.Children.Add(new TextBlock
+        {
+            Text = $"{r.Pair}  \u00b7  {levelText}",
+            Foreground = BrushFor(marker.ColorArgb),
+            FontWeight = FontWeights.Bold,
+            FontSize = 14,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        if (!string.IsNullOrWhiteSpace(r.Title))
+            panel.Children.Add(new TextBlock
+            {
+                Text = r.Title,
+                FontWeight = FontWeights.Bold,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 4, 0, 0),
+            });
+        var head = new List<string>();
+        if (!string.IsNullOrWhiteSpace(r.Horizon)) head.Add(r.Horizon);
+        if (r.Probability > 0) head.Add(r.Probability.ToString("0.#", CultureInfo.InvariantCulture) + "%");
+        head.Add($"{made:yyyy-MM-dd HH:mm} - {until:yyyy-MM-dd HH:mm} UTC");
+        panel.Children.Add(new TextBlock
+        {
+            Text = string.Join("  \u00b7  ", head),
+            Foreground = BrushFor(unchecked((int)0xFF555555)),
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 3, 0, 0),
+        });
+        void AddField(string label, string value, bool small)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return;
+            panel.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontWeight = FontWeights.Bold,
+                FontSize = 11,
+                Foreground = BrushFor(unchecked((int)0xFF777777)),
+                Margin = new Thickness(0, 8, 0, 1),
+            });
+            panel.Children.Add(new TextBlock
+            {
+                Text = value,
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = small ? 11 : 12,
+            });
+        }
+        AddField("Author", r.Author, true);
+        AddField("Basis", r.Basis, false);
+        AddField("Source", r.Source, true);
+        AddField("Source URL", r.SourceUrl, true);
+        AddField("Note", r.Note, true);
+        AddField("Outcome", r.Outcome, false);
+    }
+
     private static void DrawDealMarks(int[] buffer, int pw, int ph, SymbolSeries s,
-        FlattenMap? flatten, WeekendCompressor? map, int k, long startBucket,
+        FlattenMap? flatten, WeekendCompressor? map, long columnSeconds, long startBucket,
         double topPrice, double pointsPerRow, double offset)
     {
-        double bucketSec = k * 60.0;
+        double bucketSec = columnSeconds;
         double X(long v) => v / bucketSec - startBucket;
         double Y(long v, double display) =>
             (topPrice - offset - display - (flatten?.ShiftAt(v) ?? 0)) / pointsPerRow;
@@ -2641,10 +3490,10 @@ public sealed class ChartView : Grid
     }
 
     private static void DrawFlattenedSegment(int[] buffer, int pw, int ph, FlattenMap? flatten,
-        int k, long startBucket, double topPrice, double pointsPerRow, double offset,
+        long columnSeconds, long startBucket, double topPrice, double pointsPerRow, double offset,
         long fromVirtual, double fromDisplay, long toVirtual, double toDisplay, int color)
     {
-        double X(long v) => v / (k * 60.0) - startBucket;
+        double X(long v) => v / (double)columnSeconds - startBucket;
         double Y(long v, double display) =>
             (topPrice - offset - display - (flatten?.ShiftAt(v) ?? 0)) / pointsPerRow;
         double x0 = X(fromVirtual);
@@ -2682,7 +3531,7 @@ public sealed class ChartView : Grid
             ReanchorDrawCursor(dpi);
         }
         if (_selSymbol != null) UpdateSelectionVisuals(dpi);
-        if (!_calendarVisible || _renderedK <= 0 || !CalendarLinesDrawn(_renderedK))
+        if (!_calendarVisible || _renderedColumnSeconds <= 0 || !CalendarLinesDrawn(_renderedColumnSeconds))
         {
             HideCalendarHover();
             CloseCalendarPopup();
@@ -2693,7 +3542,7 @@ public sealed class ChartView : Grid
     {
         if (_drawPoints.Count == 0 || _drawCursor.Visibility != Visibility.Visible) return;
         var s = _drawSymbol == null ? null : GetSeries(_drawSymbol);
-        if (s?.Transform == null || _renderedK <= 0 || _renderedPointsPerRow <= 0) return;
+        if (s?.Transform == null || _renderedColumnSeconds <= 0 || _renderedPointsPerRow <= 0) return;
         var from = ProjectDrawPoint(s.Transform, SeriesOffset(s.Symbol), _drawPoints[^1], dpi);
         var pos = Mouse.GetPosition(this);
         _drawCursor.X1 = from.X;
@@ -2738,11 +3587,13 @@ public sealed class ChartView : Grid
         int pw = (int)Math.Round(ActualWidth * dpi.DpiScaleX);
         int ph = (int)Math.Round(ActualHeight * dpi.DpiScaleY);
         List<SymbolSeries>? panels = null;
-        if (series != null && _renderedK > 0 && _renderedPointsPerRow > 0
+        if (series != null && _renderedColumnSeconds > 0 && _renderedPointsPerRow > 0
             && pw >= DensityMaxWidthPx && ph >= 1)
             foreach (var s in series)
-                if (s.DensityPanel && !IsHidden(s.Symbol)
-                    && s.SourceSymbol != null && s.DensityWindows is { Length: > 0 })
+                if (!IsHidden(s.Symbol) && s.SourceSymbol != null
+                    && ((s.DensityPanel && s.DensityWindows is { Length: > 0 })
+                        || (s.OrderBookPanel && (s.OrderBookSnapshots is { Length: > 0 }
+                            || s.DepthSnapshots is { Length: > 0 }))))
                     (panels ??= new List<SymbolSeries>()).Add(s);
         if (panels == null)
         {
@@ -2751,65 +3602,243 @@ public sealed class ChartView : Grid
             _densityAnchorColumn = long.MinValue;
             return;
         }
+        var range = SelectedRange;
         int cx = _cursorOnChart ? Math.Clamp(_cursorPx, 0, pw - 1) : pw - 1;
         _densityAnchorColumn = _renderedStartBucket + cx;
-        long anchorUnix = ToRealEnd((_densityAnchorColumn + 1) * (_renderedK * 60L)) - 60;
-        if (_densityStaging.Length < DensityMaxWidthPx * ph)
-            _densityStaging = new int[DensityMaxWidthPx * ph];
-        Array.Clear(_densityStaging, 0, DensityMaxWidthPx * ph);
+        long bucketSec = _renderedColumnSeconds;
+        long rangeStartUnix = 0;
+        long rangeEndUnix = 0;
+        if (range is { } r)
+        {
+            rangeStartUnix = MinuteFloor(ToReal(ToVirtual(r.StartUnix) / bucketSec * bucketSec));
+            rangeEndUnix = ToRealEnd((ToVirtual(r.EndUnix) / bucketSec + 1) * bucketSec) - 1;
+        }
+        long anchorUnix = range != null ? rangeEndUnix : MinuteFloor(ColumnEndUnix(_densityAnchorColumn));
+        if (_densityStaging.Length < pw * ph)
+            _densityStaging = new int[pw * ph];
+        int stale = Math.Clamp(_densityUsedPx, DensityMaxWidthPx, pw);
+        for (int y = 0; y < ph; y++)
+            Array.Clear(_densityStaging, y * pw + pw - stale, stale);
+        int used = DensityMaxWidthPx;
         bool drew = false;
         foreach (var s in panels)
         {
-            var minutes = GetSeries(s.SourceSymbol!)?.History.Minutes;
-            if (minutes == null || minutes.Length == 0) continue;
-            int option = Math.Clamp(_densitySelected, 0, s.DensityWindows!.Length);
-            int window = option == s.DensityWindows.Length
-                ? int.MaxValue
-                : s.DensityWindows[option];
-            var histogram = DensityProfile.Build(minutes, anchorUnix, window);
+            DensityHistogram histogram;
+            DensityHistogram candle = default;
+            if (s.OrderBookPanel)
+            {
+                var source = GetSeries(s.SourceSymbol!);
+                var transform = source?.Transform
+                    ?? new SeriesTransform(false, 0, source?.PipPoints ?? PipPoints);
+                OrderBookSides sides;
+                long? bookUnix;
+                int? price;
+                if (s.DepthSnapshots is { Length: > 0 } depth)
+                {
+                    var book = DepthProfile.At(depth, anchorUnix);
+                    bookUnix = book?.MinuteUnix;
+                    price = bookUnix == null || source == null
+                        ? null
+                        : OrderBookProfile.PricePointsAt(source.History.Minutes, bookUnix.Value);
+                    sides = DepthProfile.BuildSides(book, s.DepthPipPoints, transform, price);
+                }
+                else
+                {
+                    var snapshot = OrderBookProfile.At(s.OrderBookSnapshots!, anchorUnix);
+                    sides = OrderBookProfile.BuildSides(snapshot, s.OrderBookPositions, transform);
+                    bookUnix = snapshot?.TimeUnix;
+                    price = bookUnix == null || source == null
+                        ? null
+                        : OrderBookProfile.PricePointsAt(source.History.Minutes, bookUnix.Value);
+                }
+                if (sides.Buy.MaxCount <= 0) continue;
+                DrawOrderBook(_densityStaging, pw, ph, sides,
+                    SeriesOffset(s.SourceSymbol!), anchorUnix, s.ColorArgb, s.SellColorArgb,
+                    price == null ? null : transform.ToDisplay(price.Value));
+                drew = true;
+                continue;
+            }
+            {
+                var sourceSeries = GetSeries(s.SourceSymbol!);
+                var minutes = sourceSeries?.History.Minutes;
+                if (minutes == null || minutes.Length == 0) continue;
+                var profileTransform = sourceSeries!.Transform;
+                int option = Math.Clamp(_densitySelected, 0, s.DensityWindows!.Length);
+                int window = range != null
+                    ? DensityProfile.CountInRange(minutes, rangeStartUnix, rangeEndUnix)
+                    : option == s.DensityWindows.Length
+                        ? int.MaxValue
+                        : s.DensityWindows[option];
+                if (window <= 0) continue;
+                histogram = s.VolumeWeighted
+                    ? s.VolumeProfiles is { } profiles
+                        ? DensityProfile.BuildProfiled(minutes, profiles, anchorUnix, window, profileTransform)
+                        : DensityProfile.BuildWeighted(minutes, anchorUnix, window)
+                    : DensityProfile.Build(minutes, anchorUnix, window);
+                if (s.VolumeWeighted && range == null)
+                {
+                    var (from, to) = VolumeCandleRange(s, bucketSec);
+                    candle = s.VolumeProfiles is { } candleProfiles
+                        ? DensityProfile.BuildProfiledRange(minutes, candleProfiles, from, to, profileTransform)
+                        : DensityProfile.BuildWeightedRange(minutes, from, to);
+                }
+            }
             if (histogram.MaxCount <= 0) continue;
-            DrawDensity(_densityStaging, DensityMaxWidthPx, ph, histogram,
-                SeriesOffset(s.SourceSymbol!), anchorUnix, s.ColorArgb);
+            int bidColor = s.VolumeWeighted && s.VolumeSplitSides ? s.SellColorArgb : 0;
+            double max = DensityScaleMax(s, histogram.MaxCount);
+            used = Math.Max(used, DrawDensity(_densityStaging, pw, ph, histogram,
+                SeriesOffset(s.SourceSymbol!), anchorUnix, s.ColorArgb,
+                max, DensityFillAlpha, bidColor));
+            if (candle.MaxCount > 0)
+                used = Math.Max(used, DrawDensity(_densityStaging, pw, ph, candle,
+                    SeriesOffset(s.SourceSymbol!), anchorUnix, s.ColorArgb,
+                    max, DensityCandleAlpha, bidColor));
             drew = true;
         }
-        if (_densityBmp == null || _densityBmp.PixelWidth != DensityMaxWidthPx
+        if (_densityBmp == null || _densityBmp.PixelWidth != pw
             || _densityBmp.PixelHeight != ph)
         {
-            _densityBmp = new WriteableBitmap(
-                DensityMaxWidthPx, ph, 96, 96, PixelFormats.Pbgra32, null);
+            _densityBmp = new WriteableBitmap(pw, ph, 96, 96, PixelFormats.Pbgra32, null);
             _densityImage.Source = _densityBmp;
         }
+        int band = Math.Clamp(Math.Max(used, _densityUsedPx), DensityMaxWidthPx, pw);
+        _densityUsedPx = used;
         _densityBmp.WritePixels(
-            new Int32Rect(0, 0, DensityMaxWidthPx, ph), _densityStaging, DensityMaxWidthPx * 4, 0);
-        _densityImage.Width = DensityMaxWidthPx / dpi.DpiScaleX;
+            new Int32Rect(pw - band, 0, band, ph), _densityStaging, pw * 4, pw - band, 0);
+        _densityImage.Width = pw / dpi.DpiScaleX;
         _densityImage.Height = ph / dpi.DpiScaleY;
-        Canvas.SetLeft(_densityImage, (pw - DensityMaxWidthPx) / dpi.DpiScaleX);
+        Canvas.SetLeft(_densityImage, 0);
         Canvas.SetTop(_densityImage, 0);
         _densityImage.Visibility = drew ? Visibility.Visible : Visibility.Collapsed;
-        UpdateDensityLabels(panels);
+        UpdateDensityLabels(panels, anchorUnix);
     }
 
-    private void DrawDensity(int[] buffer, int width, int height, DensityHistogram histogram,
-        double offset, long anchorUnix, int colorArgb)
+    private void DrawOrderBook(int[] buffer, int width, int height, OrderBookSides sides,
+        double offset, long anchorUnix, int buyArgb, int sellArgb, int? priceDisplay)
     {
-        int fill = PremultiplyArgb(colorArgb, DensityFillAlpha);
-        int edge = colorArgb | unchecked((int)0xFF000000);
+        int buyFill = PremultiplyArgb(buyArgb, DensityFillAlpha);
+        int sellFill = PremultiplyArgb(sellArgb, DensityFillAlpha);
+        int buyEdge = buyArgb | unchecked((int)0xFF000000);
+        int sellEdge = sellArgb | unchecked((int)0xFF000000);
+        double max = sides.Buy.MaxCount;
         for (int y = 0; y < height; y++)
         {
             double top = YToDisplay(y, offset, anchorUnix);
             double bottom = YToDisplay(y + 1, offset, anchorUnix);
             int pipLo = DensityProfile.PipLevel((int)Math.Round(bottom));
             int pipHi = DensityProfile.PipLevel((int)Math.Round(top));
-            int count = DensityProfile.MaxCountIn(histogram, pipLo, pipHi);
-            if (count <= 0) continue;
-            int barWidth = Math.Max(1, (int)Math.Round(
-                (double)count * width / histogram.MaxCount));
+            double buyCount = DensityProfile.MaxCountIn(sides.Buy, pipLo, pipHi);
+            double sellCount = DensityProfile.MaxCountIn(sides.Sell, pipLo, pipHi);
+            if (buyCount <= 0 && sellCount <= 0) continue;
+            int buyWidth = buyCount > 0
+                ? Math.Clamp((int)Math.Round(buyCount * DensityMaxWidthPx / max), 1, width)
+                : 0;
+            int sellWidth = sellCount > 0
+                ? Math.Clamp((int)Math.Round(sellCount * DensityMaxWidthPx / max), 1, width)
+                : 0;
+            bool buySmaller = buyWidth <= sellWidth;
+            int smallWidth = buySmaller ? buyWidth : sellWidth;
+            int largeWidth = buySmaller ? sellWidth : buyWidth;
+            int row = y * width;
+            int smallStart = width - smallWidth;
+            int largeStart = width - largeWidth;
+            int largeFill = buySmaller ? sellFill : buyFill;
+            int smallFill = buySmaller ? buyFill : sellFill;
+            for (int x = largeStart; x < smallStart; x++)
+                buffer[row + x] = BlendOverPremultiplied(buffer[row + x], largeFill);
+            if (largeWidth > smallWidth)
+                buffer[row + largeStart] = BlendOverPremultiplied(
+                    buffer[row + largeStart], buySmaller ? sellEdge : buyEdge);
+            for (int x = smallStart; x < width; x++)
+                buffer[row + x] = BlendOverPremultiplied(buffer[row + x], smallFill);
+            if (smallWidth > 0)
+                buffer[row + smallStart] = BlendOverPremultiplied(
+                    buffer[row + smallStart], buySmaller ? buyEdge : sellEdge);
+        }
+        if (priceDisplay != null)
+            DrawBookPriceLine(buffer, width, height, priceDisplay.Value, offset, anchorUnix);
+    }
+
+    private void DrawBookPriceLine(int[] buffer, int width, int height, int priceDisplay,
+        double offset, long anchorUnix)
+    {
+        for (int y = 0; y < height; y++)
+        {
+            double top = YToDisplay(y, offset, anchorUnix);
+            double bottom = YToDisplay(y + 1, offset, anchorUnix);
+            if (priceDisplay > top || priceDisplay <= bottom) continue;
+            int row = y * width;
+            for (int x = Math.Max(0, width - DensityMaxWidthPx); x < width; x++)
+                buffer[row + x] = BlendOverPremultiplied(buffer[row + x], BookPriceLineArgb);
+            return;
+        }
+    }
+
+    private (long From, long To) VolumeCandleRange(SymbolSeries s, long bucketSec)
+    {
+        long groupSec = Math.Max(1, VolumeGroupOf(s)) * ChartColumns.MinuteSeconds;
+        long columnStart = MinuteFloor(ToReal(_densityAnchorColumn * bucketSec));
+        long columnEnd = MinuteFloor(ColumnEndUnix(_densityAnchorColumn));
+        long groupStart = columnEnd - columnEnd % groupSec;
+        return (Math.Min(groupStart, columnStart),
+            Math.Max(groupStart + groupSec - ChartColumns.MinuteSeconds, columnEnd));
+    }
+
+    private long ColumnEndUnix(long column) =>
+        ToRealEnd((column + 1) * _renderedColumnSeconds) - 1;
+
+    private static long MinuteFloor(long unixSeconds) =>
+        unixSeconds - ((unixSeconds % ChartColumns.MinuteSeconds) + ChartColumns.MinuteSeconds)
+            % ChartColumns.MinuteSeconds;
+
+    private double DensityScaleMax(SymbolSeries s, double windowMax)
+    {
+        int option = Math.Clamp(_densitySelected, 0, IndicatorSymbol.DensityAllOption);
+        int percent = s.DensityScalePercents is { } percents && option < percents.Length
+            ? Math.Max(1, percents[option])
+            : 100;
+        double perPixel = _densityUnits.TryGetValue(s.Symbol, out var live) && live > 0
+            ? live
+            : s.DensityScalePerPixel;
+        if (perPixel > 0) return perPixel * DensityMaxWidthPx * 100.0 / percent;
+        _densityAutoPerPixel[s.Symbol] = windowMax / DensityMaxWidthPx;
+        return windowMax * 100.0 / percent;
+    }
+
+    private int DrawDensity(int[] buffer, int width, int height, DensityHistogram histogram,
+        double offset, long anchorUnix, int colorArgb, double max, int alpha, int bidColorArgb = 0)
+    {
+        int widest = 0;
+        int fill = PremultiplyArgb(colorArgb, alpha);
+        int edge = alpha >= 255 ? fill : colorArgb | unchecked((int)0xFF000000);
+        bool sides = histogram.HasSides && bidColorArgb != 0;
+        int bidFill = sides ? PremultiplyArgb(bidColorArgb, alpha) : 0;
+        int bidEdge = alpha >= 255 ? bidFill : bidColorArgb | unchecked((int)0xFF000000);
+        for (int y = 0; y < height; y++)
+        {
+            double top = YToDisplay(y, offset, anchorUnix);
+            double bottom = YToDisplay(y + 1, offset, anchorUnix);
+            int pipLo = DensityProfile.PipLevel((int)Math.Round(bottom));
+            int pipHi = DensityProfile.PipLevel((int)Math.Round(top));
+            var value = sides
+                ? DensityProfile.RowValueIn(histogram, pipLo, pipHi)
+                : new DensityRowValue(DensityProfile.MaxCountIn(histogram, pipLo, pipHi), 0, 0);
+            if (value.Total <= 0) continue;
+            int barWidth = Math.Clamp(
+                (int)Math.Round(value.Total * DensityMaxWidthPx / max), 1, width);
+            if (barWidth > widest) widest = barWidth;
             int row = y * width;
             int x0 = width - barWidth;
-            buffer[row + x0] = BlendOverPremultiplied(buffer[row + x0], edge);
-            for (int x = x0 + 1; x < width; x++)
+            int bidWidth = value.Bid <= 0
+                ? 0
+                : Math.Min(barWidth, (int)Math.Round(value.Bid * barWidth / value.Total));
+            buffer[row + x0] = BlendOverPremultiplied(buffer[row + x0], bidWidth > 0 ? bidEdge : edge);
+            for (int x = x0 + 1; x < x0 + bidWidth; x++)
+                buffer[row + x] = BlendOverPremultiplied(buffer[row + x], bidFill);
+            for (int x = Math.Max(x0 + 1, x0 + bidWidth); x < width; x++)
                 buffer[row + x] = BlendOverPremultiplied(buffer[row + x], fill);
         }
+        return widest;
     }
 
     private static int PremultiplyArgb(int argb, int alpha)
@@ -2832,7 +3861,7 @@ public sealed class ChartView : Grid
         return (a << 24) | (r << 16) | (g << 8) | b;
     }
 
-    private void UpdateDensityLabels(List<SymbolSeries> panels)
+    private void UpdateDensityLabels(List<SymbolSeries> panels, long anchorUnix)
     {
         while (_densityLabelPanel.Children.Count > panels.Count)
             _densityLabelPanel.Children.RemoveAt(_densityLabelPanel.Children.Count - 1);
@@ -2846,10 +3875,31 @@ public sealed class ChartView : Grid
         {
             var s = panels[i];
             var label = (TextBlock)_densityLabelPanel.Children[i];
-            int option = Math.Clamp(_densitySelected, 0, s.DensityWindows!.Length);
-            label.Text = option == s.DensityWindows.Length
-                ? $"{s.Symbol} 0: all"
-                : $"{s.Symbol} {option + 1}: {FormatDensityWindow(s.DensityWindows[option])}";
+            if (s.OrderBookPanel)
+            {
+                long? bookUnix = s.DepthSnapshots is { Length: > 0 } depth
+                    ? DepthProfile.At(depth, anchorUnix)?.MinuteUnix
+                    : OrderBookProfile.At(s.OrderBookSnapshots!, anchorUnix)?.TimeUnix;
+                label.Text = bookUnix == null
+                    ? $"{s.Symbol}: no book here"
+                    : $"{s.Symbol}: {DateTimeOffset.FromUnixTimeSeconds(bookUnix.Value).UtcDateTime:MM-dd HH:mm}";
+            }
+            else
+            {
+                int option = Math.Clamp(_densitySelected, 0, s.DensityWindows!.Length);
+                label.Text = SelectedRange != null
+                    ? $"{s.Symbol}: selection"
+                    : option == s.DensityWindows.Length
+                        ? $"{s.Symbol} 0: all"
+                        : $"{s.Symbol} {option + 1}: {FormatDensityWindow(s.DensityWindows[option])}";
+                double perPixel = _densityUnits.TryGetValue(s.Symbol, out var live) && live > 0
+                    ? live
+                    : s.DensityScalePerPixel;
+                if (perPixel > 0)
+                    label.Text += perPixel >= 1
+                        ? $" | {perPixel:N0}/px"
+                        : $" | {perPixel:0.###}/px";
+            }
             label.Foreground = BrushFor(s.ColorArgb);
         }
         _densityLabelPanel.Visibility = Visibility.Visible;
@@ -2935,8 +3985,8 @@ public sealed class ChartView : Grid
     private (int Series, int Point)? FindPivotAt(int cx, int cy)
     {
         var series = _series;
-        if (series == null || EditLocked || _renderedK <= 0 || _renderedPointsPerRow <= 0) return null;
-        long bucketSec = _renderedK * 60L;
+        if (series == null || EditLocked || _renderedColumnSeconds <= 0 || _renderedPointsPerRow <= 0) return null;
+        long bucketSec = _renderedColumnSeconds;
         int r = Math.Max(1, EditHitRadiusPx);
         long best = long.MaxValue;
         (int, int)? bestHit = null;
@@ -3015,10 +4065,34 @@ public sealed class ChartView : Grid
         {
             HideHover();
             HideCalendarHover();
+            SetForecastHover(Array.Empty<ForecastMark>());
             return;
         }
+        SetForecastHover(FindForecastMarkersAt(cx, cy).Select(c => c.Mark).ToArray());
         if (UpdateHover(cx, cy, dpi)) HideCalendarHover();
         else UpdateCalendarHover(cx, cy, dpi);
+    }
+
+    private void SetForecastHover(ForecastMark[] marks)
+    {
+        if (SameMarks(marks, _forecastHover)) return;
+        _forecastHover = marks;
+        Rebuild();
+    }
+
+    private static bool SameMarks(ForecastMark[] a, ForecastMark[] b)
+    {
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++)
+            if (!ReferenceEquals(a[i], b[i])) return false;
+        return true;
+    }
+
+    private static bool HasMark(ForecastMark[] marks, ForecastMark mark)
+    {
+        foreach (var m in marks)
+            if (ReferenceEquals(m, mark)) return true;
+        return false;
     }
 
     private bool UpdateHover(int cx, int cy, DpiScale dpi)
@@ -3032,7 +4106,7 @@ public sealed class ChartView : Grid
         var (si, pi) = hit.Value;
         var s = _series![si];
         var sp = _pivots[s.Symbol];
-        long bucketSec = _renderedK * 60L;
+        long bucketSec = _renderedColumnSeconds;
         double offset = SeriesOffset(s.Symbol);
         double px = ToVirtual(sp.Raw[pi].UnixSeconds) / bucketSec - _renderedStartBucket + 0.5;
         double py = DisplayToY(sp.Display[pi], offset, sp.Raw[pi].UnixSeconds) + 0.5;
@@ -3054,7 +4128,7 @@ public sealed class ChartView : Grid
     private void UpdateCalendarHover(int cx, int cy, DpiScale dpi)
     {
         if (!_calendarVisible || _calendarEntries.Length == 0
-            || _renderedK <= 0 || !CalendarLinesDrawn(_renderedK))
+            || _renderedColumnSeconds <= 0 || !CalendarLinesDrawn(_renderedColumnSeconds))
         {
             HideCalendarHover();
             return;
@@ -3096,7 +4170,7 @@ public sealed class ChartView : Grid
 
     private int FindCalendarLineX(int cx)
     {
-        long bucketSec = _renderedK * 60L;
+        long bucketSec = _renderedColumnSeconds;
         long tLo = ToReal((_renderedStartBucket + cx - LineHitRadiusPx) * bucketSec);
         long tHi = ToReal((_renderedStartBucket + cx + LineHitRadiusPx + 1) * bucketSec);
         int bestX = -1;
@@ -3123,8 +4197,8 @@ public sealed class ChartView : Grid
     private List<CalendarEntry> CalendarColumnEntries(int x)
     {
         var result = new List<CalendarEntry>();
-        if (_renderedK <= 0) return result;
-        long bucketSec = _renderedK * 60L;
+        if (_renderedColumnSeconds <= 0) return result;
+        long bucketSec = _renderedColumnSeconds;
         long tLo = ToReal((_renderedStartBucket + x) * bucketSec);
         long tHi = ToReal((_renderedStartBucket + x + 1) * bucketSec);
         for (int i = CalendarLowerBound(_calendarEntries, tLo);
@@ -3148,7 +4222,7 @@ public sealed class ChartView : Grid
             if (d != null) details.Add(d);
         }
         if (details.Count == 0) return;
-        CloseCalendarPopup();
+        CloseChartPopups();
         var dpi = VisualTreeHelper.GetDpi(this);
         double cxDip = _calCircleCenterX / dpi.DpiScaleX;
         double cyDip = _calCircleCenterY / dpi.DpiScaleY;
@@ -3235,7 +4309,7 @@ public sealed class ChartView : Grid
             Cursor = Cursors.Hand,
             ToolTip = "Close",
         };
-        closeButton.Click += (_, _) => CloseCalendarPopup();
+        closeButton.Click += (_, _) => CloseChartPopups();
         var scroll = new ScrollViewer
         {
             Content = panel,
@@ -3301,7 +4375,7 @@ public sealed class ChartView : Grid
     {
         var s = _series![_editSeries];
         var sp = _pivots[s.Symbol];
-        long bucketSec = _renderedK * 60L;
+        long bucketSec = _renderedColumnSeconds;
         long lo = long.MinValue / 2;
         long hi = long.MaxValue / 2;
         if (_editPoint > 0)
@@ -3325,7 +4399,7 @@ public sealed class ChartView : Grid
     {
         var s = _series![_editSeries];
         var sp = _pivots[s.Symbol];
-        long bucketSec = _renderedK * 60L;
+        long bucketSec = _renderedColumnSeconds;
         double offset = SeriesOffset(s.Symbol);
         double x = ToVirtual(_editCurUnix) / bucketSec - _renderedStartBucket + 0.5;
         double y = DisplayToY(_editCurDisplay, offset, _editCurUnix) + 0.5;
@@ -3438,7 +4512,10 @@ public sealed class ChartView : Grid
             {
                 e.Handled = true;
                 ShowRangeMenu(pos);
+                return;
             }
+            e.Handled = true;
+            ShowChartMenu(cx, cy);
             return;
         }
         e.Handled = true;
@@ -3469,7 +4546,46 @@ public sealed class ChartView : Grid
         menu.IsOpen = true;
     }
 
-    public void BeginDrawLine(string symbol)
+    private void ShowChartMenu(int cx, int cy)
+    {
+        long t = ColumnTime(cx);
+        string day = DateTimeOffset.FromUnixTimeSeconds(t).UtcDateTime.ToString("yyyy-MM-dd");
+        bool has = _forecastDays.Contains(day, StringComparer.Ordinal);
+        var menu = new ContextMenu { PlacementTarget = this };
+        var series = _series;
+        if (series != null)
+        {
+            int drawCount = 0;
+            foreach (var s in series)
+            {
+                if (s.DrawingLines == null || s.Transform == null || IsHidden(s.Symbol)) continue;
+                string symbol = s.Symbol;
+                var draw = new MenuItem { Header = $"Draw line - {symbol}" };
+                draw.Click += (_, _) => BeginDraw(symbol, false, (cx, cy));
+                menu.Items.Add(draw);
+                var level = new MenuItem { Header = $"Draw level - {symbol}" };
+                level.Click += (_, _) => BeginDraw(symbol, true, (cx, cy));
+                menu.Items.Add(level);
+                drawCount++;
+            }
+            if (drawCount > 0) menu.Items.Add(new Separator());
+        }
+        var forecast = new MenuItem
+        {
+            Header = $"Forecast {day}",
+            IsEnabled = has,
+            IsChecked = has && day == _forecastDay && !_forecastHidden,
+        };
+        if (has) forecast.Click += (_, _) => SelectForecastDay(day);
+        menu.Items.Add(forecast);
+        menu.IsOpen = true;
+    }
+
+    public void BeginDrawLine(string symbol) => BeginDraw(symbol, false, null);
+
+    public void BeginDrawLevel(string symbol) => BeginDraw(symbol, true, null);
+
+    private void BeginDraw(string symbol, bool level, (int X, int Y)? start)
     {
         var s = GetSeries(symbol);
         if (s?.Transform == null || s.DrawingLines == null) return;
@@ -3478,6 +4594,7 @@ public sealed class ChartView : Grid
         DeselectLine();
         HideHover();
         _drawSymbol = symbol;
+        _drawLevel = level;
         _drawPoints.Clear();
         var brush = BrushFor(s.ColorArgb);
         _drawPreview.Stroke = brush;
@@ -3486,11 +4603,13 @@ public sealed class ChartView : Grid
         _drawPreview.Visibility = Visibility.Collapsed;
         Focusable = true;
         Focus();
+        if (start != null) AddDrawPoint(s, start.Value.X, start.Value.Y);
     }
 
     public void CancelDrawing()
     {
         _drawSymbol = null;
+        _drawLevel = false;
         _drawPoints.Clear();
         _drawPreview.Points.Clear();
         _drawPreview.Visibility = Visibility.Collapsed;
@@ -3508,12 +4627,6 @@ public sealed class ChartView : Grid
 
     private void HandleDrawClick(MouseButtonEventArgs e)
     {
-        if (e.ClickCount == 2)
-        {
-            FinishDrawing();
-            return;
-        }
-        if (_renderedK <= 0 || _renderedPointsPerRow <= 0) return;
         var s = GetSeries(_drawSymbol!);
         if (s?.Transform == null)
         {
@@ -3524,11 +4637,24 @@ public sealed class ChartView : Grid
         var pos = e.GetPosition(this);
         int cx = (int)Math.Floor(pos.X * dpi.DpiScaleX);
         int cy = (int)Math.Floor(pos.Y * dpi.DpiScaleY);
-        long t = ToReal((_renderedStartBucket + cx) * (_renderedK * 60L));
+        if (!AddDrawPoint(s, cx, cy)) return;
+        bool more = !_drawLevel && (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
+        if (!more && _drawPoints.Count >= 2) FinishDrawing();
+    }
+
+    private bool AddDrawPoint(SymbolSeries s, int cx, int cy)
+    {
+        if (s.Transform == null || _renderedColumnSeconds <= 0 || _renderedPointsPerRow <= 0)
+            return false;
+        long t = ToReal((_renderedStartBucket + cx) * _renderedColumnSeconds);
         t -= t % 60;
         int display = (int)Math.Round(YToDisplay(cy, SeriesOffset(s.Symbol), t));
-        _drawPoints.Add(new PivotPoint(t, s.Transform.ToRaw(display)));
-        UpdateDrawPreview(dpi);
+        int raw = _drawLevel && _drawPoints.Count > 0
+            ? _drawPoints[0].Value
+            : s.Transform.ToRaw(display);
+        _drawPoints.Add(new PivotPoint(t, raw, _drawLevel));
+        UpdateDrawPreview(VisualTreeHelper.GetDpi(this));
+        return true;
     }
 
     private Point ProjectDrawPoint(SeriesTransform transform, double offset, PivotPoint p, DpiScale dpi)
@@ -3540,7 +4666,7 @@ public sealed class ChartView : Grid
     private void UpdateDrawPreview(DpiScale dpi)
     {
         var s = _drawSymbol == null ? null : GetSeries(_drawSymbol);
-        if (s?.Transform == null || _renderedK <= 0 || _renderedPointsPerRow <= 0) return;
+        if (s?.Transform == null || _renderedColumnSeconds <= 0 || _renderedPointsPerRow <= 0) return;
         double offset = SeriesOffset(s.Symbol);
         _drawPreview.Points.Clear();
         foreach (var p in _drawPoints)
@@ -3556,14 +4682,14 @@ public sealed class ChartView : Grid
             return;
         }
         var s = GetSeries(_drawSymbol!);
-        if (s?.Transform == null || _renderedK <= 0 || _renderedPointsPerRow <= 0) return;
+        if (s?.Transform == null || _renderedColumnSeconds <= 0 || _renderedPointsPerRow <= 0) return;
         var dpi = VisualTreeHelper.GetDpi(this);
         var from = ProjectDrawPoint(s.Transform, SeriesOffset(s.Symbol), _drawPoints[^1], dpi);
         var pos = e.GetPosition(this);
         _drawCursor.X1 = from.X;
         _drawCursor.Y1 = from.Y;
         _drawCursor.X2 = pos.X;
-        _drawCursor.Y2 = pos.Y;
+        _drawCursor.Y2 = _drawLevel ? from.Y : pos.Y;
         _drawCursor.Visibility = Visibility.Visible;
     }
 
@@ -3608,17 +4734,17 @@ public sealed class ChartView : Grid
 
     public (long Lo, long Hi)? VisibleRealRange()
     {
-        if (_renderedK <= 0) return null;
+        if (_renderedColumnSeconds <= 0) return null;
         int pw = (int)Math.Round(ActualWidth * VisualTreeHelper.GetDpi(this).DpiScaleX);
         if (pw < 1) return null;
-        long bucketSec = _renderedK * 60L;
+        long bucketSec = _renderedColumnSeconds;
         return (ToReal(_renderedStartBucket * bucketSec),
             ToReal((_renderedStartBucket + pw) * bucketSec));
     }
 
     private (double X, double Y) ProjectDrawPointPx(SeriesTransform transform, double offset, PivotPoint p)
     {
-        double bucketSec = _renderedK * 60.0;
+        double bucketSec = _renderedColumnSeconds;
         double x = ToVirtual(p.UnixSeconds) / bucketSec - _renderedStartBucket + 0.5;
         double y = DisplayToY(transform.ToDisplay(p.Value), offset, p.UnixSeconds) + 0.5;
         return (x, y);
@@ -3638,7 +4764,7 @@ public sealed class ChartView : Grid
     private (string Symbol, int Line)? FindDrawingLineAt(int cx, int cy)
     {
         var series = _series;
-        if (series == null || _renderedK <= 0 || _renderedPointsPerRow <= 0) return null;
+        if (series == null || _renderedColumnSeconds <= 0 || _renderedPointsPerRow <= 0) return null;
         double r = LineHitRadiusPx + 0.5;
         double best = double.MaxValue;
         (string, int)? hit = null;
@@ -3682,7 +4808,7 @@ public sealed class ChartView : Grid
         var points = SelectedLinePoints();
         var s = _selSymbol == null ? null : GetSeries(_selSymbol);
         if (points == null || s?.Transform == null
-            || _renderedK <= 0 || _renderedPointsPerRow <= 0) return -1;
+            || _renderedColumnSeconds <= 0 || _renderedPointsPerRow <= 0) return -1;
         double offset = SeriesOffset(s.Symbol);
         double r = PivotCircleRadiusPx + 1.5;
         double best = double.MaxValue;
@@ -3699,7 +4825,7 @@ public sealed class ChartView : Grid
     private (string Symbol, int Line, int Vertex)? FindDrawingVertexAt(int cx, int cy)
     {
         var series = _series;
-        if (series == null || _renderedK <= 0 || _renderedPointsPerRow <= 0) return null;
+        if (series == null || _renderedColumnSeconds <= 0 || _renderedPointsPerRow <= 0) return null;
         double r = PivotCircleRadiusPx + 1.5;
         double best = double.MaxValue;
         (string, int, int)? hit = null;
@@ -3851,7 +4977,7 @@ public sealed class ChartView : Grid
         t -= ((t % 60) + 60) % 60;
         double f = span == 0 ? 0.5 : (double)(t - a.UnixSeconds) / span;
         int v = (int)Math.Round(a.Value + (b.Value - a.Value) * f, MidpointRounding.AwayFromZero);
-        return new PivotPoint(t, v);
+        return a with { UnixSeconds = t, Value = v };
     }
 
     private static PivotPoint ExtrapolateDraw(PivotPoint anchor, PivotPoint neighbor)
@@ -3859,7 +4985,7 @@ public sealed class ChartView : Grid
         long t = 2 * anchor.UnixSeconds - neighbor.UnixSeconds;
         t -= ((t % 60) + 60) % 60;
         long v = 2L * anchor.Value - neighbor.Value;
-        return new PivotPoint(t, (int)Math.Clamp(v, int.MinValue, int.MaxValue));
+        return anchor with { UnixSeconds = t, Value = (int)Math.Clamp(v, int.MinValue, int.MaxValue) };
     }
 
     private void BeginSelDrag(int vertex, int cx, int cy)
@@ -3884,7 +5010,7 @@ public sealed class ChartView : Grid
     private void UpdateSelDrag(int cx, int cy)
     {
         var s = _selSymbol == null ? null : GetSeries(_selSymbol);
-        if (s?.Transform == null || _renderedK <= 0 || _renderedPointsPerRow <= 0)
+        if (s?.Transform == null || _renderedColumnSeconds <= 0 || _renderedPointsPerRow <= 0)
         {
             CancelSelDrag();
             return;
@@ -3894,16 +5020,21 @@ public sealed class ChartView : Grid
             _selMoved = true;
             Rebuild();
         }
-        long bucketSec = _renderedK * 60L;
+        long bucketSec = _renderedColumnSeconds;
         double offset = SeriesOffset(s.Symbol);
         var points = new PivotPoint[_selOrigPoints.Length];
+        bool isLevel = _selOrigPoints.Length > 0 && _selOrigPoints[0].Level;
         if (_selDragVertex >= 0 && _selDragVertex < points.Length)
         {
             Array.Copy(_selOrigPoints, points, points.Length);
             long t = ToReal((_renderedStartBucket + cx) * bucketSec);
             t -= t % 60;
             int raw;
-            if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 && points.Length > 1)
+            if (isLevel)
+            {
+                raw = _selOrigPoints[_selDragVertex].Value;
+            }
+            else if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 && points.Length > 1)
             {
                 raw = SlopePreservedValue(_selOrigPoints, _selDragVertex, t);
             }
@@ -3912,7 +5043,11 @@ public sealed class ChartView : Grid
                 int display = (int)Math.Round(YToDisplay(cy, offset, t));
                 raw = s.Transform.ToRaw(display);
             }
-            points[_selDragVertex] = new PivotPoint(t, raw);
+            points[_selDragVertex] = _selOrigPoints[_selDragVertex] with
+            {
+                UnixSeconds = t,
+                Value = raw,
+            };
         }
         else
         {
@@ -3924,7 +5059,11 @@ public sealed class ChartView : Grid
                 t -= t % 60;
                 int display = (int)Math.Round(
                     s.Transform.ToDisplay(_selOrigPoints[i].Value) - dyDisplay);
-                points[i] = new PivotPoint(t, s.Transform.ToRaw(display));
+                points[i] = _selOrigPoints[i] with
+                {
+                    UnixSeconds = t,
+                    Value = s.Transform.ToRaw(display),
+                };
             }
         }
         _selCurPoints = points;
@@ -3981,7 +5120,7 @@ public sealed class ChartView : Grid
         var points = _selDragging && _selMoved ? _selCurPoints : SelectedLinePoints();
         bool valid = s?.Transform != null && points is { Length: > 0 }
             && !IsHidden(s!.Symbol)
-            && _renderedK > 0 && _renderedPointsPerRow > 0;
+            && _renderedColumnSeconds > 0 && _renderedPointsPerRow > 0;
         if (!valid)
         {
             foreach (var c in _selCircles) c.Visibility = Visibility.Collapsed;
@@ -4053,6 +5192,7 @@ public sealed class ChartView : Grid
         bool changed = false;
         foreach (var symbol in symbols)
         {
+            if (_offsetLockedSymbols.Contains(symbol)) continue;
             var aligned = SourceAlignedOffset(symbol);
             if (aligned == null || _seriesOffsetPoints.GetValueOrDefault(symbol) == aligned.Value) continue;
             _seriesOffsetPoints[symbol] = aligned.Value;
@@ -4100,15 +5240,15 @@ public sealed class ChartView : Grid
     {
         double offsetsHash = _priceOffsetPoints;
         foreach (var kv in _seriesOffsetPoints) offsetsHash += kv.Value * 31.0 + kv.Key.Length;
-        var stamp = (_series as object, _renderedK, _renderedStartBucket, _renderedTopPrice,
+        var stamp = (_series as object, _renderedColumnSeconds, _renderedStartBucket, _renderedTopPrice,
             _renderedPointsPerRow, offsetsHash, _effectiveHidden.Count, pw, ph, dpi.DpiScaleX,
             _weekendsHidden, _flatten as object);
         if (stamp == _markerStamp) return;
         _markerStamp = stamp;
         _markerCanvas.Children.Clear();
         var series = _series;
-        if (series == null || _renderedK <= 0 || _renderedPointsPerRow <= 0) return;
-        long bucketSec = _renderedK * 60L;
+        if (series == null || _renderedColumnSeconds <= 0 || _renderedPointsPerRow <= 0) return;
+        long bucketSec = _renderedColumnSeconds;
         int count = 0;
         for (int si = 0; si < series.Count; si++)
         {

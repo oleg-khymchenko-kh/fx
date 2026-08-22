@@ -23,8 +23,8 @@ public sealed class WeekendCompressor
         for (; sunday < last; sunday = sunday.AddDays(7))
         {
             var friday = sunday.AddDays(-2);
-            long open = Unix(sunday) + (IsEuSummer(sunday.AddHours(21)) ? 21 : 22) * HourSeconds;
-            long close = Unix(friday) + (IsUsSummer(friday.AddHours(21)) ? 21 : 22) * HourSeconds;
+            long open = Unix(sunday) + (SessionClock.EuSummer(sunday.AddHours(21)) ? 21 : 22) * HourSeconds;
+            long close = Unix(friday) + (SessionClock.UsSummer(friday.AddHours(21)) ? 21 : 22) * HourSeconds;
             if (close >= open) continue;
             starts.Add(close);
             ends.Add(open);
@@ -39,6 +39,8 @@ public sealed class WeekendCompressor
             _removed[i + 1] = _removed[i] + _gapEnd[i] - _gapStart[i];
         }
     }
+
+    public long FirstGapStart => _gapStart.Length > 0 ? _gapStart[0] : long.MaxValue;
 
     public long ToVirtual(long unixSeconds)
     {
@@ -80,22 +82,4 @@ public sealed class WeekendCompressor
     }
 
     private static long Unix(DateTime utc) => new DateTimeOffset(utc).ToUnixTimeSeconds();
-
-    private static bool IsEuSummer(DateTime utc) =>
-        utc >= LastSunday(utc.Year, 3).AddHours(1) && utc < LastSunday(utc.Year, 10).AddHours(1);
-
-    private static bool IsUsSummer(DateTime utc) =>
-        utc >= NthSunday(utc.Year, 3, 2).AddHours(7) && utc < NthSunday(utc.Year, 11, 1).AddHours(6);
-
-    private static DateTime LastSunday(int year, int month)
-    {
-        var d = new DateTime(year, month, DateTime.DaysInMonth(year, month), 0, 0, 0, DateTimeKind.Utc);
-        return d.AddDays(-(int)d.DayOfWeek);
-    }
-
-    private static DateTime NthSunday(int year, int month, int n)
-    {
-        var d = new DateTime(year, month, 1, 0, 0, 0, DateTimeKind.Utc);
-        return d.AddDays((7 - (int)d.DayOfWeek) % 7 + 7 * (n - 1));
-    }
 }

@@ -14,9 +14,12 @@ public static class CandleTransforms
             for (int i = 0; i < result.Length; i++)
             {
                 var c = candles[i];
-                result[i] = new Candle(c.MinuteUnixSeconds,
-                    ScalePoints(c.Min, pipPoints), ScalePoints(c.Max, pipPoints),
-                    ScalePoints(c.Avg, pipPoints), c.AvgApproximated);
+                result[i] = c with
+                {
+                    Min = ScalePoints(c.Min, pipPoints),
+                    Max = ScalePoints(c.Max, pipPoints),
+                    Avg = ScalePoints(c.Avg, pipPoints),
+                };
             }
         }
         else
@@ -43,9 +46,12 @@ public static class CandleTransforms
             for (int i = 0; i < result.Length; i++)
             {
                 var c = result[i];
-                result[i] = new Candle(c.MinuteUnixSeconds,
-                    (int)(mirrorBase - c.Max), (int)(mirrorBase - c.Min),
-                    (int)(mirrorBase - c.Avg), c.AvgApproximated);
+                result[i] = c with
+                {
+                    Min = (int)(mirrorBase - c.Max),
+                    Max = (int)(mirrorBase - c.Min),
+                    Avg = (int)(mirrorBase - c.Avg),
+                };
             }
         }
         return result;

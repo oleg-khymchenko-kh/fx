@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using FXViewer.Compute;
@@ -22,10 +23,13 @@ public partial class SymbolEditorWindow : Window
     private readonly Func<IndicatorSymbol, IndicatorSymbol?, IProgress<double>, CancellationToken, Task> _apply;
     private readonly Func<IProgress<double>, CancellationToken, Task>? _refresh;
     private readonly List<Border> _swatches = new();
+    private readonly List<Border> _sellSwatches = new();
     private readonly List<CheckBox> _pairBoxes = new();
     private readonly TextBox[] _densityPeriodBoxes;
     private readonly ComboBox[] _densityUnitBoxes;
+    private readonly TextBox[] _densityPercentBoxes;
     private int _selectedColor;
+    private int _selectedSellColor;
     private CancellationTokenSource? _cts;
     private bool _busy;
 
@@ -73,6 +77,11 @@ public partial class SymbolEditorWindow : Window
             Density1Unit, Density2Unit, Density3Unit, Density4Unit, Density5Unit,
             Density6Unit, Density7Unit, Density8Unit, Density9Unit,
         };
+        _densityPercentBoxes = new[]
+        {
+            Density1Pct, Density2Pct, Density3Pct, Density4Pct, Density5Pct,
+            Density6Pct, Density7Pct, Density8Pct, Density9Pct, Density0Pct,
+        };
         foreach (var box in _densityUnitBoxes)
             foreach (var u in IndicatorUnits.All)
                 box.Items.Add(u);
@@ -82,6 +91,7 @@ public partial class SymbolEditorWindow : Window
         foreach (var a in IndexAlgorithms.All) AlgorithmBox.Items.Add(a);
         BuildPairBoxes(indexPairs ?? Array.Empty<string>(), editing);
         BuildSwatches();
+        VolumeSplitBox.IsChecked = editing?.VolumeSplitSides ?? true;
 
         if (editing != null)
         {
@@ -101,8 +111,15 @@ public partial class SymbolEditorWindow : Window
             UnitBox.SelectedItem = IndicatorUnits.All.FirstOrDefault(
                 u => string.Equals(u, editing.Unit, StringComparison.OrdinalIgnoreCase)) ?? IndicatorUnits.Minutes;
             DirectionBox.SelectedItem = editing.FromFuture ? FutureLabel : PastLabel;
-            SetAnchor(SourceDate, SourceTimeBox, editing.SourceTimeUnix, DefaultSourceTime);
-            SetAnchor(ChartDate, ChartTimeBox, editing.ChartTimeUnix, DefaultChartTime);
+            WeightedBox.IsChecked = editing.AverageWeighted;
+            long shiftSource = editing.SourceTimeUnix;
+            long shiftChart = editing.ChartTimeUnix;
+            if (IndicatorTypes.IsShift(editing.Type)
+                && ShiftedSymbol.AnchorsBroken(shiftSource, shiftChart))
+                (shiftSource, shiftChart) = ShiftedSymbol.Rebase(
+                    shiftSource, shiftChart, ShiftedSymbol.DefaultAnchorUnix());
+            SetAnchor(SourceDate, SourceTimeBox, shiftSource, DefaultSourceTime);
+            SetAnchor(ChartDate, ChartTimeBox, shiftChart, DefaultChartTime);
             FlipBox.IsChecked = editing.Flip;
             TargetBox.SelectedItem = TargetBox.Items.Cast<string>().FirstOrDefault(
                 p => p != SameAsSourceLabel
@@ -120,6 +137,9 @@ public partial class SymbolEditorWindow : Window
             CurrencyPairBox.SelectedItem = CurrencyPairBox.Items.Cast<string>().FirstOrDefault(
                 p => IndicatorSymbol.NameKey(p) == IndicatorSymbol.NameKey(editing.IndexPair));
             DealsFileBox.Text = editing.DealsFile;
+            VolumeGroupBox.Text =
+                editing.EffectiveVolumeGroupMinutes().ToString(CultureInfo.InvariantCulture);
+            VolumeLockBox.IsChecked = editing.VolumeGroupLocked;
             for (int i = 0; i < IndicatorSymbol.DensityOptionCount; i++)
             {
                 _densityPeriodBoxes[i].Text =
@@ -128,7 +148,14 @@ public partial class SymbolEditorWindow : Window
                     u => string.Equals(u, editing.DensityUnitAt(i), StringComparison.OrdinalIgnoreCase))
                     ?? IndicatorUnits.Minutes;
             }
+            for (int i = 0; i <= IndicatorSymbol.DensityAllOption; i++)
+                _densityPercentBoxes[i].Text =
+                    editing.DensityScalePercentAt(i).ToString(CultureInfo.InvariantCulture);
+            DensityScaleBox.Text = editing.DensityScalePerPixel > 0
+                ? editing.DensityScalePerPixel.ToString("0.####", CultureInfo.InvariantCulture)
+                : "";
             SelectColor(editing.ColorArgb);
+            SelectSellColor(editing.SellColorArgb);
         }
         else
         {
@@ -145,6 +172,7 @@ public partial class SymbolEditorWindow : Window
             TakeProfitBox.Text = IndicatorSymbol.DefaultTakeProfitPips.ToString(CultureInfo.InvariantCulture);
             UnitBox.SelectedItem = IndicatorUnits.Minutes;
             DirectionBox.SelectedItem = PastLabel;
+            WeightedBox.IsChecked = false;
             SetAnchor(SourceDate, SourceTimeBox, 0, DefaultSourceTime);
             SetAnchor(ChartDate, ChartTimeBox, 0, DefaultChartTime);
             TargetBox.SelectedItem = SameAsSourceLabel;
@@ -152,13 +180,19 @@ public partial class SymbolEditorWindow : Window
             SetOptionalAnchor(IndexEndDate, IndexEndTimeBox, 0);
             MethodBox.SelectedItem = IndexMethods.Median;
             AlgorithmBox.SelectedItem = IndexAlgorithms.Percent;
+            VolumeGroupBox.Text = "1";
             for (int i = 0; i < IndicatorSymbol.DensityOptionCount; i++)
             {
                 _densityPeriodBoxes[i].Text =
                     IndicatorSymbol.DefaultDensityPeriods[i].ToString(CultureInfo.InvariantCulture);
                 _densityUnitBoxes[i].SelectedItem = IndicatorSymbol.DefaultDensityUnits[i];
             }
+            foreach (var box in _densityPercentBoxes)
+                box.Text = IndicatorSymbol.DefaultDensityScalePercent
+                    .ToString(CultureInfo.InvariantCulture);
+            DensityScaleBox.Text = "";
             SelectColor(IndicatorPalette.Colors[0]);
+            SelectSellColor(IndicatorPalette.Colors[7]);
         }
 
         UpdateParamsVisibility();
@@ -192,6 +226,12 @@ public partial class SymbolEditorWindow : Window
 
     private void BuildSwatches()
     {
+        FillSwatches(ColorPanel, _swatches, SelectColor);
+        FillSwatches(SellColorPanel, _sellSwatches, SelectSellColor);
+    }
+
+    private static void FillSwatches(UniformGrid panel, List<Border> swatches, Action<int> select)
+    {
         foreach (var argb in IndicatorPalette.Colors)
         {
             var color = Color.FromArgb(
@@ -209,16 +249,27 @@ public partial class SymbolEditorWindow : Window
                 Cursor = Cursors.Hand,
                 Tag = argb,
             };
-            swatch.MouseLeftButtonDown += (_, _) => SelectColor(argb);
-            _swatches.Add(swatch);
-            ColorPanel.Children.Add(swatch);
+            swatch.MouseLeftButtonDown += (_, _) => select(argb);
+            swatches.Add(swatch);
+            panel.Children.Add(swatch);
         }
     }
 
     private void SelectColor(int argb)
     {
         _selectedColor = argb;
-        foreach (var swatch in _swatches)
+        Highlight(_swatches, argb);
+    }
+
+    private void SelectSellColor(int argb)
+    {
+        _selectedSellColor = argb;
+        Highlight(_sellSwatches, argb);
+    }
+
+    private static void Highlight(List<Border> swatches, int argb)
+    {
+        foreach (var swatch in swatches)
         {
             bool selected = (int)swatch.Tag! == argb;
             swatch.BorderBrush = selected ? Brushes.Black : Brushes.Transparent;
@@ -332,9 +383,27 @@ public partial class SymbolEditorWindow : Window
         if (DealsParams != null)
             DealsParams.Visibility =
                 type == IndicatorTypes.Deals ? Visibility.Visible : Visibility.Collapsed;
+        if (VolumeParams != null)
+            VolumeParams.Visibility =
+                type == IndicatorTypes.Volume ? Visibility.Visible : Visibility.Collapsed;
         if (DensityParams != null)
             DensityParams.Visibility =
-                type == IndicatorTypes.Density ? Visibility.Visible : Visibility.Collapsed;
+                type == IndicatorTypes.Density || type == IndicatorTypes.Volume
+                    ? Visibility.Visible
+                    : Visibility.Collapsed;
+        if (DensityScaleHint != null)
+            DensityScaleHint.Text = type == IndicatorTypes.Volume
+                ? "contracts per pixel"
+                : "minutes per pixel";
+        if (SellColorBlock != null && ColorLabel != null)
+        {
+            bool orderBook = type != null && IndicatorTypes.IsOrderBook(type);
+            bool volume = type == IndicatorTypes.Volume;
+            SellColorBlock.Visibility = orderBook || volume ? Visibility.Visible : Visibility.Collapsed;
+            ColorLabel.Text = orderBook ? "Buy color" : volume ? "Ask color" : "Color";
+            if (SellColorLabel != null)
+                SellColorLabel.Text = volume ? "Bid color" : "Sell color";
+        }
         UpdateCurrencyHint();
     }
 
@@ -384,6 +453,7 @@ public partial class SymbolEditorWindow : Window
         int period = _editing?.Period ?? 20;
         string unit = _editing?.Unit ?? IndicatorUnits.Minutes;
         bool fromFuture = _editing?.FromFuture ?? false;
+        bool averageWeighted = _editing?.AverageWeighted ?? false;
         long sourceTime = _editing?.SourceTimeUnix ?? 0;
         long chartTime = _editing?.ChartTimeUnix ?? 0;
         bool flip = _editing?.Flip ?? false;
@@ -399,6 +469,14 @@ public partial class SymbolEditorWindow : Window
         string targetSymbol = _editing?.TargetSymbol ?? "";
         var densityPeriods = new List<int>(_editing?.DensityPeriods ?? new List<int>());
         var densityUnits = new List<string>(_editing?.DensityUnits ?? new List<string>());
+        var densityPercents = new List<int>(_editing?.DensityScalePercents ?? new List<int>());
+        double densityPerPixel = _editing?.DensityScalePerPixel ?? 0;
+        int volumeGroup = _editing?.EffectiveVolumeGroupMinutes() ?? 1;
+        int volumeGroupWas = volumeGroup;
+        double volumeBarScale = _editing?.VolumeBarScale ?? 1;
+        double volumeBarUnit = _editing?.VolumeBarUnit ?? 0;
+        bool volumeLocked = _editing?.VolumeGroupLocked ?? false;
+        bool volumeSplit = _editing?.VolumeSplitSides ?? true;
         if (type == IndicatorTypes.ZigZag)
         {
             if (!int.TryParse(Limit1Box.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture,
@@ -436,6 +514,7 @@ public partial class SymbolEditorWindow : Window
             }
             unit = (UnitBox.SelectedItem as string) ?? IndicatorUnits.Minutes;
             fromFuture = (DirectionBox.SelectedItem as string) == FutureLabel;
+            averageWeighted = WeightedBox.IsChecked == true;
         }
         else if (type == IndicatorTypes.Shift)
         {
@@ -505,6 +584,22 @@ public partial class SymbolEditorWindow : Window
                 return null;
             }
         }
+        else if (type == IndicatorTypes.Volume)
+        {
+            if (!int.TryParse(VolumeGroupBox.Text.Trim(), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out volumeGroup) || volumeGroup <= 0)
+            {
+                Warn("Group must be a positive whole number of minutes.");
+                return null;
+            }
+            volumeLocked = VolumeLockBox.IsChecked == true;
+            volumeSplit = VolumeSplitBox.IsChecked == true;
+            if (ReadDensityOptions() is not { } volumeOpts) return null;
+            densityPeriods = volumeOpts.Periods;
+            densityUnits = volumeOpts.Units;
+            densityPercents = volumeOpts.Percents;
+            densityPerPixel = volumeOpts.PerPixel;
+        }
         else if (type == IndicatorTypes.EntryPoints)
         {
             if (!int.TryParse(StopLossBox.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture,
@@ -522,25 +617,11 @@ public partial class SymbolEditorWindow : Window
         }
         else if (type == IndicatorTypes.Density)
         {
-            densityPeriods = new List<int>();
-            densityUnits = new List<string>();
-            for (int i = 0; i < IndicatorSymbol.DensityOptionCount; i++)
-            {
-                if (!int.TryParse(_densityPeriodBoxes[i].Text.Trim(), NumberStyles.Integer,
-                        CultureInfo.InvariantCulture, out int densityPeriod) || densityPeriod <= 0)
-                {
-                    Warn($"Option {i + 1} period must be a positive whole number.");
-                    return null;
-                }
-                string densityUnit = (_densityUnitBoxes[i].SelectedItem as string) ?? IndicatorUnits.Minutes;
-                if ((long)densityPeriod * IndicatorUnits.BarsPerUnit(densityUnit) > 10_000_000)
-                {
-                    Warn($"Option {i + 1} lookback is too long.");
-                    return null;
-                }
-                densityPeriods.Add(densityPeriod);
-                densityUnits.Add(densityUnit);
-            }
+            if (ReadDensityOptions() is not { } opts) return null;
+            densityPeriods = opts.Periods;
+            densityUnits = opts.Units;
+            densityPercents = opts.Percents;
+            densityPerPixel = opts.PerPixel;
         }
         return new IndicatorSymbol
         {
@@ -553,6 +634,7 @@ public partial class SymbolEditorWindow : Window
             Period = period,
             Unit = unit,
             FromFuture = fromFuture,
+            AverageWeighted = averageWeighted,
             SourceTimeUnix = sourceTime,
             ChartTimeUnix = chartTime,
             Flip = flip,
@@ -572,8 +654,16 @@ public partial class SymbolEditorWindow : Window
             FindTargets = new List<string>(_editing?.FindTargets ?? new List<string>()),
             DensityPeriods = densityPeriods,
             DensityUnits = densityUnits,
+            DensityScalePercents = densityPercents,
+            DensityScalePerPixel = densityPerPixel,
             DensitySelected = _editing?.DensitySelected ?? 0,
+            VolumeGroupMinutes = volumeGroup,
+            VolumeBarScale = volumeBarScale,
+            VolumeBarUnit = volumeBarUnit * volumeGroup / volumeGroupWas,
+            VolumeGroupLocked = volumeLocked,
+            VolumeSplitSides = volumeSplit,
             ColorArgb = _selectedColor,
+            SellColorArgb = _selectedSellColor,
         };
     }
 
@@ -677,6 +767,7 @@ public partial class SymbolEditorWindow : Window
         PeriodBox.IsEnabled = !busy;
         UnitBox.IsEnabled = !busy;
         DirectionBox.IsEnabled = !busy;
+        WeightedBox.IsEnabled = !busy;
         SourceDate.IsEnabled = !busy;
         SourceTimeBox.IsEnabled = !busy;
         ChartDate.IsEnabled = !busy;
@@ -696,9 +787,15 @@ public partial class SymbolEditorWindow : Window
         TakeProfitBox.IsEnabled = !busy;
         DealsFileBox.IsEnabled = !busy;
         DealsBrowseBtn.IsEnabled = !busy;
+        VolumeGroupBox.IsEnabled = !busy;
+        VolumeLockBox.IsEnabled = !busy;
+        VolumeSplitBox.IsEnabled = !busy;
         foreach (var box in _densityPeriodBoxes) box.IsEnabled = !busy;
         foreach (var box in _densityUnitBoxes) box.IsEnabled = !busy;
+        foreach (var box in _densityPercentBoxes) box.IsEnabled = !busy;
+        DensityScaleBox.IsEnabled = !busy;
         ColorPanel.IsEnabled = !busy;
+        SellColorPanel.IsEnabled = !busy;
     }
 
     private void DealsBrowseBtn_Click(object sender, RoutedEventArgs e)
@@ -727,6 +824,58 @@ public partial class SymbolEditorWindow : Window
             if (System.IO.Directory.Exists(dealsDir)) dialog.InitialDirectory = dealsDir;
         }
         if (dialog.ShowDialog(this) == true) DealsFileBox.Text = dialog.FileName;
+    }
+
+    private (List<int> Periods, List<string> Units, List<int> Percents, double PerPixel)?
+        ReadDensityOptions()
+    {
+        var periods = new List<int>();
+        var units = new List<string>();
+        for (int i = 0; i < IndicatorSymbol.DensityOptionCount; i++)
+        {
+            if (!int.TryParse(_densityPeriodBoxes[i].Text.Trim(), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out int period) || period <= 0)
+            {
+                Warn($"Option {i + 1} period must be a positive whole number.");
+                return null;
+            }
+            string unit = (_densityUnitBoxes[i].SelectedItem as string) ?? IndicatorUnits.Minutes;
+            if ((long)period * IndicatorUnits.BarsPerUnit(unit) > 10_000_000)
+            {
+                Warn($"Option {i + 1} lookback is too long.");
+                return null;
+            }
+            periods.Add(period);
+            units.Add(unit);
+        }
+        var percents = new List<int>();
+        for (int i = 0; i <= IndicatorSymbol.DensityAllOption; i++)
+        {
+            var text = _densityPercentBoxes[i].Text.Trim();
+            if (text.Length == 0)
+            {
+                percents.Add(IndicatorSymbol.DefaultDensityScalePercent);
+                continue;
+            }
+            if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture,
+                    out int percent) || percent <= 0 || percent > 100_000)
+            {
+                Warn($"Key {(i == IndicatorSymbol.DensityAllOption ? 0 : i + 1)} percent must be " +
+                    "a whole number between 1 and 100000.");
+                return null;
+            }
+            percents.Add(percent);
+        }
+        double perPixel = 0;
+        var scaleText = DensityScaleBox.Text.Trim();
+        if (scaleText.Length > 0
+            && (!double.TryParse(scaleText, NumberStyles.Float, CultureInfo.InvariantCulture,
+                    out perPixel) || perPixel <= 0))
+        {
+            Warn("Scale must be a positive number, or empty to fit the window.");
+            return null;
+        }
+        return (periods, units, percents, perPixel);
     }
 
     private void Warn(string message) =>

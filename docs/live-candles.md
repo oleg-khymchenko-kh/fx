@@ -116,19 +116,16 @@ and the range closes.
 
 Computed symbols do read provisional minutes. That is the point of the feature.
 
-Averages are the only type that recomputes itself. After a repair pass writes real broker bars,
-`RefreshAveragesAsync` runs `MovingAverageSymbol.Refresh` for every Average indicator, passing the
-first repaired minute as `redoFromUnix` so the rows that were computed from provisional values are
-recomputed. It also runs after the tail download at connect and after the manual history download.
-An Average that has never been computed is skipped, so the automatic path never starts a full
-`Generate`. Everything else (USD index, currency index, zigzag) still needs a manual recompute.
+Averages have no storage anymore: the line is computed in memory from the parent series
+(see docs/moving-average.md), so it follows the live tail and needs no repair pass.
+Everything else (USD index, currency index, zigzag) still needs a manual recompute.
 
 The one real danger is the cumulative index level. `DollarIndexSymbol.Refresh` and
 `CurrencyIndexSymbol.Refresh` read their running state back out of the DB at the last written minute.
 If that minute's source value is later replaced by the broker bar, the level is off by that log
 return forever and only a full `Generate` fixes it. So the Refresh button clamps its end to the
-smallest `ConfirmedToUnix` among the source pairs that have an open range. `MovingAverageSymbol.Refresh`
-is stateless. ZigZag has no Refresh at all, only a full rebuild.
+smallest `ConfirmedToUnix` among the source pairs that have an open range.
+ZigZag has no Refresh at all, only a full rebuild.
 
 ## Not done
 
@@ -136,8 +133,8 @@ is stateless. ZigZag has no Refresh at all, only a full rebuild.
   and the lazy loader never re-reads a year it already covers, so corrected highs and lows appear
   only after the next full chart load. Until then the newest candles show the tick derived, slightly
   narrower high and low.
-- Only Averages are refreshed automatically after a repair. Zigzag must stay manual because its only
-  update path is a full rebuild, which would wipe hand edited points. The two index types
-  must stay manual because a full rebuild is expensive and their Refresh is already clamped to the
-  confirmed watermark.
+- Only Averages follow the data automatically (they are computed in memory from the parent).
+  Zigzag must stay manual because its only update path is a full rebuild, which would wipe hand
+  edited points. The two index types must stay manual because a full rebuild is expensive and their
+  Refresh is already clamped to the confirmed watermark.
 - The Verify DB button does not report provisional counts.

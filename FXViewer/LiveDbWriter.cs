@@ -31,7 +31,8 @@ public sealed class LiveDbWriter
         _log = log;
     }
 
-    public void RecordMinute(string symbol, long minuteUnix, int min, int max, int avg)
+    public void RecordMinute(string symbol, long minuteUnix, int min, int max, int avg,
+        int spreadCode = SpreadCodes.Keep)
     {
         if (!_marks.TryGetValue(symbol, out var mark))
         {
@@ -43,7 +44,8 @@ public sealed class LiveDbWriter
         if (minuteUnix > mark.LastWrittenUnix) mark.LastWrittenUnix = minuteUnix;
         if (_canWrite())
             _db.WriteMinute(symbol, UnixToUtc(minuteUnix), min, max, avg,
-                avgApprox: true, provisional: true);
+                avgApprox: true, provisional: true, spreadCode: spreadCode,
+                volume: VolumeCodes.Keep);
         Persist(symbol, mark);
     }
 

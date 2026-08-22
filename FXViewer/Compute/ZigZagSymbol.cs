@@ -3,7 +3,7 @@ using FXViewer.Storage;
 
 namespace FXViewer.Compute;
 
-public readonly record struct PivotPoint(long UnixSeconds, int Value);
+public readonly record struct PivotPoint(long UnixSeconds, int Value, bool Level = false);
 
 public readonly record struct ZigZagLimits(int Limit1Points, int Limit2Points, int Limit2DelayMinutes)
 {

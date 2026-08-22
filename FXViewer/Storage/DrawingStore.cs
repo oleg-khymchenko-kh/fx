@@ -32,10 +32,13 @@ public static class DrawingStore
         foreach (var line in raw)
         {
             if (line == null) continue;
+            bool level = false;
+            foreach (var p in line)
+                if (p is { Length: >= 3 } && p[2] != 0) level = true;
             var points = new List<PivotPoint>(line.Length);
             foreach (var p in line)
                 if (p is { Length: >= 2 })
-                    points.Add(new PivotPoint(p[0] - p[0] % 60, (int)p[1]));
+                    points.Add(new PivotPoint(p[0] - p[0] % 60, (int)p[1], level));
             if (points.Count > 0) lines.Add(points.ToArray());
         }
         return lines.ToArray();
@@ -48,7 +51,9 @@ public static class DrawingStore
         {
             raw[i] = new long[lines[i].Length][];
             for (int j = 0; j < lines[i].Length; j++)
-                raw[i][j] = new[] { lines[i][j].UnixSeconds, lines[i][j].Value };
+                raw[i][j] = lines[i][j].Level
+                    ? new[] { lines[i][j].UnixSeconds, lines[i][j].Value, 1L }
+                    : new[] { lines[i][j].UnixSeconds, (long)lines[i][j].Value };
         }
         return raw;
     }

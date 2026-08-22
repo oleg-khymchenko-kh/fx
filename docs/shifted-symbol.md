@@ -95,6 +95,33 @@ Model: `IndicatorSymbol` gains `SourceTimeUnix` and `ChartTimeUnix`
 (unix seconds) and `Flip` next to `LimitPips` / `Period` / `Unit` /
 `FromFuture`.
 
+## Only the distance between the two points matters
+
+The pair is kept as two absolute UTC timestamps, but the drawing uses
+only the virtual distance between them. The wheel and the Alt drag move
+the chart point alone, so a copy that started from an empty pair (both
+zero) walked away from 1-Jan-1970 and ended up with a correct shift and
+two meaningless dates. The Edit dialog then showed the source point as
+"today minus one year" (the fallback for an unset field) next to a 1969
+chart point, and saving that pair turned a one day shift into a fifty
+year one.
+
+`AppConfig.Load` now rebases any Shift pair that sits before the first
+weekend gap of the calendar (2007, so nothing real can be there):
+
+    source = today 00:00 UTC (Friday close if that midnight is inside a
+             weekend gap)
+    chart  = ToReal(ToVirtual(source) + delta)
+
+The virtual delta is unchanged, so nothing moves on the chart - only the
+two dates in the dialog become readable. If the delta itself is already
+garbage - a pair saved from the broken dialog can hold fifty years - the
+rebased chart point would land before 2007 again and the rebase would
+repeat on every start, so such a pair is reset to zero shift instead. The same rebase runs for the
+shift placements of every tab (`ChartTab.Shifts`) and of every note, so
+switching tabs does not bring the old pair back, and the Edit dialog
+repeats it in memory for anything that still slips through.
+
 ## Quick shift with the wheel
 
 Alt + mouse wheel over the indicator's name in the left symbol bar moves the

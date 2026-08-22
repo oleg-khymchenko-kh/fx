@@ -13,10 +13,12 @@ Top to bottom:
 1. one row per symbol, `SYMBOL: price` (the price follows the cursor when
    it is over the chart, otherwise it is the last price),
 2. "Calendar" (only when there are calendar entries),
-3. two rows of tilted-grid buttons (docs/tilted-grid.md),
-4. "Unflatten" (only while a flatten is active, docs/flatten-by-line.md),
-5. the "+ Add" button,
-6. the connection status, pinned to the bottom.
+3. "No weekends" (docs/no-weekends.md),
+4. "Sessions" (docs/sessions.md),
+5. two rows of tilted-grid buttons (docs/tilted-grid.md),
+6. "Unflatten" (only while a flatten is active, docs/flatten-by-line.md),
+7. the "+ Add" button,
+8. the connection status, pinned to the bottom.
 
 Clicking a symbol row hides/shows that line; right-clicking opens the
 per-symbol menu (align, add, edit, delete, ...). The wheel over a symbol

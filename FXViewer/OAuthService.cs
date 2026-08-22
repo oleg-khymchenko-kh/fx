@@ -48,24 +48,36 @@ public static class OAuthService
         return code;
     }
 
-    public static async Task<(string AccessToken, string RefreshToken)> ExchangeCodeAsync(
-        string clientId, string clientSecret, string code)
-    {
-        using var http = new HttpClient();
-        var url = TokenUrl
+    public static Task<TokenSet> ExchangeCodeAsync(string clientId, string clientSecret, string code) =>
+        RequestTokenAsync(TokenUrl
             + "?grant_type=authorization_code"
             + "&code=" + Uri.EscapeDataString(code)
             + "&redirect_uri=" + Uri.EscapeDataString(RedirectUri)
             + "&client_id=" + Uri.EscapeDataString(clientId)
-            + "&client_secret=" + Uri.EscapeDataString(clientSecret);
+            + "&client_secret=" + Uri.EscapeDataString(clientSecret));
+
+    public static Task<TokenSet> RefreshAsync(string clientId, string clientSecret, string refreshToken) =>
+        RequestTokenAsync(TokenUrl
+            + "?grant_type=refresh_token"
+            + "&refresh_token=" + Uri.EscapeDataString(refreshToken)
+            + "&client_id=" + Uri.EscapeDataString(clientId)
+            + "&client_secret=" + Uri.EscapeDataString(clientSecret));
+
+    private static async Task<TokenSet> RequestTokenAsync(string url)
+    {
+        using var http = new HttpClient();
         var json = await http.GetStringAsync(url);
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
+        var error = GetString(root, "errorCode") ?? GetString(root, "error");
+        if (!string.IsNullOrEmpty(error))
+            throw new InvalidOperationException(error + ": " + (GetString(root, "description")
+                ?? GetString(root, "error_description") ?? json));
         var access = GetString(root, "accessToken") ?? GetString(root, "access_token");
         var refresh = GetString(root, "refreshToken") ?? GetString(root, "refresh_token") ?? "";
         if (string.IsNullOrEmpty(access))
             throw new InvalidOperationException("Token endpoint returned no access token: " + json);
-        return (access, refresh);
+        return new TokenSet(access, refresh, GetLong(root, "expiresIn") ?? GetLong(root, "expires_in") ?? 0);
     }
 
     public static void OpenBrowser(string url) =>
@@ -73,4 +85,11 @@ public static class OAuthService
 
     private static string? GetString(JsonElement root, string name) =>
         root.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String ? el.GetString() : null;
+
+    private static long? GetLong(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.Number && el.TryGetInt64(out var v)
+            ? v
+            : null;
 }
+
+public readonly record struct TokenSet(string AccessToken, string RefreshToken, long ExpiresInSeconds);

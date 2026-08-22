@@ -1,4 +1,5 @@
 using FXViewer.Chart;
+using FXViewer.Compute;
 
 namespace FXViewer;
 
@@ -48,6 +49,14 @@ public sealed class ShiftPlacement
     };
 
     public string Target() => TargetSymbol.Length > 0 ? TargetSymbol : Source;
+
+    public bool Rebase(long anchorUnix)
+    {
+        if (!ShiftedSymbol.AnchorsBroken(SourceTimeUnix, ChartTimeUnix)) return false;
+        (SourceTimeUnix, ChartTimeUnix) =
+            ShiftedSymbol.Rebase(SourceTimeUnix, ChartTimeUnix, anchorUnix);
+        return true;
+    }
 
     public bool Matches(IndicatorSymbol ind) =>
         IndicatorSymbol.NameKey(Source) == IndicatorSymbol.NameKey(ind.Source)

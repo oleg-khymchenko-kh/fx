@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using FXViewer.Compute;
 
 namespace FXViewer.Storage;
 
@@ -23,11 +24,13 @@ public static class NotesStore
             return new List<Note>();
         }
         if (notes == null) return new List<Note>();
+        long anchor = ShiftedSymbol.DefaultAnchorUnix();
         foreach (var note in notes)
         {
             if (note.Id.Length == 0) note.Id = Note.NewId();
             if (note.Name.Trim().Length == 0) note.Name = "Note";
             note.State?.EnsureTiltedGrids();
+            foreach (var placement in note.Shifts) placement.Rebase(anchor);
         }
         return notes;
     }

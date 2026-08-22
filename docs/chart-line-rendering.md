@@ -7,9 +7,13 @@ not implemented yet.
 
 The chart renders inside an "epoch": a fixed mapping that consists of
 
-- `K` - minutes per pixel column, computed once per epoch and then frozen,
-- bucket alignment to the unix epoch: `bucketIndex = unixSeconds / (K * 60)`,
+- `K` - seconds per pixel column, computed once per epoch and then frozen,
+- bucket alignment to the unix epoch: `bucketIndex = unixSeconds / K`,
 - a fixed price-to-Y scale.
+
+`K` is a whole number of minutes while a column holds a minute or more.
+Below that it is one of the divisors of 60, so one minute spreads over
+several pixels; see docs/time-zoom.md.
 
 Invariant 5 ("drawn pixels never change") applies inside one epoch. A new
 epoch starts on: resize, DPI change, zoom, pan, the live price leaving the
@@ -187,13 +191,15 @@ values, and the minute count. Any column assembled from whole blocks
 gets exactly the same min/max/avg as if it were computed from M1, so
 the rendered pixels do not depend on which level was used.
 
-To keep columns made of whole blocks, `K` is quantized on wide zooms:
-below 60 any integer, then a multiple of 15 up to 240, of 60 up to 960,
-of 240 up to 5760, and of 1440 beyond. Each threshold is a multiple of
-the next quantum, and a quantum is at most 25% of `K` in its band, so
-the 1.25x zoom ladder keeps working. `BuildView` picks the largest
-level whose size divides `K`; a `K` that divides no level (small zooms,
-old saved states) falls back to the M1 scan.
+To keep columns made of whole blocks, `K` is quantized on wide zooms.
+In minutes: below 60 any integer, then a multiple of 15 up to 240, of 60
+up to 960, of 240 up to 5760, and of 1440 beyond. Each threshold is a
+multiple of the next quantum, and a quantum is at most 25% of `K` in its
+band, so the 1.25x zoom ladder keeps working. `BuildView` picks the
+largest level whose size divides `K`; a `K` that divides no level (small
+zooms, old saved states) falls back to the M1 scan. Below one minute per
+column there is nothing to aggregate, so `BuildView` builds minute
+columns and copies each one over its pixels.
 
 ## Tuning parameters
 

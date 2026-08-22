@@ -152,7 +152,8 @@ public static class HistoryDownloader
                 int avg = (int)Math.Round((open + high + low + close) / 4.0, MidpointRounding.AwayFromZero);
                 long barUnix = bar.UtcTimestampInMinutes * 60L;
                 var time = DateTimeOffset.FromUnixTimeSeconds(barUnix).UtcDateTime;
-                db.WriteMinute(symbolName, time, (int)low, (int)high, avg, avgApprox: true);
+                db.WriteMinute(symbolName, time, (int)low, (int)high, avg, avgApprox: true,
+                    spreadCode: SpreadCodes.Keep, volume: VolumeCodes.Keep);
                 if (earliest == 0 || barUnix < earliest) earliest = barUnix;
                 total++;
                 inWindow++;

@@ -2,7 +2,8 @@ using FXViewer.Storage;
 
 namespace FXViewer.Chart;
 
-public readonly record struct AggBlock(long StartUnixSeconds, int Min, int Max, long AvgSum, int Count);
+public readonly record struct AggBlock(long StartUnixSeconds, int Min, int Max, long AvgSum, int Count,
+    int SpreadMaxTenths = -1, long VolumeSum = -1, long VolumeMax = -1);
 
 public sealed class CandleHistory
 {
@@ -143,27 +144,39 @@ public sealed class CandleHistory
         int mx = 0;
         int n = 0;
         long sum = 0;
+        int sp = -1;
+        long vol = -1;
+        long volMax = -1;
         foreach (var c in minutes)
         {
             long s = c.MinuteUnixSeconds - c.MinuteUnixSeconds % blockSec;
             if (s != start)
             {
-                if (n > 0) result.Add(new AggBlock(start, mn, mx, sum, n));
+                if (n > 0) result.Add(new AggBlock(start, mn, mx, sum, n, sp, vol, volMax));
                 start = s;
                 mn = c.Min;
                 mx = c.Max;
                 sum = 0;
                 n = 0;
+                sp = c.HasSpread ? c.SpreadTenths : -1;
+                vol = c.HasVolume ? c.Volume : -1;
+                volMax = vol;
             }
             else
             {
                 if (c.Min < mn) mn = c.Min;
                 if (c.Max > mx) mx = c.Max;
+                if (c.HasSpread && c.SpreadTenths > sp) sp = c.SpreadTenths;
+                if (c.HasVolume)
+                {
+                    vol = Math.Max(vol, 0) + c.Volume;
+                    if (c.Volume > volMax) volMax = c.Volume;
+                }
             }
             sum += c.Avg;
             n++;
         }
-        if (n > 0) result.Add(new AggBlock(start, mn, mx, sum, n));
+        if (n > 0) result.Add(new AggBlock(start, mn, mx, sum, n, sp, vol, volMax));
         return result.ToArray();
     }
 
@@ -175,27 +188,36 @@ public sealed class CandleHistory
         int mx = 0;
         int n = 0;
         long sum = 0;
+        int sp = -1;
+        long vol = -1;
+        long volMax = -1;
         foreach (var b in blocks)
         {
             long s = b.StartUnixSeconds - b.StartUnixSeconds % blockSec;
             if (s != start)
             {
-                if (n > 0) result.Add(new AggBlock(start, mn, mx, sum, n));
+                if (n > 0) result.Add(new AggBlock(start, mn, mx, sum, n, sp, vol, volMax));
                 start = s;
                 mn = b.Min;
                 mx = b.Max;
                 sum = 0;
                 n = 0;
+                sp = b.SpreadMaxTenths;
+                vol = b.VolumeSum;
+                volMax = b.VolumeMax;
             }
             else
             {
                 if (b.Min < mn) mn = b.Min;
                 if (b.Max > mx) mx = b.Max;
+                if (b.SpreadMaxTenths > sp) sp = b.SpreadMaxTenths;
+                if (b.VolumeSum >= 0) vol = Math.Max(vol, 0) + b.VolumeSum;
+                if (b.VolumeMax > volMax) volMax = b.VolumeMax;
             }
             sum += b.AvgSum;
             n += b.Count;
         }
-        if (n > 0) result.Add(new AggBlock(start, mn, mx, sum, n));
+        if (n > 0) result.Add(new AggBlock(start, mn, mx, sum, n, sp, vol, volMax));
         return result.ToArray();
     }
 }

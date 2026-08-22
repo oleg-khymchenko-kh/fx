@@ -4,89 +4,189 @@ namespace FXViewer.Chart;
 
 public readonly record struct ColumnAggregate(int Min, int Max, int Avg, bool HasData);
 
-public readonly record struct ChartSeries(ColumnAggregate[] Columns, int MinutesPerColumn, long FirstBucket);
+public readonly record struct ChartSeries(ColumnAggregate[] Columns, long ColumnSeconds, long FirstBucket);
 
 public static class ChartColumns
 {
+    public const long MinuteSeconds = 60;
+
     private const int ParallelChunkCandles = 64_000;
 
-    private static readonly (int Threshold, int Quantum)[] SnapBands =
+    private static readonly (long Threshold, long Quantum)[] SnapBands =
     {
-        (5760, 1440),
-        (960, 240),
-        (240, 60),
-        (60, 15),
+        (5760 * MinuteSeconds, 1440 * MinuteSeconds),
+        (960 * MinuteSeconds, 240 * MinuteSeconds),
+        (240 * MinuteSeconds, 60 * MinuteSeconds),
+        (60 * MinuteSeconds, 15 * MinuteSeconds),
     };
 
-    public static int Quantum(int k)
+    public static readonly long[] SubMinuteSteps = { 60, 30, 20, 15, 12, 10, 6, 5, 4, 3, 2, 1 };
+
+    public static long Quantum(long columnSeconds)
     {
         foreach (var (threshold, quantum) in SnapBands)
-            if (k >= threshold) return quantum;
-        return 1;
+            if (columnSeconds >= threshold) return quantum;
+        return MinuteSeconds;
     }
 
-    public static int SnapK(int k) => k - k % Quantum(k);
+    public static long Snap(long columnSeconds) =>
+        columnSeconds <= MinuteSeconds
+            ? SubMinuteSteps[StepIndex(columnSeconds)]
+            : columnSeconds - columnSeconds % Quantum(columnSeconds);
 
-    private static int SnapKUp(int k)
+    public static long Finer(long columnSeconds)
     {
-        int rem = k % Quantum(k);
-        return rem == 0 ? k : k + Quantum(k) - rem;
+        if (columnSeconds > MinuteSeconds) return columnSeconds;
+        int i = StepIndex(columnSeconds);
+        return SubMinuteSteps[Math.Min(i + 1, SubMinuteSteps.Length - 1)];
     }
 
-    public static int FitK(long firstUnix, long lastUnix, int maxColumns)
+    public static long Coarser(long columnSeconds)
     {
-        long totalMinutes = (lastUnix - firstUnix) / 60 + 1;
-        int k = SnapKUp((int)Math.Max(1, (totalMinutes + maxColumns - 1) / maxColumns));
-        while (lastUnix / (k * 60L) - firstUnix / (k * 60L) + 1 > maxColumns) k = SnapKUp(k + 1);
-        return k;
+        if (columnSeconds >= MinuteSeconds) return columnSeconds;
+        int i = StepIndex(columnSeconds);
+        return SubMinuteSteps[Math.Max(i - 1, 0)];
     }
 
-    public static long[] ColumnEdges(WeekendCompressor? map, int k, long firstBucket, int count)
+    private static int StepIndex(long columnSeconds)
     {
-        long bucketSec = k * 60L;
+        int best = 0;
+        long bestDiff = long.MaxValue;
+        for (int i = 0; i < SubMinuteSteps.Length; i++)
+        {
+            long diff = Math.Abs(SubMinuteSteps[i] - columnSeconds);
+            if (diff >= bestDiff) continue;
+            bestDiff = diff;
+            best = i;
+        }
+        return best;
+    }
+
+    public static long Zoomed(long columnSeconds, bool zoomIn, double step)
+    {
+        if (zoomIn && columnSeconds <= MinuteSeconds) return Finer(columnSeconds);
+        if (!zoomIn && columnSeconds < MinuteSeconds) return Coarser(columnSeconds);
+        long scaled = (long)Math.Round(zoomIn ? columnSeconds / step : columnSeconds * step);
+        if (scaled == columnSeconds) scaled = zoomIn ? columnSeconds - 1 : columnSeconds + 1;
+        long next = Snap(Math.Max(MinuteSeconds, scaled));
+        if (next != columnSeconds) return next;
+        return zoomIn
+            ? Math.Max(MinuteSeconds, Snap(columnSeconds - Quantum(columnSeconds)))
+            : columnSeconds + Quantum(columnSeconds);
+    }
+
+    private static long SnapUp(long columnSeconds)
+    {
+        if (columnSeconds <= MinuteSeconds) return MinuteSeconds;
+        long quantum = Quantum(columnSeconds);
+        long rem = columnSeconds % quantum;
+        return rem == 0 ? columnSeconds : columnSeconds + quantum - rem;
+    }
+
+    public static long FitColumnSeconds(long firstUnix, long lastUnix, int maxColumns)
+    {
+        long total = lastUnix - firstUnix + MinuteSeconds;
+        long columnSeconds = SnapUp(Math.Max(MinuteSeconds, (total + maxColumns - 1) / maxColumns));
+        while (lastUnix / columnSeconds - firstUnix / columnSeconds + 1 > maxColumns)
+            columnSeconds = SnapUp(columnSeconds + 1);
+        return columnSeconds;
+    }
+
+    public static int MinuteRun(long columnSeconds) =>
+        columnSeconds > 0 && columnSeconds < MinuteSeconds ? (int)(MinuteSeconds / columnSeconds) : 1;
+
+    public static long MinuteBucket(long bucket, int run) =>
+        run <= 1 ? bucket : bucket >= 0 ? bucket / run : (bucket - run + 1) / run;
+
+    public static int MinuteCount(int count, int run) => count / run + 2;
+
+    public static T[] Expand<T>(T[] source, long sourceFirst, int run, long firstBucket, int count, T empty)
+    {
+        var result = new T[count];
+        Array.Fill(result, empty);
+        for (int i = 0; i < count; i++)
+        {
+            long index = MinuteBucket(firstBucket + i, run) - sourceFirst;
+            if ((ulong)index < (ulong)source.Length) result[i] = source[(int)index];
+        }
+        return result;
+    }
+
+    public static long[] ColumnEdges(WeekendCompressor? map, long columnSeconds, long firstBucket, int count)
+    {
         var edges = new long[count + 1];
         for (int i = 0; i <= count; i++)
         {
-            long v = (firstBucket + i) * bucketSec;
+            long v = (firstBucket + i) * columnSeconds;
             edges[i] = map == null ? v : map.ToReal(v);
         }
         return edges;
     }
 
-    public static ChartSeries BuildView(CandleHistory history, int k, long firstBucket, int count,
+    public static ChartSeries BuildView(CandleHistory history, long columnSeconds, long firstBucket, int count,
         WeekendCompressor? map = null)
     {
+        int run = MinuteRun(columnSeconds);
+        if (run > 1)
+        {
+            long minuteFirst = MinuteBucket(firstBucket, run);
+            var minuteView = BuildView(history, MinuteSeconds, minuteFirst, MinuteCount(count, run), map);
+            return new ChartSeries(
+                Expand(minuteView.Columns, minuteFirst, run, firstBucket, count, default),
+                columnSeconds, firstBucket);
+        }
         ChartSeries series;
-        int level = LevelFor(k, map);
+        int level = LevelFor(columnSeconds, map);
         if (map != null)
         {
             var columns = new ColumnAggregate[count];
-            var edges = ColumnEdges(map, k, firstBucket, count);
+            var edges = ColumnEdges(map, columnSeconds, firstBucket, count);
             if (level >= 0) FillEdges(history.Levels[level], edges, columns);
             else FillEdges(history.Minutes, edges, columns);
-            series = new ChartSeries(columns, k, firstBucket);
+            series = new ChartSeries(columns, columnSeconds, firstBucket);
         }
         else if (level >= 0)
         {
             var columns = new ColumnAggregate[count];
-            FillView(history.Levels[level], k, firstBucket, count, columns);
-            series = new ChartSeries(columns, k, firstBucket);
+            FillView(history.Levels[level], columnSeconds, firstBucket, count, columns);
+            series = new ChartSeries(columns, columnSeconds, firstBucket);
         }
         else
         {
-            series = BuildView(history.Minutes, k, firstBucket, count);
+            series = BuildView(history.Minutes, columnSeconds, firstBucket, count);
         }
-        MergeLive(history, series.Columns, k, firstBucket, map);
+        MergeLive(history, series.Columns, columnSeconds, firstBucket, map);
         return series;
     }
 
-    public static int LevelFor(int k, WeekendCompressor? map)
+    public static (ChartSeries View, int[] Chosen) BuildLine(CandleHistory history, long columnSeconds,
+        long firstBucket, int count, WeekendCompressor? map, int lookback, int noiseThreshold)
     {
+        int run = MinuteRun(columnSeconds);
+        if (run == 1)
+        {
+            var view = BuildView(history, columnSeconds, firstBucket, count, map);
+            return (view, LineDecimator.ChooseValues(view.Columns, lookback, noiseThreshold));
+        }
+        long minuteFirst = MinuteBucket(firstBucket, run);
+        var minutes = BuildView(history, MinuteSeconds, minuteFirst, MinuteCount(count, run), map);
+        var minuteChosen = LineDecimator.ChooseValues(minutes.Columns, lookback, noiseThreshold);
+        return (
+            new ChartSeries(
+                Expand(minutes.Columns, minuteFirst, run, firstBucket, count, default),
+                columnSeconds, firstBucket),
+            Expand(minuteChosen, minuteFirst, run, firstBucket, count, 0));
+    }
+
+    public static int LevelFor(long columnSeconds, WeekendCompressor? map)
+    {
+        if (columnSeconds < MinuteSeconds || columnSeconds % MinuteSeconds != 0) return -1;
+        long minutes = columnSeconds / MinuteSeconds;
         var levels = CandleHistory.LevelMinutes;
         for (int i = levels.Length - 1; i >= 0; i--)
         {
-            if (k % levels[i] != 0) continue;
-            if (map != null && 3600 % (levels[i] * 60) != 0) continue;
+            if (minutes % levels[i] != 0) continue;
+            if (map != null && 3600 % (levels[i] * MinuteSeconds) != 0) continue;
             return i;
         }
         return -1;
@@ -136,23 +236,22 @@ public static class ChartColumns
         }
     }
 
-    private static void MergeLive(CandleHistory history, ColumnAggregate[] columns, int k, long firstBucket,
-        WeekendCompressor? map)
+    private static void MergeLive(CandleHistory history, ColumnAggregate[] columns, long columnSeconds,
+        long firstBucket, WeekendCompressor? map)
     {
         var live = history.Live;
         if (live.Length == 0) return;
-        long bucketSec = k * 60L;
         long lastBucketExcl = firstBucket + columns.Length;
         long recomputed = long.MinValue;
         foreach (var c in live)
         {
             long t = map == null ? c.MinuteUnixSeconds : map.ToVirtual(c.MinuteUnixSeconds);
-            long bucket = t / bucketSec;
+            long bucket = t / columnSeconds;
             if (bucket < firstBucket || bucket >= lastBucketExcl) continue;
             if (bucket == recomputed) continue;
             recomputed = bucket;
-            long lo = map == null ? bucket * bucketSec : map.ToReal(bucket * bucketSec);
-            long hi = map == null ? lo + bucketSec : map.ToReal((bucket + 1) * bucketSec);
+            long lo = map == null ? bucket * columnSeconds : map.ToReal(bucket * columnSeconds);
+            long hi = map == null ? lo + columnSeconds : map.ToReal((bucket + 1) * columnSeconds);
             columns[bucket - firstBucket] = RecomputeColumn(history.Minutes, live, lo, hi);
         }
     }
@@ -182,17 +281,16 @@ public static class ChartColumns
         return n == 0 ? default : new ColumnAggregate(mn, mx, Rollup.RoundAvg(sum, n), true);
     }
 
-    public static ChartSeries BuildView(Candle[] minutes, int k, long firstBucket, int count)
+    public static ChartSeries BuildView(Candle[] minutes, long columnSeconds, long firstBucket, int count)
     {
         var columns = new ColumnAggregate[count];
-        long bucketSec = k * 60L;
-        long lo = firstBucket * bucketSec;
+        long lo = firstBucket * columnSeconds;
         int start = LowerBound(minutes, lo);
-        int end = LowerBound(minutes, (firstBucket + count) * bucketSec);
+        int end = LowerBound(minutes, (firstBucket + count) * columnSeconds);
         int chunks = Math.Clamp((end - start) / ParallelChunkCandles, 1, Environment.ProcessorCount);
         if (chunks <= 1)
         {
-            FillColumns(minutes, start, end, lo, bucketSec, columns);
+            FillColumns(minutes, start, end, lo, columnSeconds, columns);
         }
         else
         {
@@ -202,24 +300,24 @@ public static class ChartColumns
                 int colFrom = ci * colsPerChunk;
                 int colTo = Math.Min(count, colFrom + colsPerChunk);
                 if (colFrom >= colTo) return;
-                int from = LowerBound(minutes, lo + colFrom * bucketSec);
-                int to = LowerBound(minutes, lo + colTo * bucketSec);
-                FillColumns(minutes, from, to, lo, bucketSec, columns);
+                int from = LowerBound(minutes, lo + colFrom * columnSeconds);
+                int to = LowerBound(minutes, lo + colTo * columnSeconds);
+                FillColumns(minutes, from, to, lo, columnSeconds, columns);
             });
         }
-        return new ChartSeries(columns, k, firstBucket);
+        return new ChartSeries(columns, columnSeconds, firstBucket);
     }
 
-    private static void FillView(AggBlock[] blocks, int k, long firstBucket, int count, ColumnAggregate[] columns)
+    private static void FillView(AggBlock[] blocks, long columnSeconds, long firstBucket, int count,
+        ColumnAggregate[] columns)
     {
-        long bucketSec = k * 60L;
-        long lo = firstBucket * bucketSec;
+        long lo = firstBucket * columnSeconds;
         int start = LowerBound(blocks, lo);
-        int end = LowerBound(blocks, (firstBucket + count) * bucketSec);
+        int end = LowerBound(blocks, (firstBucket + count) * columnSeconds);
         int chunks = Math.Clamp((end - start) / ParallelChunkCandles, 1, Environment.ProcessorCount);
         if (chunks <= 1)
         {
-            FillBlocks(blocks, start, end, lo, bucketSec, columns);
+            FillBlocks(blocks, start, end, lo, columnSeconds, columns);
         }
         else
         {
@@ -229,9 +327,9 @@ public static class ChartColumns
                 int colFrom = ci * colsPerChunk;
                 int colTo = Math.Min(count, colFrom + colsPerChunk);
                 if (colFrom >= colTo) return;
-                int from = LowerBound(blocks, lo + colFrom * bucketSec);
-                int to = LowerBound(blocks, lo + colTo * bucketSec);
-                FillBlocks(blocks, from, to, lo, bucketSec, columns);
+                int from = LowerBound(blocks, lo + colFrom * columnSeconds);
+                int to = LowerBound(blocks, lo + colTo * columnSeconds);
+                FillBlocks(blocks, from, to, lo, columnSeconds, columns);
             });
         }
     }
@@ -315,27 +413,27 @@ public static class ChartColumns
         if (n > 0) columns[col] = new ColumnAggregate(mn, mx, Rollup.RoundAvg(sum, n), true);
     }
 
-    public static ColumnAggregate NearestColumn(Candle[] minutes, int k, long bucket, WeekendCompressor? map)
+    public static ColumnAggregate NearestColumn(Candle[] minutes, long columnSeconds, long bucket,
+        WeekendCompressor? map)
     {
         if (minutes.Length == 0) return default;
-        long bucketSec = k * 60L;
-        long lo = map == null ? bucket * bucketSec : map.ToReal(bucket * bucketSec);
-        long hi = map == null ? lo + bucketSec : map.ToReal((bucket + 1) * bucketSec);
+        long lo = map == null ? bucket * columnSeconds : map.ToReal(bucket * columnSeconds);
+        long hi = map == null ? lo + columnSeconds : map.ToReal((bucket + 1) * columnSeconds);
         int idx = LowerBound(minutes, lo);
         if (idx < minutes.Length && minutes[idx].MinuteUnixSeconds < hi)
             return RecomputeColumn(minutes, Array.Empty<Candle>(), lo, hi);
-        long? left = idx > 0 ? BucketOf(minutes[idx - 1].MinuteUnixSeconds, bucketSec, map) : null;
-        long? right = idx < minutes.Length ? BucketOf(minutes[idx].MinuteUnixSeconds, bucketSec, map) : null;
+        long? left = idx > 0 ? BucketOf(minutes[idx - 1].MinuteUnixSeconds, columnSeconds, map) : null;
+        long? right = idx < minutes.Length ? BucketOf(minutes[idx].MinuteUnixSeconds, columnSeconds, map) : null;
         long chosen = left == null ? right!.Value
             : right == null ? left.Value
             : bucket - left.Value <= right.Value - bucket ? left.Value : right.Value;
-        long clo = map == null ? chosen * bucketSec : map.ToReal(chosen * bucketSec);
-        long chi = map == null ? clo + bucketSec : map.ToReal((chosen + 1) * bucketSec);
+        long clo = map == null ? chosen * columnSeconds : map.ToReal(chosen * columnSeconds);
+        long chi = map == null ? clo + columnSeconds : map.ToReal((chosen + 1) * columnSeconds);
         return RecomputeColumn(minutes, Array.Empty<Candle>(), clo, chi);
     }
 
-    private static long BucketOf(long unixSeconds, long bucketSec, WeekendCompressor? map) =>
-        (map == null ? unixSeconds : map.ToVirtual(unixSeconds)) / bucketSec;
+    private static long BucketOf(long unixSeconds, long columnSeconds, WeekendCompressor? map) =>
+        (map == null ? unixSeconds : map.ToVirtual(unixSeconds)) / columnSeconds;
 
     private static int LowerBound(Candle[] minutes, long unixSeconds)
     {

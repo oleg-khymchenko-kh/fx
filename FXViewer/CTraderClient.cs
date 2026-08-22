@@ -27,6 +27,7 @@ public sealed class CTraderClient : IAsyncDisposable
 
     public event Action<string>? Log;
     public event Action<ProtoOASpotEvent>? SpotReceived;
+    public event Action<ProtoOADepthEvent>? DepthReceived;
     public event Action<string>? Disconnected;
 
     public async Task ConnectAsync(bool live, CancellationToken ct)
@@ -83,6 +84,17 @@ public sealed class CTraderClient : IAsyncDisposable
         var msg = await RequestAsync((uint)req.PayloadType, req, ct);
         ParseResponse(msg, ProtoOASubscribeSpotsRes.Parser, ProtoOAPayloadType.ProtoOaSubscribeSpotsRes);
         Log?.Invoke($"Subscribed to spots: {string.Join(",", ids)}");
+    }
+
+    public async Task SubscribeDepthAsync(long accountId, IEnumerable<long> symbolIds, CancellationToken ct)
+    {
+        var req = new ProtoOASubscribeDepthQuotesReq { CtidTraderAccountId = accountId };
+        var ids = symbolIds.ToList();
+        foreach (var id in ids) req.SymbolId.Add(id);
+        var msg = await RequestAsync((uint)req.PayloadType, req, ct);
+        ParseResponse(msg, ProtoOASubscribeDepthQuotesRes.Parser,
+            ProtoOAPayloadType.ProtoOaSubscribeDepthQuotesRes);
+        Log?.Invoke($"Subscribed to depth: {string.Join(",", ids)}");
     }
 
     public async Task<ProtoOAGetTrendbarsRes> GetTrendbarsAsync(
@@ -224,6 +236,9 @@ public sealed class CTraderClient : IAsyncDisposable
         {
             case (uint)ProtoOAPayloadType.ProtoOaSpotEvent:
                 SpotReceived?.Invoke(ProtoOASpotEvent.Parser.ParseFrom(msg.Payload));
+                break;
+            case (uint)ProtoOAPayloadType.ProtoOaDepthEvent:
+                DepthReceived?.Invoke(ProtoOADepthEvent.Parser.ParseFrom(msg.Payload));
                 break;
             case (uint)ProtoPayloadType.HeartbeatEvent:
                 break;

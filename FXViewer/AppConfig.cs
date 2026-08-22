@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using FXViewer.Calendar;
 using FXViewer.Chart;
+using FXViewer.Compute;
 
 namespace FXViewer;
 
@@ -11,6 +12,7 @@ public sealed class AppConfig
     public string ClientSecret { get; set; } = "";
     public string AccessToken { get; set; } = "";
     public string RefreshToken { get; set; } = "";
+    public long TokenExpiresUnix { get; set; }
     public bool IsLive { get; set; }
     public ChartViewState? ChartState { get; set; }
     public List<ChartTab> Tabs { get; set; } = new();
@@ -20,6 +22,7 @@ public sealed class AppConfig
     public int EditHitRadiusPx { get; set; } = 3;
     public CalendarSettings Calendar { get; set; } = new();
     public Dictionary<string, long>? MirrorBases { get; set; }
+    public string SierraDataFolder { get; set; } = "";
 
     public static string Dir => AppContext.BaseDirectory;
 
@@ -39,7 +42,10 @@ public sealed class AppConfig
         {
             var cfg = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(path)) ?? new AppConfig();
             cfg.EnsureTabs();
-            if (path != FilePath) cfg.Save();
+            bool merged = cfg.MergeVolumeProfiles();
+            if (cfg.RebaseShiftAnchors()) merged = true;
+            BackupDaily();
+            if (path != FilePath || merged) cfg.Save();
             return cfg;
         }
         catch
@@ -53,6 +59,45 @@ public sealed class AppConfig
         var cfg = new AppConfig();
         cfg.EnsureTabs();
         return cfg;
+    }
+
+    private bool MergeVolumeProfiles()
+    {
+        bool changed = false;
+        for (int i = Indicators.Count - 1; i >= 0; i--)
+        {
+            var profile = Indicators[i];
+            if (!IndicatorTypes.IsLegacyVolumeProfile(profile.Type)) continue;
+            var host = Indicators.FirstOrDefault(x => IndicatorTypes.IsVolume(x.Type)
+                && IndicatorSymbol.NameKey(x.Source) == IndicatorSymbol.NameKey(profile.Source));
+            if (host == null)
+            {
+                profile.Type = IndicatorTypes.Volume;
+            }
+            else
+            {
+                if (host.DensityPeriods.Count == 0)
+                    host.DensityPeriods = new List<int>(profile.DensityPeriods);
+                if (host.DensityUnits.Count == 0)
+                    host.DensityUnits = new List<string>(profile.DensityUnits);
+                host.DensitySelected = profile.DensitySelected;
+                Indicators.RemoveAt(i);
+            }
+            changed = true;
+        }
+        return changed;
+    }
+
+    private bool RebaseShiftAnchors()
+    {
+        long anchor = ShiftedSymbol.DefaultAnchorUnix();
+        bool changed = false;
+        foreach (var ind in Indicators)
+            if (ind.RebaseShiftAnchors(anchor)) changed = true;
+        foreach (var tab in Tabs)
+            foreach (var placement in tab.Shifts)
+                if (placement.Rebase(anchor)) changed = true;
+        return changed;
     }
 
     private void EnsureTabs()
@@ -69,9 +114,49 @@ public sealed class AppConfig
 
     public const string DefaultTabName = "Chart";
 
+    public static string BackupDir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "FXViewer", "config-backups");
+
+    private const int BackupsToKeep = 60;
+
+    public static string BackupDaily()
+    {
+        try
+        {
+            if (!File.Exists(FilePath) || new FileInfo(FilePath).Length == 0) return "";
+            Directory.CreateDirectory(BackupDir);
+            var target = Path.Combine(BackupDir, "config-" + DateTime.Now.ToString("yyyy-MM-dd") + ".json");
+            if (File.Exists(target)) return "";
+            File.Copy(FilePath, target);
+            Prune();
+            return target;
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private static void Prune()
+    {
+        var files = Directory.GetFiles(BackupDir, "config-*.json");
+        if (files.Length <= BackupsToKeep) return;
+        Array.Sort(files, StringComparer.Ordinal);
+        for (int i = 0; i < files.Length - BackupsToKeep; i++)
+        {
+            try { File.Delete(files[i]); }
+            catch { }
+        }
+    }
+
     public void Save()
     {
         Directory.CreateDirectory(Dir);
-        File.WriteAllText(FilePath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+        BackupDaily();
+        var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
+        var temp = FilePath + ".tmp";
+        File.WriteAllText(temp, json);
+        File.Move(temp, FilePath, true);
     }
 }

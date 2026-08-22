@@ -3,15 +3,21 @@ using System.IO;
 
 namespace FXViewer.Storage;
 
-public readonly record struct Candle(long MinuteUnixSeconds, int Min, int Max, int Avg, bool AvgApproximated)
+public readonly record struct Candle(long MinuteUnixSeconds, int Min, int Max, int Avg, bool AvgApproximated,
+    bool HasSpread = false, int SpreadCode = 0, bool HasVolume = false, int Volume = 0)
 {
     public DateTime TimeUtc => DateTimeOffset.FromUnixTimeSeconds(MinuteUnixSeconds).UtcDateTime;
+
+    public int SpreadTenths => HasSpread ? SpreadCodes.ToTenths(SpreadCode) : -1;
+
+    public double SpreadPips => SpreadCodes.ToPips(SpreadCode);
 }
 
 public sealed class CandleDatabase : IDisposable
 {
     private readonly string _root;
     private readonly Dictionary<(string Symbol, int Year), CandleYearFile> _files = new();
+    private readonly Dictionary<string, VolumeProfileWriter> _profileWriters = new();
     private readonly object _lock = new();
     private bool _disposed;
 
@@ -23,7 +29,7 @@ public sealed class CandleDatabase : IDisposable
         Directory.CreateDirectory(_root);
     }
 
-    private static string Sanitize(string symbol) =>
+    public static string Sanitize(string symbol) =>
         new string(symbol.Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
 
     public string SymbolDirectory(string symbol) => Path.Combine(_root, Sanitize(symbol));
@@ -66,14 +72,52 @@ public sealed class CandleDatabase : IDisposable
     }
 
     public void WriteMinute(string symbol, DateTime minuteUtc, int min, int max, int avg, bool avgApprox,
-        bool provisional = false)
+        bool provisional = false, int spreadCode = SpreadCodes.Unknown, int volume = VolumeCodes.Unknown)
     {
         var utc = AsUtc(minuteUtc);
         long unix = ((DateTimeOffset)utc).ToUnixTimeSeconds();
         int year = utc.Year;
         int minuteOfYear = (int)((unix - YearStartUnix(year)) / 60);
-        GetFile(symbol, year).Write(minuteOfYear, min, max, avg, avgApprox, provisional);
+        GetFile(symbol, year).Write(minuteOfYear, min, max, avg, avgApprox, provisional, spreadCode, volume);
     }
+
+    public bool WriteSpread(string symbol, DateTime minuteUtc, int spreadCode)
+    {
+        var utc = AsUtc(minuteUtc);
+        int year = utc.Year;
+        if (!FileExists(symbol, year)) return false;
+        long unix = ((DateTimeOffset)utc).ToUnixTimeSeconds();
+        int minuteOfYear = (int)((unix - YearStartUnix(year)) / 60);
+        return GetFile(symbol, year).WriteSpread(minuteOfYear, spreadCode);
+    }
+
+    public bool WriteVolume(string symbol, DateTime minuteUtc, int volume)
+    {
+        var utc = AsUtc(minuteUtc);
+        int year = utc.Year;
+        if (!FileExists(symbol, year)) return false;
+        long unix = ((DateTimeOffset)utc).ToUnixTimeSeconds();
+        int minuteOfYear = (int)((unix - YearStartUnix(year)) / 60);
+        return GetFile(symbol, year).WriteVolume(minuteOfYear, volume);
+    }
+
+    public VolumeProfileWriter ProfileWriter(string symbol, int pipPoints, Action<string> log)
+    {
+        lock (_lock)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var key = Sanitize(symbol);
+            if (!_profileWriters.TryGetValue(key, out var writer))
+            {
+                writer = new VolumeProfileWriter(SymbolDirectory(symbol), key, pipPoints, 100000, log);
+                _profileWriters[key] = writer;
+            }
+            return writer;
+        }
+    }
+
+    public SpreadStats ReadSpreadStats(string symbol, int year) =>
+        FileExists(symbol, year) ? GetFile(symbol, year).ReadSpreadStats() : default;
 
     public DateTime? FirstProvisionalMinuteUtc(string symbol, DateTime fromUtc, DateTime toUtc) =>
         ScanProvisional(symbol, fromUtc, toUtc, forward: true);
@@ -122,7 +166,8 @@ public sealed class CandleDatabase : IDisposable
             foreach (var sc in file.ReadRange(fromMoy, toMoy))
             {
                 long minuteUnix = yearStart + (long)sc.MinuteOfYear * 60;
-                res.Add(new Candle(minuteUnix, sc.Min, sc.Max, sc.Avg, sc.AvgApproximated));
+                res.Add(new Candle(minuteUnix, sc.Min, sc.Max, sc.Avg, sc.AvgApproximated,
+                    sc.HasSpread, sc.SpreadCode, sc.HasVolume, sc.Volume));
             }
         }
         return res;
@@ -183,6 +228,7 @@ public sealed class CandleDatabase : IDisposable
                 _files[k].Dispose();
                 _files.Remove(k);
             }
+            if (_profileWriters.Remove(key, out var writer)) writer.Dispose();
         }
         var dir = Path.Combine(_root, key);
         if (Directory.Exists(dir)) Directory.Delete(dir, true);
@@ -202,6 +248,8 @@ public sealed class CandleDatabase : IDisposable
                 _files[k].Dispose();
                 _files.Remove(k);
             }
+            if (_profileWriters.Remove(oldKey, out var oldWriter)) oldWriter.Dispose();
+            if (_profileWriters.Remove(newKey, out var newWriter)) newWriter.Dispose();
             var oldDir = Path.Combine(_root, oldKey);
             if (!Directory.Exists(oldDir)) return;
             var newDir = Path.Combine(_root, newKey);
@@ -232,6 +280,8 @@ public sealed class CandleDatabase : IDisposable
             _disposed = true;
             foreach (var f in _files.Values) f.Dispose();
             _files.Clear();
+            foreach (var w in _profileWriters.Values) w.Dispose();
+            _profileWriters.Clear();
         }
     }
 }

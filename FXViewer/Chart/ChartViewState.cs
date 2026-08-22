@@ -4,7 +4,7 @@ namespace FXViewer.Chart;
 
 public sealed class ChartViewState
 {
-    public int MinutesPerColumn { get; set; }
+    public long ColumnSeconds { get; set; }
     public long ViewStartBucket { get; set; }
     public double TopPrice { get; set; }
     public double PointsPerRow { get; set; }
@@ -14,12 +14,17 @@ public sealed class ChartViewState
     public List<string>? HiddenSymbols { get; set; }
     public List<string>? CollapsedSymbols { get; set; }
     public bool CalendarVisible { get; set; }
+    public bool ForecastHidden { get; set; }
     public bool WeekendsHidden { get; set; }
+    public bool SessionsVisible { get; set; }
     public string? FlattenSymbol { get; set; }
     public int FlattenLine { get; set; } = -1;
     public int TiltedUpGridIndex { get; set; }
     public int TiltedDownGridIndex { get; set; }
     public List<TiltedGridState>? TiltedGrids { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int MinutesPerColumn { get; set; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool TiltedGridVisible { get; set; }
@@ -52,6 +57,9 @@ public sealed class ChartViewState
     public int TiltedGridIndex { get; set; }
 
     public const int TiltedGridCount = 7;
+
+    public long RestoredColumnSeconds() =>
+        ColumnSeconds > 0 ? ColumnSeconds : MinutesPerColumn * 60L;
 
     public ChartViewState Clone()
     {
