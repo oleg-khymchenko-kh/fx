@@ -43,6 +43,7 @@
                         <Button x:Name="BackfillCalendarBtn" Content="Backfill calendar gap" Width="160" Height="30" Margin="0,0,8,6" Click="BackfillCalendarBtn_Click" />
                         <Button x:Name="ExportDealsBtn" Content="Export deals" Width="120" Height="30" Margin="0,0,8,6" Click="ExportDealsBtn_Click" />
                         <Button x:Name="BackfillSpreadBtn" Content="Backfill spread" Width="130" Height="30" Margin="0,0,8,6" Click="BackfillSpreadBtn_Click" />
+                        <Button x:Name="BackfillWideSpreadBtn" Content="Backfill wide spread" Width="160" Height="30" Margin="0,0,8,6" Click="BackfillWideSpreadBtn_Click" />
                     </WrapPanel>
 
                     <Border Grid.Row="2" BorderBrush="#CCCCCC" BorderThickness="1" Padding="12" Margin="0,0,0,10">
@@ -94,11 +95,18 @@
                 <chart:LoadIndicatorView x:Name="LoadIndicator" Grid.Row="0" Grid.Column="0"
                                          HorizontalAlignment="Right" VerticalAlignment="Top"
                                          Margin="0,8,8,0" />
-                <ScrollViewer Grid.Row="0" Grid.Column="1" Background="White"
-                              VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled">
-                    <chart:SymbolBarView x:Name="SymbolBar" />
-                </ScrollViewer>
+                <Grid Grid.Row="0" Grid.Column="1" Background="White">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <chart:ChartToolBarView x:Name="ChartTools" Grid.Row="0" />
+                    <ScrollViewer Grid.Row="1" Background="White"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled">
+                        <chart:SymbolBarView x:Name="SymbolBar" />
+                    </ScrollViewer>
+                </Grid>
                 <chart:TimeAxisView x:Name="TimeAxis" Grid.Row="1" Grid.Column="0" Height="20" />
             </Grid>
         </Grid>

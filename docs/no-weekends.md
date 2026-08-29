@@ -4,7 +4,7 @@ Status: implemented, v1.
 
 ## Goal
 
-A switch in the right bar ("No weekends") that cuts the weekend gaps out
+A switch in the right toolbar (the "No weekends" icon) that cuts the weekend gaps out
 of the chart and glues the trading weeks together, so the price line is
 continuous: Friday close is immediately followed by the Sunday evening
 open of the next week.

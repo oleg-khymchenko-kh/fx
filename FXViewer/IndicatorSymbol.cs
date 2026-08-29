@@ -63,6 +63,17 @@ public sealed class IndicatorSymbol
 
     public int EffectiveVolumeGroupMinutes() => Math.Max(1, VolumeGroupMinutes);
 
+    public const double VolumeHeightGainPerDoubledGroup = 1.5;
+
+    private static readonly double VolumeUnitGroupPower =
+        1 - Math.Log2(VolumeHeightGainPerDoubledGroup);
+
+    public static double ScaleVolumeBarUnit(double unit, int fromGroup, int toGroup)
+    {
+        if (unit <= 0 || fromGroup <= 0 || toGroup <= 0 || fromGroup == toGroup) return unit;
+        return unit * Math.Pow((double)toGroup / fromGroup, VolumeUnitGroupPower);
+    }
+
     public static int StepVolumeGroup(int minutes, int delta)
     {
         int current = Math.Clamp(minutes, VolumeGroupSteps[0], VolumeGroupSteps[^1]);

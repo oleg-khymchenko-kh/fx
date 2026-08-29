@@ -9,8 +9,8 @@ Show market forecasts on the chart as horizontal levels, so a forecast made in t
 morning can be compared with what the price actually did.
 
 It is **not** an indicator. There is nothing to add, no source to bind, no file to pick.
-The forecasts live in the database and the chart always has a `Forecast` row in the symbol
-bar, right under `Calendar`, that turns them on and off.
+The forecasts live in the database and the chart always has a `Forecast` button in the toolbar
+right of `Calendar`, that turns them on and off.
 
 Every level carries the source it came from. A level without a source is a guess that
 cannot be reviewed later, so the file format makes `Source` a first-class field and the
@@ -37,13 +37,15 @@ records of one `YYYY-MM-DD.json` file. The default is the newest day in the fold
 so the app opens showing today's forecasts. A reload keeps the selected day if its
 file still exists, otherwise falls back to the newest.
 
-The day is picked from the chart. A right click on empty chart space (not on a pivot,
-a drawing line or inside a selection - those keep their own menus) opens a context menu
-with a single `Forecast YYYY-MM-DD` item for the day under the cursor:
+The day is picked from the chart. Any right click on the chart opens a context menu that
+ends with a `Forecast YYYY-MM-DD` item for the day under the cursor. A click on a pivot, a
+drawing line or inside a selection puts that object's own items on top and keeps the common
+block below them, so the day can always be switched without moving the mouse first:
 
 - the day has a forecast file - the item is enabled; clicking it switches the layer to
   that day and shows the layer if it was hidden. The item carries a check mark when that
-  day is already the one on screen;
+  day is already the one on screen; clicking the checked item hides the layer, so the
+  same menu pick works as an on/off toggle for the day under the cursor;
 - no file for that day - the item is disabled and shows the date, so the reader still
   learns which day they pointed at.
 
@@ -101,12 +103,13 @@ The authoring copies live in the repo at `market-review/forecast/`, one file per
 next to the written analysis that produced it, and are copied into the database folder
 when they change.
 
-## The symbol bar row
+## The toolbar button
 
-`Forecast` sits directly under `Calendar` and above `Weekends`. It appears only when the
-folder holds at least one usable record, the same rule the `Calendar` row uses.
+`Forecast` is the second icon in the toolbar above the symbol bar, right after `Calendar`
+(docs/symbol-bar.md). It is only clickable when the folder holds at least one usable
+record, the same rule the `Calendar` button uses.
 
-- Left click toggles the whole layer (the selected day's levels). Grey label = off.
+- Left click toggles the whole layer (the selected day's levels). Light button = off.
 - Right click opens `Reload forecasts` - re-reads the folder without restarting the app.
   This is what makes the daily routine work: rewrite the JSON, right-click, reload.
 
@@ -214,11 +217,10 @@ forecast line.
   `HasForecasts`, `ForecastVisible`, `ToggleForecasts` - the same shape as the calendar's
   `SetCalendar` / `HasCalendar` / `CalendarVisible` / `ToggleCalendar` - plus
   `SelectForecastDay`, `ForecastDay` and the `ForecastDaySelected` event, which
-  `MainWindow` uses to refresh the symbol bar row after a menu pick. Rendering filters
+  `MainWindow` uses to refresh the toolbar button after a menu pick. Rendering filters
   to the selected day, and the popup and hover hit only what was rendered.
-- `SymbolBarView` gains `_forecastPresent` / `_forecastEnabled`, `SetForecastRow`, the
-  `ForecastClick` and `ForecastReloadRequested` events, and `ForecastRowIndex`, which every
-  row below it chains from.
+- `ChartToolBarView` holds `_forecastPresent` / `_forecastEnabled`, `SetForecastRow` and
+  the `ForecastClick` and `ForecastReloadRequested` events.
 - `MainWindow.ForecastFolder` points at `<DbRoot>/forecast/`; `LoadForecastMarks` reads
   it and converts prices to raw points through `SymbolPriceDiv`.
 - `ChartRasterizer` gains `BlendPixel`, `BlendColumn` and `StrokeDisc`.

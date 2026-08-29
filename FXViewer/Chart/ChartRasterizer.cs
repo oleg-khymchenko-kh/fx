@@ -4,7 +4,7 @@ public readonly record struct ChartPalette(int Background, int Weekend, int Grid
     int GridPrice100, int GridPrice50, int GridPrice10, int GridTilted = 0, int GridTiltedNear = 0,
     int SessionEurope = 0, int SessionOverlap = 0, int SessionAmerica = 0, int WeekendSession = 0);
 
-public readonly record struct RenderLine(ChartSeries Series, int[] Chosen, int Color, int LastPrice, long LastBucket, double OffsetPoints, double[]? ColumnShift = null, int Width = 1);
+public readonly record struct RenderLine(ChartSeries Series, int[] Chosen, int Color, int LastPrice, long LastBucket, double OffsetPoints, double[]? ColumnShift = null, int Width = 1, bool[]? FullRange = null);
 
 public readonly record struct TiltedFamilySettings(
     bool Visible, double AnchorSeconds, double AnchorPoints, double Slope,
@@ -68,6 +68,7 @@ public static class ChartRasterizer
         int extra = Math.Max(0, line.Width - 1);
         var columns = line.Series.Columns;
         var chosen = line.Chosen;
+        var fullRange = line.FullRange;
         var shift = line.ColumnShift;
         int color = line.Color;
         int startColumn = (int)(startBucket - line.Series.FirstBucket);
@@ -83,24 +84,34 @@ public static class ChartRasterizer
                 prevHasData = false;
                 continue;
             }
-            double value = shift == null || i >= shift.Length ? chosen[i] : chosen[i] + shift[i];
-            int y = (int)Math.Round((topPrice - priceOffsetPoints - value) / pointsPerRow);
-            if (y < 0) y = 0;
-            else if (y >= height) y = height - 1;
-            int runLo = y;
-            int runHi = y;
+            double columnShift = shift == null || i >= shift.Length ? 0 : shift[i];
+            int y = MapY(chosen[i] + columnShift, topPrice, priceOffsetPoints, pointsPerRow, height);
+            int barLo = y;
+            int barHi = y;
+            if (fullRange != null && i < fullRange.Length && fullRange[i])
+            {
+                int yTop = MapY(columns[i].Max + columnShift, topPrice, priceOffsetPoints, pointsPerRow, height);
+                int yBot = MapY(columns[i].Min + columnShift, topPrice, priceOffsetPoints, pointsPerRow, height);
+                if (yTop < barLo) barLo = yTop;
+                if (yBot > barHi) barHi = yBot;
+            }
+            int runLo = barLo;
+            int runHi = barHi;
             if (prevHasData)
             {
                 int start = prevY + Math.Sign(y - prevY);
-                runLo = Math.Min(start, y);
-                runHi = Math.Max(start, y);
+                runLo = Math.Min(Math.Min(start, y), barLo);
+                runHi = Math.Max(Math.Max(start, y), barHi);
                 if (runLo >= prevLo && runHi <= prevHi)
                 {
                     runLo = y;
                     runHi = y;
                 }
-                else if (y > prevHi) runLo = Math.Max(runLo, prevHi + 1);
-                else if (y < prevLo) runHi = Math.Min(runHi, prevLo - 1);
+                else if (barLo == barHi)
+                {
+                    if (y > prevHi) runLo = Math.Max(runLo, prevHi + 1);
+                    else if (y < prevLo) runHi = Math.Min(runHi, prevLo - 1);
+                }
             }
             int x = i - startColumn;
             if (x >= 0)
@@ -114,6 +125,14 @@ public static class ChartRasterizer
             prevHi = runHi;
             prevHasData = true;
         }
+    }
+
+    private static int MapY(double value, double topPrice, double priceOffsetPoints, double pointsPerRow, int height)
+    {
+        int y = (int)Math.Round((topPrice - priceOffsetPoints - value) / pointsPerRow);
+        if (y < 0) return 0;
+        if (y >= height) return height - 1;
+        return y;
     }
 
     public const int EntryRowHeightPx = 3;
@@ -206,16 +225,17 @@ public static class ChartRasterizer
     public const int SpreadPanelHeightPx = SpreadBarMaxPx + 1;
     public const int SpreadBaseLineArgb = unchecked((int)0xFFBDBDBD);
 
-    public static int SpreadBarHeightPx(int tenths)
+    public static int SpreadBarHeightPx(int tenths, double pointsPerRow)
     {
         if (tenths < 0) return 0;
-        int px = (tenths + 5) / 10;
-        if (px < 1) px = 1;
-        return Math.Min(px, SpreadBarMaxPx);
+        int px = pointsPerRow > 0
+            ? (int)Math.Round(tenths / pointsPerRow)
+            : (tenths + 5) / 10;
+        return px < 1 ? 1 : px;
     }
 
     public static void DrawSpreadPanel(int[] buffer, int width, int height, int[] columns,
-        int bottomRow, int colorArgb)
+        int bottomRow, int colorArgb, double pointsPerRow)
     {
         int top = bottomRow - SpreadPanelHeightPx + 1;
         if (top < 0 || bottomRow >= height) return;
@@ -223,7 +243,7 @@ public static class ChartRasterizer
         {
             buffer[bottomRow * width + x] = SpreadBaseLineArgb;
             int tenths = x < columns.Length ? columns[x] : -1;
-            int h = SpreadBarHeightPx(tenths);
+            int h = Math.Min(SpreadBarHeightPx(tenths, pointsPerRow), bottomRow);
             for (int row = bottomRow - h; row < bottomRow; row++)
                 buffer[row * width + x] = colorArgb;
         }

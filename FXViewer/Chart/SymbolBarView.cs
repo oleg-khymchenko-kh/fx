@@ -14,15 +14,6 @@ public sealed class SymbolBarView : FrameworkElement
     private const double PadTopDip = 4;
     private const double PadBottomDip = 6;
     private const double RowGapDip = 6;
-    private const double ConnDotDip = 9;
-    private const double ConnDotGapDip = 5;
-    private const double AddInnerPadX = 6;
-    private const double AddInnerPadY = 2;
-    private const string AddLabel = "+ Add";
-    private const string CalendarLabel = "Calendar";
-    private const string ForecastLabel = "Forecast";
-    private const string WeekendsLabel = "No weekends";
-    private const string SessionsLabel = "Sessions";
     private const string UnflattenLabel = "Unflatten";
     private const double TiltedButtonSizeDip = 16;
     private const double TiltedButtonGapDip = 3;
@@ -35,10 +26,10 @@ public sealed class SymbolBarView : FrameworkElement
     private static readonly Typeface EntryTypeface = new("Consolas");
     private static readonly Pen BorderPen = CreateFrozenPen(0xE0, 0xE0, 0xE0);
     private static readonly Brush DisabledBrush = CreateFrozenBrush(0xB4, 0xB4, 0xB4);
-    private static readonly Brush ConnTextBrush = CreateFrozenBrush(0x30, 0x30, 0x30);
-    private static readonly Brush AddFillBrush = CreateFrozenBrush(0xF5, 0xF5, 0xF5);
-    private static readonly Brush AddTextBrush = CreateFrozenBrush(0x50, 0x50, 0x50);
-    private static readonly Pen AddBorderPen = CreateFrozenPen(0xC8, 0xC8, 0xC8);
+    private static readonly Brush RowTextBrush = CreateFrozenBrush(0x30, 0x30, 0x30);
+    private static readonly Brush ButtonFillBrush = CreateFrozenBrush(0xF5, 0xF5, 0xF5);
+    private static readonly Brush ButtonTextBrush = CreateFrozenBrush(0x50, 0x50, 0x50);
+    private static readonly Pen ButtonBorderPen = CreateFrozenPen(0xC8, 0xC8, 0xC8);
     private static readonly Brush TiltedOnFillBrush = CreateFrozenBrush(0x50, 0x50, 0x50);
     private static readonly Brush TiltedOnTextBrush = CreateFrozenBrush(0xFF, 0xFF, 0xFF);
 
@@ -60,17 +51,9 @@ public sealed class SymbolBarView : FrameworkElement
     private readonly List<int> _visibleRows = new();
     private double[]? _cursorPrices;
     private double[]? _cursorDeltas;
-    private bool _calendarPresent;
-    private bool _calendarEnabled;
-    private bool _forecastPresent;
-    private bool _forecastEnabled;
-    private bool _weekendsHidden;
-    private bool _sessionsVisible;
     private bool _flattenActive;
     private int _tiltedUpIndex;
     private int _tiltedDownIndex;
-    private string? _connText;
-    private Brush _connBrush = CreateFrozenBrush(0x80, 0x80, 0x80);
 
     public event Action<string, int>? PriceOffsetWheel;
     public event Action<string, int, bool>? TimeShiftWheel;
@@ -93,13 +76,6 @@ public sealed class SymbolBarView : FrameworkElement
     public event Action<string>? DrawLevelRequested;
     public event Action<string>? FindRequested;
     public event Action<string>? ShowResultsRequested;
-    public event Action? CalendarClick;
-    public event Action? ForecastClick;
-    public event Action? ForecastReloadRequested;
-    public event Action? CalendarSettingsRequested;
-    public event Action? CalendarFindRequested;
-    public event Action? WeekendsClick;
-    public event Action? SessionsClick;
     public event Action? UnflattenClick;
     public event Action<bool, int>? TiltedGridSelected;
     public event Action? TiltedGridSettingsRequested;
@@ -151,31 +127,6 @@ public sealed class SymbolBarView : FrameworkElement
         MouseLeftButtonDown += (_, e) =>
         {
             var pos = e.GetPosition(this);
-            if (AddButtonBounds().Contains(pos))
-            {
-                AddSymbolRequested?.Invoke(null);
-                return;
-            }
-            if (_calendarPresent && RowHit(pos.Y, _visibleRows.Count))
-            {
-                CalendarClick?.Invoke();
-                return;
-            }
-            if (_forecastPresent && RowHit(pos.Y, ForecastRowIndex))
-            {
-                ForecastClick?.Invoke();
-                return;
-            }
-            if (RowHit(pos.Y, WeekendsRowIndex))
-            {
-                WeekendsClick?.Invoke();
-                return;
-            }
-            if (RowHit(pos.Y, SessionsRowIndex))
-            {
-                SessionsClick?.Invoke();
-                return;
-            }
             if (RowHit(pos.Y, TiltedUpRowIndex) || RowHit(pos.Y, TiltedDownRowIndex))
             {
                 int button = TiltedButtonAt(pos.X);
@@ -205,29 +156,6 @@ public sealed class SymbolBarView : FrameworkElement
         MouseRightButtonDown += (_, e) =>
         {
             var pos = e.GetPosition(this);
-            if (_calendarPresent && RowHit(pos.Y, _visibleRows.Count))
-            {
-                e.Handled = true;
-                var calMenu = new ContextMenu { PlacementTarget = this };
-                var calSettings = new MenuItem { Header = "Settings..." };
-                calSettings.Click += (_, _) => CalendarSettingsRequested?.Invoke();
-                calMenu.Items.Add(calSettings);
-                var calFind = new MenuItem { Header = "Find..." };
-                calFind.Click += (_, _) => CalendarFindRequested?.Invoke();
-                calMenu.Items.Add(calFind);
-                calMenu.IsOpen = true;
-                return;
-            }
-            if (_forecastPresent && RowHit(pos.Y, ForecastRowIndex))
-            {
-                e.Handled = true;
-                var fcMenu = new ContextMenu { PlacementTarget = this };
-                var fcReload = new MenuItem { Header = "Reload forecasts" };
-                fcReload.Click += (_, _) => ForecastReloadRequested?.Invoke();
-                fcMenu.Items.Add(fcReload);
-                fcMenu.IsOpen = true;
-                return;
-            }
             if (TiltedRowHit(pos.Y))
             {
                 e.Handled = true;
@@ -324,10 +252,7 @@ public sealed class SymbolBarView : FrameworkElement
     }
 
     private bool OwnsRightClick(Point pos) =>
-        (_calendarPresent && RowHit(pos.Y, _visibleRows.Count))
-        || (_forecastPresent && RowHit(pos.Y, ForecastRowIndex))
-        || TiltedRowHit(pos.Y)
-        || SymbolAt(pos.Y) != null;
+        TiltedRowHit(pos.Y) || SymbolAt(pos.Y) != null;
 
     private bool TiltedRowHit(double y) =>
         RowHit(y, TiltedUpRowIndex) || RowHit(y, TiltedDownRowIndex);
@@ -336,36 +261,6 @@ public sealed class SymbolBarView : FrameworkElement
     {
         if (enabled) _disabledSymbols.Remove(symbol);
         else _disabledSymbols.Add(symbol);
-        InvalidateVisual();
-    }
-
-    public void SetCalendarRow(bool present, bool enabled)
-    {
-        bool changed = _calendarPresent != present;
-        _calendarPresent = present;
-        _calendarEnabled = enabled;
-        if (changed) InvalidateMeasure();
-        InvalidateVisual();
-    }
-
-    public void SetForecastRow(bool present, bool enabled)
-    {
-        bool changed = _forecastPresent != present;
-        _forecastPresent = present;
-        _forecastEnabled = enabled;
-        if (changed) InvalidateMeasure();
-        InvalidateVisual();
-    }
-
-    public void SetWeekendsRow(bool hidden)
-    {
-        _weekendsHidden = hidden;
-        InvalidateVisual();
-    }
-
-    public void SetSessionsRow(bool visible)
-    {
-        _sessionsVisible = visible;
         InvalidateVisual();
     }
 
@@ -410,29 +305,17 @@ public sealed class SymbolBarView : FrameworkElement
                 PadLeftDip + button * (TiltedButtonSizeDip + TiltedButtonGapDip), y,
                 TiltedButtonSizeDip, TiltedButtonSizeDip);
             dc.DrawRoundedRectangle(
-                selected ? TiltedOnFillBrush : AddFillBrush, AddBorderPen, rect, 2, 2);
+                selected ? TiltedOnFillBrush : ButtonFillBrush, ButtonBorderPen, rect, 2, 2);
             var ft = Format((button + 1).ToString(CultureInfo.InvariantCulture),
-                selected ? TiltedOnTextBrush : AddTextBrush, TiltedButtonFontSize);
+                selected ? TiltedOnTextBrush : ButtonTextBrush, TiltedButtonFontSize);
             dc.DrawText(ft, new Point(
                 rect.X + (rect.Width - ft.Width) / 2, rect.Y + (rect.Height - ft.Height) / 2));
         }
     }
 
-    private int ForecastRowIndex => _visibleRows.Count + (_calendarPresent ? 1 : 0);
-    private int WeekendsRowIndex => ForecastRowIndex + (_forecastPresent ? 1 : 0);
-    private int SessionsRowIndex => WeekendsRowIndex + 1;
-    private int TiltedUpRowIndex => SessionsRowIndex + 1;
+    private int TiltedUpRowIndex => _visibleRows.Count;
     private int TiltedDownRowIndex => TiltedUpRowIndex + 1;
     private int UnflattenRowIndex => TiltedDownRowIndex + 1;
-
-    public void SetConnStatus(string text, int colorArgb)
-    {
-        bool widthMayChange = _connText == null || _connText.Length != text.Length;
-        _connText = text;
-        _connBrush = CreateFrozenBrush((byte)(colorArgb >> 16), (byte)(colorArgb >> 8), (byte)colorArgb);
-        if (widthMayChange) InvalidateMeasure();
-        InvalidateVisual();
-    }
 
     private int RowIndexAt(double y)
     {
@@ -478,19 +361,10 @@ public sealed class SymbolBarView : FrameworkElement
     private void DrawGroupButton(DrawingContext dc, int row, bool collapsed)
     {
         var rect = GroupButtonBounds(row);
-        dc.DrawRoundedRectangle(AddFillBrush, AddBorderPen, rect, 2, 2);
-        var ft = Format(collapsed ? "+" : "-", AddTextBrush, GroupButtonFontSize);
+        dc.DrawRoundedRectangle(ButtonFillBrush, ButtonBorderPen, rect, 2, 2);
+        var ft = Format(collapsed ? "+" : "-", ButtonTextBrush, GroupButtonFontSize);
         dc.DrawText(ft, new Point(
             rect.X + (rect.Width - ft.Width) / 2, rect.Y + (rect.Height - ft.Height) / 2));
-    }
-
-    private Rect AddButtonBounds()
-    {
-        double rowHeight = Format("X", Brushes.Black).Height + RowGapDip;
-        int rows = UnflattenRowIndex + (_flattenActive ? 1 : 0);
-        double top = PadTopDip + rows * rowHeight;
-        var ft = Format(AddLabel, AddTextBrush);
-        return new Rect(PadLeftDip, top, ft.Width + 2 * AddInnerPadX, ft.Height + 2 * AddInnerPadY);
     }
 
     private bool RowHit(double y, int rowIndex)
@@ -572,6 +446,19 @@ public sealed class SymbolBarView : FrameworkElement
         }
     }
 
+    public void SetSymbolColor(string symbol, int argb)
+    {
+        for (int i = 0; i < _entries.Count; i++)
+        {
+            var e = _entries[i];
+            if (e.Symbol != symbol) continue;
+            _entries[i] = (e.Symbol, e.LastPricePoints, CreateFrozenBrush(
+                (byte)(argb >> 16), (byte)(argb >> 8), (byte)argb), e.Format, e.PriceMul);
+            InvalidateVisual();
+            return;
+        }
+    }
+
     public void SetCursorPrices(double[]? prices, double[]? deltas = null)
     {
         _cursorPrices = prices;
@@ -634,31 +521,10 @@ public sealed class SymbolBarView : FrameworkElement
             double w = ft.Width + (line.Group ? GroupButtonGapDip + GroupButtonSizeDip : 0);
             if (w > maxWidth) maxWidth = w;
         }
-        if (_connText != null)
-        {
-            double w = ConnDotDip + ConnDotGapDip + Format(_connText, ConnTextBrush).Width;
-            if (w > maxWidth) maxWidth = w;
-        }
-        double addW = Format(AddLabel, AddTextBrush).Width + 2 * AddInnerPadX;
-        if (addW > maxWidth) maxWidth = addW;
-        if (_calendarPresent)
-        {
-            double calW = Format(CalendarLabel, ConnTextBrush).Width;
-            if (calW > maxWidth) maxWidth = calW;
-        }
-        if (_forecastPresent)
-        {
-            double fcW = Format(ForecastLabel, ConnTextBrush).Width;
-            if (fcW > maxWidth) maxWidth = fcW;
-        }
-        double weekW = Format(WeekendsLabel, ConnTextBrush).Width;
-        if (weekW > maxWidth) maxWidth = weekW;
-        double sessionW = Format(SessionsLabel, ConnTextBrush).Width;
-        if (sessionW > maxWidth) maxWidth = sessionW;
         if (TiltedButtonsWidth > maxWidth) maxWidth = TiltedButtonsWidth;
         if (_flattenActive)
         {
-            double flatW = Format(UnflattenLabel, ConnTextBrush).Width;
+            double flatW = Format(UnflattenLabel, RowTextBrush).Width;
             if (flatW > maxWidth) maxWidth = flatW;
         }
         if (maxWidth <= 0) return new Size(0, 0);
@@ -667,10 +533,9 @@ public sealed class SymbolBarView : FrameworkElement
 
     private double ContentHeight()
     {
-        double height = AddButtonBounds().Bottom + PadBottomDip;
-        if (_connText != null)
-            height += RowGapDip + Format(_connText, ConnTextBrush).Height;
-        return height;
+        double rowHeight = Format("X", Brushes.Black).Height + RowGapDip;
+        int rows = UnflattenRowIndex + (_flattenActive ? 1 : 0);
+        return PadTopDip + rows * rowHeight + PadBottomDip;
     }
 
     protected override void OnRender(DrawingContext dc)
@@ -687,26 +552,6 @@ public sealed class SymbolBarView : FrameworkElement
             y += ft.Height + RowGapDip;
             row++;
         }
-        if (_calendarPresent)
-        {
-            var brush = _calendarEnabled ? ConnTextBrush : DisabledBrush;
-            var ft = Format(CalendarLabel, brush);
-            dc.DrawText(ft, new Point(PadLeftDip, y));
-            y += ft.Height + RowGapDip;
-        }
-        if (_forecastPresent)
-        {
-            var brush = _forecastEnabled ? ConnTextBrush : DisabledBrush;
-            var ft = Format(ForecastLabel, brush);
-            dc.DrawText(ft, new Point(PadLeftDip, y));
-            y += ft.Height + RowGapDip;
-        }
-        var weekFt = Format(WeekendsLabel, _weekendsHidden ? ConnTextBrush : DisabledBrush);
-        dc.DrawText(weekFt, new Point(PadLeftDip, y));
-        y += weekFt.Height + RowGapDip;
-        var sessionFt = Format(SessionsLabel, _sessionsVisible ? ConnTextBrush : DisabledBrush);
-        dc.DrawText(sessionFt, new Point(PadLeftDip, y));
-        y += sessionFt.Height + RowGapDip;
         double tiltedLineHeight = Format("X", Brushes.Black).Height;
         DrawTiltedButtons(dc, y, tiltedLineHeight, _tiltedUpIndex);
         y += tiltedLineHeight + RowGapDip;
@@ -714,21 +559,8 @@ public sealed class SymbolBarView : FrameworkElement
         y += tiltedLineHeight + RowGapDip;
         if (_flattenActive)
         {
-            var flatFt = Format(UnflattenLabel, ConnTextBrush);
+            var flatFt = Format(UnflattenLabel, RowTextBrush);
             dc.DrawText(flatFt, new Point(PadLeftDip, y));
-            y += flatFt.Height + RowGapDip;
-        }
-        var addRect = AddButtonBounds();
-        dc.DrawRoundedRectangle(AddFillBrush, AddBorderPen, addRect, 3, 3);
-        var addFt = Format(AddLabel, AddTextBrush);
-        dc.DrawText(addFt, new Point(addRect.X + AddInnerPadX, addRect.Y + AddInnerPadY));
-        if (_connText != null)
-        {
-            var ft = Format(_connText, ConnTextBrush);
-            double ty = ActualHeight - ft.Height - PadBottomDip;
-            double r = ConnDotDip / 2;
-            dc.DrawEllipse(_connBrush, null, new Point(PadLeftDip + r, ty + ft.Height / 2), r, r);
-            dc.DrawText(ft, new Point(PadLeftDip + ConnDotDip + ConnDotGapDip, ty));
         }
     }
 

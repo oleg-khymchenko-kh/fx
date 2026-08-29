@@ -4,9 +4,11 @@ public static class LineDecimator
 {
     private const int Infinity = int.MaxValue;
 
-    public static int[] ChooseValues(ColumnAggregate[] columns, int lookback, int noiseThreshold)
+    public static (int[] Values, bool[] FullRange) ChooseValues(ColumnAggregate[] columns, int lookback,
+        int noiseThreshold)
     {
         var chosen = new int[columns.Length];
+        var fullRange = new bool[columns.Length];
         var maxSeq = new int[columns.Length];
         var maxVal = new int[columns.Length];
         var minSeq = new int[columns.Length];
@@ -36,7 +38,8 @@ public static class LineDecimator
                 dMin = seq - minSeq[minTop];
                 minCoverSeq = minSeq[minTop];
             }
-            chosen[i] = Choose(cur, prev, hasPrev, dMax, dMin, maxCoverSeq, minCoverSeq, noiseThreshold);
+            chosen[i] = Choose(cur, prev, hasPrev, dMax, dMin, maxCoverSeq, minCoverSeq, noiseThreshold,
+                out fullRange[i]);
             maxTop++;
             maxSeq[maxTop] = seq;
             maxVal[maxTop] = cur.Max;
@@ -47,15 +50,17 @@ public static class LineDecimator
             hasPrev = true;
             seq++;
         }
-        return chosen;
+        return (chosen, fullRange);
     }
 
     private static int Choose(ColumnAggregate cur, ColumnAggregate prev, bool hasPrev,
-        int dMax, int dMin, int maxCoverSeq, int minCoverSeq, int noiseThreshold)
+        int dMax, int dMin, int maxCoverSeq, int minCoverSeq, int noiseThreshold, out bool fullRange)
     {
+        fullRange = false;
         if (!hasPrev) return cur.Avg;
         if (maxCoverSeq == minCoverSeq) return cur.Avg;
         if (dMax < noiseThreshold && dMin < noiseThreshold) return cur.Avg;
+        fullRange = dMax >= noiseThreshold && dMin >= noiseThreshold;
         if (dMax > dMin) return cur.Max;
         if (dMax < dMin) return cur.Min;
         int upDev = cur.Max - prev.Max;

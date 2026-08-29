@@ -5,10 +5,17 @@ using System.Text;
 namespace FXViewer.Storage;
 
 public readonly record struct StoredCandle(int MinuteOfYear, int Min, int Max, int Avg, bool AvgApproximated,
-    bool HasSpread = false, int SpreadCode = 0, bool HasVolume = false, int Volume = 0);
+    bool HasSpread = false, int SpreadCode = 0, bool HasVolume = false, int Volume = 0,
+    bool WideSpread = false);
+
+public readonly record struct WideSpreadStats(int Scanned, int Wide, int Changed)
+{
+    public WideSpreadStats Add(WideSpreadStats other) =>
+        new(Scanned + other.Scanned, Wide + other.Wide, Changed + other.Changed);
+}
 
 public readonly record struct SpreadStats(int Filled, int WithSpread, long SumTenths, int MaxTenths,
-    int WithVolume = 0, long SumVolume = 0, int MaxVolume = 0)
+    int WithVolume = 0, long SumVolume = 0, int MaxVolume = 0, int Wide = 0)
 {
     public double AvgPips => WithSpread == 0 ? 0 : SumTenths / (double)WithSpread / 10.0;
 
@@ -20,7 +27,7 @@ public readonly record struct SpreadStats(int Filled, int WithSpread, long SumTe
         Filled + other.Filled, WithSpread + other.WithSpread, SumTenths + other.SumTenths,
         Math.Max(MaxTenths, other.MaxTenths),
         WithVolume + other.WithVolume, SumVolume + other.SumVolume,
-        Math.Max(MaxVolume, other.MaxVolume));
+        Math.Max(MaxVolume, other.MaxVolume), Wide + other.Wide);
 }
 
 public sealed class CandleYearFile : IDisposable
@@ -35,6 +42,7 @@ public sealed class CandleYearFile : IDisposable
     public const uint FlagSpread = 1u << 2;
     public const uint FlagVolume = 1u << 3;
     public const uint FlagProvisional = 1u << 4;
+    public const uint FlagWideSpread = 1u << 5;
 
     public const int SpreadShift = 8;
     public const uint SpreadMask = 0xFFu << SpreadShift;
@@ -51,6 +59,7 @@ public sealed class CandleYearFile : IDisposable
     private readonly FileStream _fs;
     private readonly object _lock = new();
     private readonly byte[] _rec = new byte[RecordSize];
+    private readonly long _yearStartUnix;
 
     public static int MinutesIn(int year) => (DateTime.IsLeapYear(year) ? 366 : 365) * 1440;
 
@@ -61,6 +70,7 @@ public sealed class CandleYearFile : IDisposable
         Digits = digits;
         PriceScale = priceScale;
         MinutesInYear = MinutesIn(year);
+        _yearStartUnix = new DateTimeOffset(year, 1, 1, 0, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds();
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         _fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
         if (_fs.Length == 0)
@@ -70,6 +80,18 @@ public sealed class CandleYearFile : IDisposable
     }
 
     private long FileSize => HeaderSize + (long)MinutesInYear * RecordSize;
+
+    private long MinuteUnix(int minuteOfYear) => _yearStartUnix + (long)minuteOfYear * 60;
+
+    private uint WithWideSpread(uint flags, int minuteOfYear)
+    {
+        flags &= ~FlagWideSpread;
+        if ((flags & FlagSpread) == 0) return flags;
+        int code = (int)((flags & SpreadMask) >> SpreadShift);
+        return WideSpreadRule.IsWide(MinuteUnix(minuteOfYear), true, code)
+            ? flags | FlagWideSpread
+            : flags;
+    }
 
     private void InitFile()
     {
@@ -134,6 +156,7 @@ public sealed class CandleYearFile : IDisposable
                 flags |= FlagSpread | ((uint)(spreadCode & 0xFF) << SpreadShift);
             if (volume >= 0)
                 flags |= FlagVolume | ((uint)Math.Min(volume, VolumeCodes.Max) << VolumeShift);
+            flags = WithWideSpread(flags, minuteOfYear);
             BinaryPrimitives.WriteInt32LittleEndian(_rec.AsSpan(0), min);
             BinaryPrimitives.WriteInt32LittleEndian(_rec.AsSpan(4), max);
             BinaryPrimitives.WriteInt32LittleEndian(_rec.AsSpan(8), avg);
@@ -156,6 +179,7 @@ public sealed class CandleYearFile : IDisposable
             var flags = BinaryPrimitives.ReadUInt32LittleEndian(buf);
             if ((flags & FlagFilled) == 0) return false;
             flags = (flags & ~SpreadMask) | FlagSpread | ((uint)(spreadCode & 0xFF) << SpreadShift);
+            flags = WithWideSpread(flags, minuteOfYear);
             BinaryPrimitives.WriteUInt32LittleEndian(buf, flags);
             _fs.Position = pos;
             _fs.Write(buf);
@@ -196,6 +220,7 @@ public sealed class CandleYearFile : IDisposable
         }
         var flags = BinaryPrimitives.ReadUInt32LittleEndian(buf.Slice(12));
         if ((flags & FlagFilled) == 0) return false;
+        if (WideSpreadRule.Hide && (flags & FlagWideSpread) != 0) return false;
         candle = new StoredCandle(
             minuteOfYear,
             BinaryPrimitives.ReadInt32LittleEndian(buf.Slice(0)),
@@ -205,7 +230,8 @@ public sealed class CandleYearFile : IDisposable
             (flags & FlagSpread) != 0,
             (int)((flags & SpreadMask) >> SpreadShift),
             (flags & FlagVolume) != 0,
-            (int)((flags & VolumeMask) >> VolumeShift));
+            (int)((flags & VolumeMask) >> VolumeShift),
+            (flags & FlagWideSpread) != 0);
         return true;
     }
 
@@ -227,6 +253,7 @@ public sealed class CandleYearFile : IDisposable
             int off = i * RecordSize;
             var flags = BinaryPrimitives.ReadUInt32LittleEndian(buf.AsSpan(off + 12));
             if ((flags & FlagFilled) == 0) continue;
+            if (WideSpreadRule.Hide && (flags & FlagWideSpread) != 0) continue;
             result.Add(new StoredCandle(
                 fromMinute + i,
                 BinaryPrimitives.ReadInt32LittleEndian(buf.AsSpan(off + 0)),
@@ -236,7 +263,8 @@ public sealed class CandleYearFile : IDisposable
                 (flags & FlagSpread) != 0,
                 (int)((flags & SpreadMask) >> SpreadShift),
                 (flags & FlagVolume) != 0,
-                (int)((flags & VolumeMask) >> VolumeShift)));
+                (int)((flags & VolumeMask) >> VolumeShift),
+                (flags & FlagWideSpread) != 0));
         }
         return result;
     }
@@ -318,6 +346,7 @@ public sealed class CandleYearFile : IDisposable
         int withVolume = 0;
         long sumVolume = 0;
         int maxVolume = 0;
+        int wide = 0;
         var buf = new byte[RecordSize * 4096];
         lock (_lock)
         {
@@ -339,6 +368,7 @@ public sealed class CandleYearFile : IDisposable
                         sumVolume += volume;
                         if (volume > maxVolume) maxVolume = volume;
                     }
+                    if ((flags & FlagWideSpread) != 0) wide++;
                     if ((flags & FlagSpread) == 0) continue;
                     withSpread++;
                     int tenths = SpreadCodes.ToTenths((int)((flags & SpreadMask) >> SpreadShift));
@@ -348,7 +378,47 @@ public sealed class CandleYearFile : IDisposable
                 remaining -= toRead;
             }
         }
-        return new SpreadStats(filled, withSpread, sumTenths, maxTenths, withVolume, sumVolume, maxVolume);
+        return new SpreadStats(filled, withSpread, sumTenths, maxTenths, withVolume, sumVolume,
+            maxVolume, wide);
+    }
+
+    public WideSpreadStats RecomputeWideSpread()
+    {
+        int scanned = 0;
+        int wide = 0;
+        int changed = 0;
+        var buf = new byte[RecordSize * 4096];
+        lock (_lock)
+        {
+            long start = 0;
+            while (start < MinutesInYear)
+            {
+                int count = (int)Math.Min(4096, MinutesInYear - start);
+                _fs.Position = HeaderSize + start * RecordSize;
+                _fs.ReadExactly(buf.AsSpan(0, count * RecordSize));
+                bool dirty = false;
+                for (int i = 0; i < count; i++)
+                {
+                    int off = i * RecordSize + 12;
+                    var flags = BinaryPrimitives.ReadUInt32LittleEndian(buf.AsSpan(off));
+                    if ((flags & FlagFilled) == 0) continue;
+                    scanned++;
+                    var fixedFlags = WithWideSpread(flags, (int)start + i);
+                    if ((fixedFlags & FlagWideSpread) != 0) wide++;
+                    if (fixedFlags == flags) continue;
+                    BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(off), fixedFlags);
+                    changed++;
+                    dirty = true;
+                }
+                if (dirty)
+                {
+                    _fs.Position = HeaderSize + start * RecordSize;
+                    _fs.Write(buf.AsSpan(0, count * RecordSize));
+                }
+                start += count;
+            }
+        }
+        return new WideSpreadStats(scanned, wide, changed);
     }
 
     public int FirstProvisionalMinute(int fromMinute, int toMinute) =>

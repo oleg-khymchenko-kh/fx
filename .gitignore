@@ -4,3 +4,4 @@ obj/
 *.user
 history-export/
 *_wpftmp.csproj
+__pycache__/

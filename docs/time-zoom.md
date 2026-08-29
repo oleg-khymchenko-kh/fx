@@ -38,8 +38,12 @@ To keep the pick stable, the work is done at minute level and then
 copied to pixels:
 
 1. `ChartColumns.BuildView` builds minute columns.
-2. `LineDecimator.ChooseValues` picks min, max or avg per minute.
-3. `ChartColumns.Expand` repeats each minute value over its pixels.
+2. `LineDecimator.ChooseValues` picks min, max or avg per minute and
+   marks full-range minutes (see docs/chart-line-rendering.md).
+3. `ChartColumns.Expand` repeats each minute value over its pixels. The
+   full-range flag is not repeated: `ExpandOnce` keeps it only on the
+   first pixel of the minute, so the min..max bar is drawn once per
+   minute, the rest of the minute stays a flat line.
 
 `ChartColumns.BuildLine` does all three in one call. Without step 2 on
 minutes the decimator would see the copies as separate columns, decide
@@ -92,3 +96,20 @@ hover all follow as if the mouse was moved by hand.
   than a pixel at the current zoom, the step falls back to one pixel.
 
 Both work only while the mouse is over the chart (`_cursorOnChart`).
+
+## Shift + Left/Right selects a range
+
+Shift + Left/Right drives the same time range selection as Shift + drag:
+
+- No selection yet: the first press starts one - the range covers the
+  single column under the cursor.
+- Selection exists (from keys or from a mouse drag): each press moves
+  the end of the range one column left or right, so the range grows on
+  one side and shrinks back when the direction is reversed. The anchor
+  (the start column) never moves.
+- The mouse pointer stays where it is; only the range band changes.
+- Escape clears the range as usual. The stats popup is closed on every
+  keyboard range change, press Space to reopen it for the new range.
+
+Starting needs the cursor on the chart; extending an existing range
+works as long as the chart has keyboard focus.

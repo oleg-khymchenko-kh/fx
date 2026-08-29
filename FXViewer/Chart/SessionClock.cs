@@ -35,6 +35,9 @@ public static class SessionClock
         return ChartSession.None;
     }
 
+    public static int AmericaCloseHourUtc(DateTime utc) =>
+        AmericaCloseWinterHourUtc - (UsSummer(utc) ? 1 : 0);
+
     public static bool EuSummer(DateTime utc) =>
         utc >= LastSunday(utc.Year, 3).AddHours(1) && utc < LastSunday(utc.Year, 10).AddHours(1);
 

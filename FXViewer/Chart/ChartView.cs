@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -46,6 +46,7 @@ public sealed record SymbolSeries(string Symbol, CandleHistory History, int Colo
     DealMark[]? DealMarks = null, bool AgePanel = false)
 {
     public int PriceMul { get; init; } = 1;
+    public bool BasePair { get; init; }
     public bool TimeShift { get; init; }
     public bool AgeMirror { get; init; }
     public int AverageWindowBars { get; init; }
@@ -256,6 +257,45 @@ public sealed class ChartView : Grid
         Padding = new Thickness(6, 1, 6, 1),
     };
 
+    private const double MeasureCellGapDip = 14;
+    private const double MeasureChromeDip = 22;
+    private const double MeasureCloseDip = 32;
+    private const string MeasureWidestPips = "-99999.9 pips";
+    private const string MeasureWidestRange = "00-WWW-00 00:00  →  00-WWW-00 00:00     9999d 23h 59m";
+    private const string MeasureWidestSymbol = "WWWWWWWW";
+    private const string MeasureWidestPrice = "00000.00000";
+
+    private double _measureLabelWidth;
+    private bool _measuring;
+    private bool _hasMeasure;
+    private long _measureAnchorUnix;
+    private double _measureAnchorPrice;
+    private long _measureCursorUnix;
+    private double _measureCursorPrice;
+    private Grid? _measureTable;
+    private readonly Canvas _measureCanvas = new() { IsHitTestVisible = false, ClipToBounds = true };
+    private readonly Rectangle _measureBand = new()
+    {
+        Visibility = Visibility.Collapsed,
+        IsHitTestVisible = false,
+    };
+    private readonly TextBlock _measurePipsText = new()
+    {
+        FontFamily = StatsNumberFont,
+        FontSize = 13,
+        FontWeight = FontWeights.Bold,
+    };
+    private readonly TextBlock _measureTimeText = new() { FontSize = StatsCellFontSize };
+    private readonly StackPanel _measureBody = new();
+    private readonly Border _measureLabel = new()
+    {
+        Visibility = Visibility.Collapsed,
+        Background = Brushes.White,
+        BorderThickness = new Thickness(1),
+        Padding = new Thickness(10, 6, 10, 8),
+        Cursor = Cursors.Arrow,
+    };
+
     private const double AlignEdgeFraction = 0.2;
 
     private const int LineHitRadiusPx = 2;
@@ -312,9 +352,12 @@ public sealed class ChartView : Grid
     private int _densitySelected;
     private long _densityAnchorColumn = long.MinValue;
 
-    private const int ShiftHitRadiusPx = 2;
+    private const int SeriesHitRadiusPx = 2;
     private const int ShiftHotWidthPx = 2;
+    private const int SeriesPressWidthPx = 2;
     private readonly List<(string Symbol, RenderLine Line)> _shiftLines = new();
+    private readonly List<(string Symbol, RenderLine Line)> _renderedLines = new();
+    private readonly List<string> _seriesOrder = new();
     private readonly Dictionary<string, int[]> _renderedSpreadColumns = new();
     private readonly Dictionary<string, VolumeColumnSet> _renderedVolumeColumns = new();
     private readonly Dictionary<string, double> _volumeScales = new();
@@ -322,15 +365,16 @@ public sealed class ChartView : Grid
     private readonly Dictionary<string, double> _volumeUnits = new();
     private readonly Dictionary<string, int> _volumePanelBottoms = new();
 
-    private const int VolumeWheelBandPx = 10;
+    private const int VolumeWheelBandPx = 25;
 
     private const double VolumeScaleMin = 0.25;
-    private const double VolumeScaleMax = 64.0;
+    private const double VolumeScaleMax = 200.0;
     private readonly Dictionary<string, double> _densityUnits = new();
     private readonly Dictionary<string, double> _densityAutoPerPixel = new();
     private const double DensityUnitMin = 1e-6;
     private const double DensityUnitMax = 1e9;
     private string? _shiftHotSymbol;
+    private string? _pressSymbol;
     private string? _shiftDragSymbol;
     private bool _shiftDragging;
     private int _shiftDragStartX;
@@ -349,6 +393,7 @@ public sealed class ChartView : Grid
     public event Action<long?, double>? CursorTimeChanged;
     public event Action<double[]?, double[]?>? CursorPricesChanged;
     public event Action<ChartViewState>? StateChanged;
+    public event Action? SeriesOrderChanged;
     public event Action? SeriesOffsetsChanged;
     public event Action<string, long>? SeriesTimeShiftRequested;
     public event Action<int>? DensitySelectedChanged;
@@ -408,6 +453,12 @@ public sealed class ChartView : Grid
         _editCanvas.Children.Add(_rangeLabel);
         Children.Add(_editCanvas);
         Children.Add(_densityLabelPanel);
+        BuildMeasureLabel();
+        _measureBand.Fill = BrushFor(RangeFillArgb);
+        _measureBand.Stroke = BrushFor(RangeEdgeArgb);
+        _measureCanvas.Children.Add(_measureBand);
+        _measureCanvas.Children.Add(_measureLabel);
+        Children.Add(_measureCanvas);
         Cursor = Cursors.None;
         Focusable = true;
         FocusVisualStyle = null;
@@ -420,6 +471,16 @@ public sealed class ChartView : Grid
             if (e.Key == Key.Space)
             {
                 ToggleStatsPopup();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Q && _cursorOnChart)
+            {
+                BeginMeasure(_cursorPx, _cursorPy);
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Escape && (_measuring || _hasMeasure))
+            {
+                ClearMeasure();
                 e.Handled = true;
             }
             else if (e.Key == Key.Escape && _statsPopup != null)
@@ -450,6 +511,13 @@ public sealed class ChartView : Grid
             else if (e.Key == Key.Escape && _hasRange)
             {
                 ClearRange();
+                e.Handled = true;
+            }
+            else if (e.Key is Key.Right or Key.Left
+                && (Keyboard.Modifiers & ModifierKeys.Shift) != 0
+                && (_cursorOnChart || _hasRange))
+            {
+                KeyRangeSelect(e.Key == Key.Right ? 1 : -1);
                 e.Handled = true;
             }
             else if (e.Key is Key.Right or Key.Left && _cursorOnChart)
@@ -502,6 +570,7 @@ public sealed class ChartView : Grid
             else if (_selDragging) CommitSelDrag();
             else if (_pivotDragging) CommitPivotDrag();
             else EndDrag();
+            EndSeriesPress();
         };
         LostMouseCapture += (_, _) =>
         {
@@ -510,6 +579,7 @@ public sealed class ChartView : Grid
             EndRangeSelect();
             CancelPivotDrag();
             CancelSelDrag();
+            EndSeriesPress();
         };
         _rebuildTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
         _rebuildTimer.Tick += (_, _) =>
@@ -594,6 +664,7 @@ public sealed class ChartView : Grid
 
     private void OnCrosshairMove(object sender, MouseEventArgs e)
     {
+        using var _ = Perf.FrameStep("input.crosshair");
         var dpi = VisualTreeHelper.GetDpi(this);
         int pw = (int)Math.Round(ActualWidth * dpi.DpiScaleX);
         int ph = (int)Math.Round(ActualHeight * dpi.DpiScaleY);
@@ -672,6 +743,7 @@ public sealed class ChartView : Grid
 
     public void RestoreState(ChartViewState state)
     {
+        ClearMeasure();
         _weekendsHidden = state.WeekendsHidden;
         _sessionsVisible = state.SessionsVisible;
         long saved = state.RestoredColumnSeconds();
@@ -862,8 +934,15 @@ public sealed class ChartView : Grid
     public void SelectForecastDay(string day)
     {
         if (!_forecastDays.Contains(day, StringComparer.Ordinal)) return;
-        _forecastDay = day;
-        _forecastHidden = false;
+        if (day == _forecastDay && !_forecastHidden)
+        {
+            _forecastHidden = true;
+        }
+        else
+        {
+            _forecastDay = day;
+            _forecastHidden = false;
+        }
         _forecastHover = Array.Empty<ForecastMark>();
         CloseForecastPopup();
         Rebuild();
@@ -993,25 +1072,40 @@ public sealed class ChartView : Grid
         double bestDistance = double.MaxValue;
         foreach (var (symbol, line) in _shiftLines)
         {
-            double distance = ShiftLineDistance(line, cx, cy);
-            if (distance > ShiftHitRadiusPx || distance >= bestDistance) continue;
+            double distance = LineDistancePx(line, cx, cy);
+            if (distance > SeriesHitRadiusPx || distance >= bestDistance) continue;
             bestDistance = distance;
             best = symbol;
         }
         return best;
     }
 
-    private double ShiftLineDistance(RenderLine line, int cx, int cy)
+    private string? FindSeriesLineAt(int cx, int cy)
+    {
+        if (_renderedPointsPerRow <= 0) return null;
+        string? best = null;
+        double bestDistance = double.MaxValue;
+        foreach (var (symbol, line) in _renderedLines)
+        {
+            double distance = LineDistancePx(line, cx, cy);
+            if (distance > SeriesHitRadiusPx || distance >= bestDistance) continue;
+            bestDistance = distance;
+            best = symbol;
+        }
+        return best;
+    }
+
+    private double LineDistancePx(RenderLine line, int cx, int cy)
     {
         int startColumn = (int)(_renderedStartBucket - line.Series.FirstBucket);
         double best = double.MaxValue;
-        for (int dx = -ShiftHitRadiusPx; dx <= ShiftHitRadiusPx; dx++)
+        for (int dx = -SeriesHitRadiusPx; dx <= SeriesHitRadiusPx; dx++)
         {
-            double? row = ShiftLineRow(line, startColumn + cx + dx);
+            double? row = LineRowAt(line, startColumn + cx + dx);
             if (row == null) continue;
             double lo = row.Value;
             double hi = row.Value;
-            double? prev = ShiftLineRow(line, startColumn + cx + dx - 1);
+            double? prev = LineRowAt(line, startColumn + cx + dx - 1);
             if (prev != null)
             {
                 lo = Math.Min(lo, prev.Value);
@@ -1024,7 +1118,7 @@ public sealed class ChartView : Grid
         return best;
     }
 
-    private double? ShiftLineRow(RenderLine line, int index)
+    private double? LineRowAt(RenderLine line, int index)
     {
         var columns = line.Series.Columns;
         if (index < 0 || index >= columns.Length || !columns[index].HasData) return null;
@@ -1033,6 +1127,58 @@ public sealed class ChartView : Grid
             ? line.Chosen[index]
             : line.Chosen[index] + shift[index];
         return (_renderedTopPrice - line.OffsetPoints - value) / _renderedPointsPerRow;
+    }
+
+    public IReadOnlyList<string> SeriesOrder => _seriesOrder;
+
+    public void SetSeriesOrder(IEnumerable<string> order)
+    {
+        _seriesOrder.Clear();
+        foreach (var symbol in order)
+            if (!_seriesOrder.Contains(symbol)) _seriesOrder.Add(symbol);
+        RequestRebuild();
+    }
+
+    private void BeginSeriesPress(int cx, int cy)
+    {
+        var symbol = FindSeriesLineAt(cx, cy);
+        if (symbol == null) return;
+        _pressSymbol = symbol;
+        bool onTop = _seriesOrder.Count > 0 && _seriesOrder[^1] == symbol;
+        _seriesOrder.Remove(symbol);
+        _seriesOrder.Add(symbol);
+        if (!onTop) PruneSeriesOrder();
+        Rebuild();
+        if (!onTop) SeriesOrderChanged?.Invoke();
+    }
+
+    private void EndSeriesPress()
+    {
+        if (_pressSymbol == null) return;
+        _pressSymbol = null;
+        Rebuild();
+    }
+
+    private int[] SeriesDrawOrder(List<SymbolSeries> visible)
+    {
+        var order = new int[visible.Count];
+        for (int i = 0; i < order.Length; i++) order[i] = i;
+        if (_seriesOrder.Count == 0) return order;
+        var rank = new Dictionary<string, int>();
+        for (int i = 0; i < _seriesOrder.Count; i++) rank[_seriesOrder[i]] = i + 1;
+        Array.Sort(order, (a, b) =>
+        {
+            int ra = rank.GetValueOrDefault(visible[a].Symbol);
+            int rb = rank.GetValueOrDefault(visible[b].Symbol);
+            return ra != rb ? ra.CompareTo(rb) : a.CompareTo(b);
+        });
+        return order;
+    }
+
+    private void PruneSeriesOrder()
+    {
+        for (int i = _seriesOrder.Count - 1; i >= 0; i--)
+            if (GetSeries(_seriesOrder[i]) == null) _seriesOrder.RemoveAt(i);
     }
 
     private void BeginShiftDrag(int cx, int cy)
@@ -1410,7 +1556,14 @@ public sealed class ChartView : Grid
         RefreshHidden();
         if (_flattenSymbol == oldName) _flattenSymbol = newName;
         if (_shiftHotSymbol == oldName) _shiftHotSymbol = newName;
+        if (_pressSymbol == oldName) _pressSymbol = newName;
         if (_shiftDragSymbol == oldName) _shiftDragSymbol = newName;
+        int orderIndex = _seriesOrder.IndexOf(oldName);
+        if (orderIndex >= 0)
+        {
+            _seriesOrder[orderIndex] = newName;
+            SeriesOrderChanged?.Invoke();
+        }
     }
 
     public void SetSeriesOffset(string symbol, double points)
@@ -1489,6 +1642,7 @@ public sealed class ChartView : Grid
         DeselectLine();
         HideHover();
         ClearRange();
+        ClearMeasure();
         ForgetHiddenPivotSegments();
         var list = series.ToList();
         _averageParents.Clear();
@@ -1519,7 +1673,9 @@ public sealed class ChartView : Grid
         series = list;
         _series = series.Count > 0 ? series : null;
         _shiftLines.Clear();
+        _renderedLines.Clear();
         _shiftHotSymbol = null;
+        _pressSymbol = null;
         _shiftDragSymbol = null;
         _shiftDragging = false;
         _columnSeconds = 0;
@@ -1581,6 +1737,22 @@ public sealed class ChartView : Grid
         RebuildPivots();
         RebuildFlatten();
         Rebuild();
+    }
+
+    public void SetSeriesColor(string symbol, int argb)
+    {
+        var series = _series;
+        if (series == null) return;
+        for (int i = 0; i < series.Count; i++)
+        {
+            if (!string.Equals(series[i].Symbol, symbol, StringComparison.OrdinalIgnoreCase)) continue;
+            if (series[i].ColorArgb == argb) return;
+            var list = new List<SymbolSeries>(series);
+            list[i] = list[i] with { ColorArgb = argb };
+            _series = list;
+            Rebuild();
+            return;
+        }
     }
 
     public void PatchSeriesHistory(string symbol, CandleHistory history)
@@ -1973,6 +2145,18 @@ public sealed class ChartView : Grid
     private void OnDragStart(object sender, MouseButtonEventArgs e)
     {
         if (_series == null) return;
+        if (_measuring)
+        {
+            e.Handled = true;
+            FinishMeasure();
+            return;
+        }
+        if (_hasMeasure)
+        {
+            e.Handled = true;
+            ClearMeasure();
+            return;
+        }
         if (_drawSymbol != null)
         {
             HandleDrawClick(e);
@@ -2054,11 +2238,7 @@ public sealed class ChartView : Grid
             return;
         }
         if (_selSymbol != null) DeselectLine();
-        if (e.ClickCount == 2)
-        {
-            AlignSeriesToGrid(pos);
-            return;
-        }
+        BeginSeriesPress(cx, cy);
         int pw = (int)Math.Round(ActualWidth * dpi.DpiScaleX);
         if (pw < 1) return;
         _dragStartX = cx;
@@ -2077,6 +2257,7 @@ public sealed class ChartView : Grid
 
     private void OnDragMove(object sender, MouseEventArgs e)
     {
+        using var _ = Perf.FrameStep("input.drag");
         if (_shiftDragging)
         {
             if (e.LeftButton != MouseButtonState.Pressed)
@@ -2181,6 +2362,28 @@ public sealed class ChartView : Grid
         Focusable = true;
         Focus();
         CaptureMouse();
+    }
+
+    private void KeyRangeSelect(int direction)
+    {
+        if (_renderedColumnSeconds <= 0) return;
+        CloseStatsPopup();
+        if (!_hasRange)
+        {
+            if (!_cursorOnChart) return;
+            CloseChartPopups();
+            DeselectLine();
+            _hasRange = true;
+            _rangeStartUnix = ColumnTime(_cursorPx);
+            _rangeEndUnix = _rangeStartUnix;
+        }
+        else
+        {
+            long bucket = ToVirtual(_rangeEndUnix) / _renderedColumnSeconds + direction;
+            _rangeEndUnix = ToReal(bucket * _renderedColumnSeconds);
+        }
+        UpdateRangeVisuals();
+        UpdateDensityOverlay();
     }
 
     private void UpdateRangeSelect(int cx)
@@ -2451,18 +2654,22 @@ public sealed class ChartView : Grid
         };
     }
 
+    private const double StatsCellFontSize = 12;
+
+    private static readonly FontFamily StatsNumberFont = new("Consolas");
+
     private static TextBlock StatsCell(string text, int row, int column, Brush brush, bool numeric)
     {
         var block = new TextBlock
         {
             Text = text,
             Foreground = brush,
-            FontSize = 12,
-            Margin = new Thickness(0, 1, 14, 1),
+            FontSize = StatsCellFontSize,
+            Margin = new Thickness(0, 1, MeasureCellGapDip, 1),
         };
         if (numeric)
         {
-            block.FontFamily = new FontFamily("Consolas");
+            block.FontFamily = StatsNumberFont;
             block.HorizontalAlignment = HorizontalAlignment.Right;
         }
         Grid.SetRow(block, row);
@@ -2502,46 +2709,234 @@ public sealed class ChartView : Grid
         return string.Join(" ", parts);
     }
 
-    private void AlignSeriesToGrid(Point pos)
+    private MenuItem MeasureMenuItem(int cx, int cy)
     {
-        var seriesList = _series;
-        if (seriesList == null || _pointsPerRow <= 0 || _renderedColumnSeconds <= 0) return;
+        var item = new MenuItem { Header = "Measure distance" };
+        item.Click += (_, _) => BeginMeasure(cx, cy);
+        return item;
+    }
+
+    private void BuildMeasureLabel()
+    {
+        _measureLabel.BorderBrush = BrushFor(RangeEdgeArgb);
+        _measurePipsText.Foreground = BrushFor(RangeEdgeArgb);
+        _measureTimeText.Margin = new Thickness(0, 2, 0, 0);
+        _measureBody.Children.Add(_measurePipsText);
+        _measureBody.Children.Add(_measureTimeText);
+        var close = new Button
+        {
+            Content = "✕",
+            Width = 18,
+            Height = 18,
+            Padding = new Thickness(0),
+            FontSize = 11,
+            Margin = new Thickness(14, 0, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Cursor = Cursors.Hand,
+            ToolTip = "Close",
+        };
+        close.Click += (_, _) => ClearMeasure();
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(_measureBody, 0);
+        Grid.SetColumn(close, 1);
+        grid.Children.Add(_measureBody);
+        grid.Children.Add(close);
+        _measureLabel.Child = grid;
+        _measureLabel.MouseLeftButtonDown += (_, e) => e.Handled = true;
+        _measureLabel.MouseRightButtonDown += (_, e) => e.Handled = true;
+        _measureLabel.MouseLeftButtonUp += (_, e) => e.Handled = true;
+        _measureLabel.MouseRightButtonUp += (_, e) => e.Handled = true;
+    }
+
+    private void BeginMeasure(int cx, int cy)
+    {
+        if (_renderedColumnSeconds <= 0 || _renderedPointsPerRow <= 0) return;
+        CancelPivotDrag();
+        CancelDrawing();
+        EndDrag();
+        DeselectLine();
+        HideHover();
+        HideCalendarHover();
+        CloseChartPopups();
+        CloseStatsPopup();
+        ClearMeasure();
+        _measureAnchorUnix = ColumnTime(cx);
+        _measureAnchorPrice = _renderedTopPrice - cy * _renderedPointsPerRow;
+        _measureCursorUnix = _measureAnchorUnix;
+        _measureCursorPrice = _measureAnchorPrice;
+        _measuring = true;
+        Focusable = true;
+        Focus();
+        UpdateMeasureVisuals();
+    }
+
+    private void MoveMeasureCursor(int cx, int cy)
+    {
+        if (_renderedColumnSeconds <= 0 || _renderedPointsPerRow <= 0) return;
+        _measureCursorUnix = ColumnTime(cx);
+        _measureCursorPrice = _renderedTopPrice - cy * _renderedPointsPerRow;
+        UpdateMeasureVisuals();
+    }
+
+    private void FinishMeasure()
+    {
+        if (!_measuring) return;
+        _measuring = false;
+        _hasMeasure = true;
+        _measureCanvas.IsHitTestVisible = true;
+        UpdateMeasureVisuals();
+    }
+
+    public void ClearMeasure()
+    {
+        _measuring = false;
+        _hasMeasure = false;
+        _measureCanvas.IsHitTestVisible = false;
+        _measureBand.Visibility = Visibility.Collapsed;
+        _measureLabel.Visibility = Visibility.Collapsed;
+        if (_measureTable != null)
+        {
+            _measureBody.Children.Remove(_measureTable);
+            _measureTable = null;
+        }
+    }
+
+    private void UpdateMeasureVisuals()
+    {
+        if (!_measuring && !_hasMeasure) return;
+        double viewW = ActualWidth;
+        double viewH = ActualHeight;
+        if (_renderedColumnSeconds <= 0 || _renderedPointsPerRow <= 0 || viewW < 1 || viewH < 1)
+        {
+            HideMeasureVisuals();
+            return;
+        }
         var dpi = VisualTreeHelper.GetDpi(this);
-        int pw = (int)Math.Round(ActualWidth * dpi.DpiScaleX);
-        int ph = (int)Math.Round(ActualHeight * dpi.DpiScaleY);
-        if (pw < 1 || ph < 1) return;
-        int cx = Math.Clamp((int)Math.Floor(pos.X * dpi.DpiScaleX), 0, pw - 1);
-        int cy = Math.Clamp((int)Math.Floor(pos.Y * dpi.DpiScaleY), 0, ph - 1);
-        long bucket = _renderedStartBucket + cx;
-        double cursorPrice = _topPrice - cy * _pointsPerRow;
-        double gridPrice = Math.Round(cursorPrice / ChartRasterizer.GridPriceStepPoints)
-            * ChartRasterizer.GridPriceStepPoints;
-        double flattenShift = FlattenShiftVirtual(bucket * _renderedColumnSeconds);
-        var desired = new Dictionary<string, double>();
-        foreach (var s in seriesList)
+        long bucketSec = _renderedColumnSeconds;
+        long lo = Math.Min(_measureAnchorUnix, _measureCursorUnix);
+        long hi = Math.Max(_measureAnchorUnix, _measureCursorUnix);
+        double x1 = (ToVirtual(lo) / bucketSec - _renderedStartBucket) / dpi.DpiScaleX;
+        double x2 = (ToVirtual(hi) / bucketSec - _renderedStartBucket + 1) / dpi.DpiScaleX;
+        double loPrice = Math.Min(_measureAnchorPrice, _measureCursorPrice);
+        double hiPrice = Math.Max(_measureAnchorPrice, _measureCursorPrice);
+        double y1 = (_renderedTopPrice - hiPrice) / _renderedPointsPerRow / dpi.DpiScaleY;
+        double y2 = (_renderedTopPrice - loPrice) / _renderedPointsPerRow / dpi.DpiScaleY;
+        if (x2 <= 0 || x1 >= viewW || y2 <= 0 || y1 >= viewH)
         {
-            var column = ChartColumns.NearestColumn(s.History.Minutes, _renderedColumnSeconds, bucket, Compressor);
-            if (!column.HasData) continue;
-            desired[s.Symbol] = gridPrice - flattenShift - column.Avg - _priceOffsetPoints;
+            HideMeasureVisuals();
+            return;
         }
-        bool changed = false;
-        foreach (var s in seriesList)
+        double left = Math.Clamp(x1, 0, viewW);
+        double right = Math.Clamp(x2, 0, viewW);
+        double top = Math.Clamp(y1, 0, viewH);
+        double bottom = Math.Clamp(y2, 0, viewH);
+        _measureBand.Width = Math.Max(1, right - left);
+        _measureBand.Height = Math.Max(1, bottom - top);
+        _measureBand.StrokeThickness = 1 / dpi.DpiScaleX;
+        Canvas.SetLeft(_measureBand, left);
+        Canvas.SetTop(_measureBand, top);
+        _measureBand.Visibility = Visibility.Visible;
+        UpdateMeasureLabel(lo, hi, loPrice, hiPrice, viewW);
+    }
+
+    private void HideMeasureVisuals()
+    {
+        _measureBand.Visibility = Visibility.Collapsed;
+        _measureLabel.Visibility = Visibility.Collapsed;
+    }
+
+    private void UpdateMeasureLabel(long lo, long hi, double loPrice, double hiPrice, double viewW)
+    {
+        _measurePipsText.Text = MeasurePipsText(
+            (_measureCursorPrice - _measureAnchorPrice) / PipPoints);
+        _measureTimeText.Text = RangeText(lo, hi);
+        if (_measureTable != null) _measureBody.Children.Remove(_measureTable);
+        var rows = ComputeMeasureRows(loPrice, hiPrice);
+        _measureTable = rows.Count > 0 ? BuildMeasureTable(rows) : null;
+        if (_measureTable != null) _measureBody.Children.Add(_measureTable);
+        double w = MeasureLabelWidth();
+        _measureLabel.Width = w;
+        _measureLabel.Visibility = Visibility.Visible;
+        Canvas.SetLeft(_measureLabel, Math.Max(0, (viewW - w) / 2));
+        Canvas.SetTop(_measureLabel, 0);
+    }
+
+    private double MeasureLabelWidth()
+    {
+        if (_measureLabelWidth > 0) return _measureLabelWidth;
+        double pips = TextWidth(MeasureWidestPips, _measurePipsText.FontFamily,
+            _measurePipsText.FontSize, FontWeights.Bold);
+        double range = TextWidth(MeasureWidestRange, _measureTimeText.FontFamily,
+            _measureTimeText.FontSize, FontWeights.Normal);
+        double symbol = TextWidth(MeasureWidestSymbol, _measureTimeText.FontFamily,
+            StatsCellFontSize, FontWeights.Normal) + MeasureCellGapDip;
+        double price = TextWidth(MeasureWidestPrice, StatsNumberFont,
+            StatsCellFontSize, FontWeights.Normal) + MeasureCellGapDip;
+        double body = Math.Max(Math.Max(pips, range), symbol + price * 2);
+        _measureLabelWidth = Math.Ceiling(body + MeasureChromeDip + MeasureCloseDip);
+        return _measureLabelWidth;
+    }
+
+    private double TextWidth(string text, FontFamily family, double size, FontWeight weight)
+    {
+        var formatted = new FormattedText(text, CultureInfo.InvariantCulture,
+            FlowDirection.LeftToRight,
+            new Typeface(family, FontStyles.Normal, weight, FontStretches.Normal),
+            size, Brushes.Black, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+        return formatted.WidthIncludingTrailingWhitespace;
+    }
+
+    private static string MeasurePipsText(double pips)
+    {
+        string sign = pips > 0 ? "+" : pips < 0 ? "-" : "";
+        return sign + Math.Abs(pips).ToString("0.0", CultureInfo.InvariantCulture) + " pips";
+    }
+
+    private sealed record MeasureRow(string Symbol, int ColorArgb, int Digits, double Low, double High);
+
+    private static readonly string[] MeasureHeaders = { "", "min", "max" };
+
+    private Grid BuildMeasureTable(List<MeasureRow> rows)
+    {
+        var table = new Grid { Margin = new Thickness(0, 8, 0, 0) };
+        for (int c = 0; c < MeasureHeaders.Length; c++)
+            table.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        for (int r = 0; r <= rows.Count; r++)
+            table.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var headBrush = BrushFor(unchecked((int)0xFF808080));
+        for (int c = 0; c < MeasureHeaders.Length; c++)
+            table.Children.Add(StatsCell(MeasureHeaders[c], 0, c, headBrush, c > 0));
+        for (int r = 0; r < rows.Count; r++)
         {
-            if (_offsetLockedSymbols.Contains(s.Symbol)) continue;
-            if (!desired.TryGetValue(s.Symbol, out var effective)) continue;
-            double sourceEffective = s.SourceSymbol == null ? 0
-                : desired.TryGetValue(s.SourceSymbol, out var se) ? se
-                : EffectiveSeriesOffset(s.SourceSymbol);
-            double offset = effective - sourceEffective;
-            if (_seriesOffsetPoints.GetValueOrDefault(s.Symbol) != offset)
-            {
-                _seriesOffsetPoints[s.Symbol] = offset;
-                changed = true;
-            }
+            var row = rows[r];
+            var brush = BrushFor(row.ColorArgb);
+            string tenthFormat = "0." + new string('0', row.Digits + 1);
+            table.Children.Add(StatsCell(row.Symbol, r + 1, 0, brush, false));
+            table.Children.Add(StatsTenthCell(PriceText(row.Low, tenthFormat), r + 1, 1, brush));
+            table.Children.Add(StatsTenthCell(PriceText(row.High, tenthFormat), r + 1, 2, brush));
         }
-        if (!changed) return;
-        SeriesOffsetsChanged?.Invoke();
-        Rebuild();
+        return table;
+    }
+
+    private List<MeasureRow> ComputeMeasureRows(double loPrice, double hiPrice)
+    {
+        var result = new List<MeasureRow>();
+        var series = _series;
+        if (series == null) return result;
+        double shift = FlattenShift(_measureAnchorUnix);
+        foreach (var s in series)
+        {
+            if (!s.BasePair || s.BottomPanel || IsHidden(s.Symbol)) continue;
+            double offset = SeriesOffset(s.Symbol);
+            double a = ToTruePoints(s.Transform, loPrice - offset - shift) * s.PriceMul;
+            double b = ToTruePoints(s.Transform, hiPrice - offset - shift) * s.PriceMul;
+            result.Add(new MeasureRow(s.Symbol, s.ColorArgb, PriceDigits(s.PipPoints * s.PriceMul),
+                Math.Min(a, b), Math.Max(a, b)));
+        }
+        return result;
     }
 
     private bool RangeContainsColumn(int cx)
@@ -2555,7 +2950,7 @@ public sealed class ChartView : Grid
         return cx >= x1 && cx <= x2;
     }
 
-    private void ShowRangeMenu(Point pos)
+    private void ShowRangeMenu(Point pos, int cx, int cy)
     {
         var menu = new ContextMenu { PlacementTarget = this };
         var toMax = new MenuItem { Header = "Align to max" };
@@ -2564,6 +2959,7 @@ public sealed class ChartView : Grid
         var toMin = new MenuItem { Header = "Align to min" };
         toMin.Click += (_, _) => AlignRangeExtremeToGrid(pos, false);
         menu.Items.Add(toMin);
+        AddChartMenuItems(menu, cx, cy);
         menu.IsOpen = true;
     }
 
@@ -2726,7 +3122,7 @@ public sealed class ChartView : Grid
         VolumeGroupChanged?.Invoke(symbol, next);
         if (_volumeUnits.TryGetValue(symbol, out var unit) && unit > 0)
         {
-            double scaled = unit * next / current;
+            double scaled = IndicatorSymbol.ScaleVolumeBarUnit(unit, current, next);
             _volumeUnits[symbol] = scaled;
             VolumeUnitChanged?.Invoke(symbol, scaled);
         }
@@ -2748,6 +3144,7 @@ public sealed class ChartView : Grid
 
     private void OnZoom(object sender, MouseWheelEventArgs e)
     {
+        using var _ = Perf.FrameStep("input.zoom");
         if (_pivotDragging || _selDragging)
         {
             e.Handled = true;
@@ -2848,9 +3245,12 @@ public sealed class ChartView : Grid
         if (_computing)
         {
             _pending = true;
+            Perf.Count("rebuild.coalesced");
             return;
         }
         _computing = true;
+        long frameTicks = Perf.Now();
+        long frameSeq = Perf.Mark();
         long k;
         long startBucket;
         if (_columnSeconds <= 0)
@@ -2892,7 +3292,10 @@ public sealed class ChartView : Grid
         var swRender = _firstRenderLogged ? null : Stopwatch.StartNew();
         string? hotShift = _shiftHotSymbol;
         int hotShiftWidth = _shiftDragging ? 1 : ShiftHotWidthPx;
+        string? pressSymbol = _pressSymbol;
+        var drawOrder = SeriesDrawOrder(visibleSeries);
         var shiftLines = new List<(string Symbol, RenderLine Line)>();
+        var renderedLines = new List<(string Symbol, RenderLine Line)>();
         var spreadCols = new List<(string Symbol, int[] Columns)>();
         var volumeCols = new List<(string Symbol, VolumeColumnSet Columns)>();
         var volumeUnitsUsed = new List<(string Symbol, double Unit, int Bottom)>();
@@ -2904,25 +3307,29 @@ public sealed class ChartView : Grid
         {
             await Task.Run(() =>
             {
+                long t = Perf.Now();
                 var lines = new List<RenderLine>(visibleSeries.Count);
                 var columnShifts = flatten?.ColumnShifts(startBucket - pw, pw * 2, k);
                 int hotIndex = -1;
-                for (int si = 0; si < visibleSeries.Count; si++)
+                foreach (int si in drawOrder)
                 {
                     var s = visibleSeries[si];
                     if (s.History.Minutes.Length == 0 || s.BottomPanel) continue;
-                    var (view, chosen) = ChartColumns.BuildLine(
+                    var (view, chosen, fullRange) = ChartColumns.BuildLine(
                         s.History, k, startBucket - pw, pw * 2, map, pw, NoiseThreshold);
                     var last = s.History.LastCandle;
                     int lastPrice = s.History.HasLastTick ? s.History.LastTick : last.Avg;
                     long lastVirtual = map?.ToVirtual(last.MinuteUnixSeconds) ?? last.MinuteUnixSeconds;
                     var line = new RenderLine(view, chosen, s.ColorArgb, lastPrice,
                         (lastVirtual + ChartColumns.MinuteSeconds - 1) / k,
-                        lineOffsets[si], columnShifts);
+                        lineOffsets[si], columnShifts,
+                        s.Symbol == pressSymbol ? SeriesPressWidthPx : 1, fullRange);
                     if (s.TimeShift) shiftLines.Add((s.Symbol, line));
+                    renderedLines.Add((s.Symbol, line));
                     if (s.Symbol == hotShift) hotIndex = lines.Count;
                     lines.Add(line);
                 }
+                t = Perf.Since("chart.buildlines", t);
                 if (scaleInit)
                 {
                     int mn = int.MaxValue;
@@ -2967,10 +3374,12 @@ public sealed class ChartView : Grid
                     lines.RemoveAt(hotIndex);
                 }
                 if (_staging.Length < pw * ph) _staging = new int[pw * ph];
+                t = Perf.Since("chart.fitscale", t);
                 ChartRasterizer.Render(_staging, pw, ph, lines, Palette, k, startBucket, edges,
                     topPrice, pointsPerRow, tiltedGrid, sessionBands);
+                t = Perf.Since("chart.raster", t);
                 if (pointsPerRow > 0)
-                    for (int si = 0; si < visibleSeries.Count; si++)
+                    foreach (int si in drawOrder)
                     {
                         var s = visibleSeries[si];
                         if (s.Transform == null) continue;
@@ -2997,6 +3406,7 @@ public sealed class ChartView : Grid
                             }
                         }
                     }
+                t = Perf.Since("chart.vectors", t);
                 if (pointsPerRow > 0)
                     for (int si = 0; si < visibleSeries.Count; si++)
                     {
@@ -3014,6 +3424,7 @@ public sealed class ChartView : Grid
                 if (hotLine != null && pointsPerRow > 0)
                     ChartRasterizer.DrawSeries(_staging, pw, ph, hotLine.Value, startBucket,
                         topPrice, pointsPerRow);
+                t = Perf.Since("chart.overlays", t);
                 int panelBottom = ph - 1;
                 foreach (var s in visibleSeries)
                 {
@@ -3029,7 +3440,8 @@ public sealed class ChartView : Grid
                         var tenths = SpreadColumns.Build(src.History, k, startBucket, pw, map);
                         spreadCols.Add((s.Symbol, tenths));
                         ChartRasterizer.DrawSpreadPanel(
-                            _staging, pw, ph, tenths, panelBottom, s.ColorArgb);
+                            _staging, pw, ph, tenths, panelBottom, s.ColorArgb, pointsPerRow);
+                        t = Perf.Since("panel.spread", t);
                         panelBottom -=
                             ChartRasterizer.SpreadPanelHeightPx + ChartRasterizer.EntryPanelGapPx;
                         continue;
@@ -3047,6 +3459,7 @@ public sealed class ChartView : Grid
                             : Math.Max(1, s.VolumeGroupMinutes);
                         var vols = VolumeColumns.Build(src.History, s.VolumeProfiles,
                             k, startBucket, pw, map, group);
+                        t = Perf.Since("panel.volume.build", t);
                         volumeCols.Add((s.Symbol, vols));
                         double used = ChartRasterizer.DrawVolumePanel(
                             _staging, pw, ph, vols, panelBottom, s.ColorArgb,
@@ -3055,6 +3468,7 @@ public sealed class ChartView : Grid
                                 : ClampVolumeScale(s.VolumeBarScale),
                             s.VolumeSplitSides ? s.SellColorArgb : 0,
                             volumeUnits.TryGetValue(s.Symbol, out var vu) ? vu : 0);
+                        t = Perf.Since("panel.volume.draw", t);
                         volumeUnitsUsed.Add((s.Symbol, used, panelBottom));
                         panelBottom -=
                             ChartRasterizer.VolumePanelHeightPx + ChartRasterizer.EntryPanelGapPx;
@@ -3066,6 +3480,7 @@ public sealed class ChartView : Grid
                         var ages = PriceAgeColumns.Build(
                             s.History, k, startBucket, pw, map, s.AgeMirror);
                         ChartRasterizer.DrawAgePanel(_staging, pw, ph, ages, panelBottom, s.ColorArgb);
+                        t = Perf.Since("panel.age", t);
                         panelBottom -= ChartRasterizer.AgePanelHeightPx + ChartRasterizer.EntryPanelGapPx;
                     }
                     else if (s.EntryPanel)
@@ -3073,10 +3488,12 @@ public sealed class ChartView : Grid
                         var states = EntryPointsColumns.Build(s.History, k, startBucket, pw, map);
                         ChartRasterizer.DrawEntryPanel(
                             _staging, pw, ph, states, panelBottom, Palette.Background);
+                        t = Perf.Since("panel.entry", t);
                         panelBottom -= ChartRasterizer.EntryPanelHeightPx + ChartRasterizer.EntryPanelGapPx;
                     }
                 }
             });
+            long tUi = Perf.Now();
             if (version == _version)
             {
                 if (scaleInit && pointsPerRow > 0)
@@ -3090,6 +3507,8 @@ public sealed class ChartView : Grid
                 _renderedPointsPerRow = pointsPerRow;
                 _shiftLines.Clear();
                 _shiftLines.AddRange(shiftLines);
+                _renderedLines.Clear();
+                _renderedLines.AddRange(renderedLines);
                 _renderedSpreadColumns.Clear();
                 foreach (var (sym, cols) in spreadCols) _renderedSpreadColumns[sym] = cols;
                 _renderedVolumeColumns.Clear();
@@ -3104,7 +3523,9 @@ public sealed class ChartView : Grid
                 }
                 _forecastMarkers.Clear();
                 _forecastMarkers.AddRange(forecastMarkers);
+                tUi = Perf.Since("chart.publish", tUi);
                 Present(pw, ph, dpi);
+                tUi = Perf.Since("chart.present", tUi);
                 if (swRender != null)
                 {
                     _firstRenderLogged = true;
@@ -3112,6 +3533,7 @@ public sealed class ChartView : Grid
                         $"({visibleSeries.Count} series, {pw}x{ph}px, k={k})");
                 }
                 ViewChanged?.Invoke(k, startBucket, pw, map);
+                tUi = Perf.Since("chart.viewchanged", tUi);
                 StateChanged?.Invoke(new ChartViewState
                 {
                     WeekendsHidden = _weekendsHidden,
@@ -3133,15 +3555,17 @@ public sealed class ChartView : Grid
                     TiltedDownGridIndex = _tiltedDownIndex,
                     TiltedGrids = _tiltedGrids.Select(g => g.Clone()).ToList(),
                 });
+                Perf.Since("chart.statechanged", tUi);
             }
         }
         catch (Exception ex)
         {
-            Info?.Invoke("Chart failed: " + ex.Message);
+            Info?.Invoke("Chart failed: " + ex);
         }
         finally
         {
             _computing = false;
+            Perf.Frame("chart.rebuild", frameTicks, frameSeq);
         }
         if (_pending)
         {
@@ -3521,16 +3945,23 @@ public sealed class ChartView : Grid
         }
         _image.Width = pw / dpi.DpiScaleX;
         _image.Height = ph / dpi.DpiScaleY;
+        long t = Perf.Now();
         _bitmap.WritePixels(new Int32Rect(0, 0, pw, ph), _staging, pw * 4, 0);
+        t = Perf.Since("present.blit", t);
         UpdateRangeVisuals();
+        UpdateMeasureVisuals();
+        t = Perf.Since("present.range", t);
         UpdateEditMarkers(dpi, pw, ph);
+        t = Perf.Since("present.markers", t);
         UpdateDensityOverlay();
+        t = Perf.Since("present.density", t);
         if (_drawSymbol != null)
         {
             UpdateDrawPreview(dpi);
             ReanchorDrawCursor(dpi);
         }
         if (_selSymbol != null) UpdateSelectionVisuals(dpi);
+        Perf.Since("present.rest", t);
         if (!_calendarVisible || _renderedColumnSeconds <= 0 || !CalendarLinesDrawn(_renderedColumnSeconds))
         {
             HideCalendarHover();
@@ -3614,6 +4045,7 @@ public sealed class ChartView : Grid
             rangeEndUnix = ToRealEnd((ToVirtual(r.EndUnix) / bucketSec + 1) * bucketSec) - 1;
         }
         long anchorUnix = range != null ? rangeEndUnix : MinuteFloor(ColumnEndUnix(_densityAnchorColumn));
+        long tDensity = Perf.Now();
         if (_densityStaging.Length < pw * ph)
             _densityStaging = new int[pw * ph];
         int stale = Math.Clamp(_densityUsedPx, DensityMaxWidthPx, pw);
@@ -3651,10 +4083,12 @@ public sealed class ChartView : Grid
                         ? null
                         : OrderBookProfile.PricePointsAt(source.History.Minutes, bookUnix.Value);
                 }
+                tDensity = Perf.Since("density.book.build", tDensity);
                 if (sides.Buy.MaxCount <= 0) continue;
                 DrawOrderBook(_densityStaging, pw, ph, sides,
                     SeriesOffset(s.SourceSymbol!), anchorUnix, s.ColorArgb, s.SellColorArgb,
                     price == null ? null : transform.ToDisplay(price.Value));
+                tDensity = Perf.Since("density.book.draw", tDensity);
                 drew = true;
                 continue;
             }
@@ -3683,6 +4117,7 @@ public sealed class ChartView : Grid
                         : DensityProfile.BuildWeightedRange(minutes, from, to);
                 }
             }
+            tDensity = Perf.Since("density.histogram", tDensity);
             if (histogram.MaxCount <= 0) continue;
             int bidColor = s.VolumeWeighted && s.VolumeSplitSides ? s.SellColorArgb : 0;
             double max = DensityScaleMax(s, histogram.MaxCount);
@@ -3693,6 +4128,7 @@ public sealed class ChartView : Grid
                 used = Math.Max(used, DrawDensity(_densityStaging, pw, ph, candle,
                     SeriesOffset(s.SourceSymbol!), anchorUnix, s.ColorArgb,
                     max, DensityCandleAlpha, bidColor));
+            tDensity = Perf.Since("density.draw", tDensity);
             drew = true;
         }
         if (_densityBmp == null || _densityBmp.PixelWidth != pw
@@ -3710,7 +4146,9 @@ public sealed class ChartView : Grid
         Canvas.SetLeft(_densityImage, 0);
         Canvas.SetTop(_densityImage, 0);
         _densityImage.Visibility = drew ? Visibility.Visible : Visibility.Collapsed;
+        tDensity = Perf.Since("density.blit", tDensity);
         UpdateDensityLabels(panels, anchorUnix);
+        Perf.Since("density.labels", tDensity);
     }
 
     private void DrawOrderBook(int[] buffer, int width, int height, OrderBookSides sides,
@@ -3892,13 +4330,9 @@ public sealed class ChartView : Grid
                     : option == s.DensityWindows.Length
                         ? $"{s.Symbol} 0: all"
                         : $"{s.Symbol} {option + 1}: {FormatDensityWindow(s.DensityWindows[option])}";
-                double perPixel = _densityUnits.TryGetValue(s.Symbol, out var live) && live > 0
-                    ? live
-                    : s.DensityScalePerPixel;
-                if (perPixel > 0)
-                    label.Text += perPixel >= 1
-                        ? $" | {perPixel:N0}/px"
-                        : $" | {perPixel:0.###}/px";
+                if (s.VolumePanel)
+                    label.Text += $" | {FormatDensityWindow(VolumeGroupOf(s))}"
+                        + (s.VolumeGroupLocked ? "*" : "");
             }
             label.Foreground = BrushFor(s.ColorArgb);
         }
@@ -4017,7 +4451,17 @@ public sealed class ChartView : Grid
 
     private void OnEditMove(object sender, MouseEventArgs e)
     {
+        using var _ = Perf.FrameStep("input.edithover");
         if (_series == null) return;
+        if (_measuring)
+        {
+            var pm = e.GetPosition(this);
+            var dpiM = VisualTreeHelper.GetDpi(this);
+            MoveMeasureCursor(
+                (int)Math.Floor(pm.X * dpiM.DpiScaleX),
+                (int)Math.Floor(pm.Y * dpiM.DpiScaleY));
+            return;
+        }
         if (_rangeSelecting)
         {
             if (e.LeftButton != MouseButtonState.Pressed)
@@ -4479,6 +4923,13 @@ public sealed class ChartView : Grid
 
     private void OnEditMenu(object sender, MouseButtonEventArgs e)
     {
+        if (_measuring)
+        {
+            e.Handled = true;
+            FinishMeasure();
+            return;
+        }
+        if (_hasMeasure) ClearMeasure();
         if (_drawSymbol != null)
         {
             e.Handled = true;
@@ -4498,20 +4949,20 @@ public sealed class ChartView : Grid
             if (vhit != null)
             {
                 e.Handled = true;
-                ShowDrawingVertexMenu(vhit.Value.Symbol, vhit.Value.Line, vhit.Value.Vertex);
+                ShowDrawingVertexMenu(vhit.Value.Symbol, vhit.Value.Line, vhit.Value.Vertex, cx, cy);
                 return;
             }
             var lhit = FindDrawingLineAt(cx, cy);
             if (lhit != null)
             {
                 e.Handled = true;
-                ShowDrawingLineMenu(lhit.Value.Symbol, lhit.Value.Line);
+                ShowDrawingLineMenu(lhit.Value.Symbol, lhit.Value.Line, cx, cy);
                 return;
             }
             if (RangeContainsColumn(cx))
             {
                 e.Handled = true;
-                ShowRangeMenu(pos);
+                ShowRangeMenu(pos, cx, cy);
                 return;
             }
             e.Handled = true;
@@ -4543,15 +4994,25 @@ public sealed class ChartView : Grid
         };
         addRight.Click += (_, _) => ApplyMenuEdit(s.Symbol, sp, pi, MenuEditKind.AddRight);
         menu.Items.Add(addRight);
+        AddChartMenuItems(menu, cx, cy);
         menu.IsOpen = true;
     }
 
     private void ShowChartMenu(int cx, int cy)
     {
+        var menu = new ContextMenu { PlacementTarget = this };
+        AddChartMenuItems(menu, cx, cy);
+        menu.IsOpen = true;
+    }
+
+    private void AddChartMenuItems(ContextMenu menu, int cx, int cy)
+    {
+        if (menu.Items.Count > 0) menu.Items.Add(new Separator());
         long t = ColumnTime(cx);
         string day = DateTimeOffset.FromUnixTimeSeconds(t).UtcDateTime.ToString("yyyy-MM-dd");
         bool has = _forecastDays.Contains(day, StringComparer.Ordinal);
-        var menu = new ContextMenu { PlacementTarget = this };
+        menu.Items.Add(MeasureMenuItem(cx, cy));
+        menu.Items.Add(new Separator());
         var series = _series;
         if (series != null)
         {
@@ -4578,7 +5039,6 @@ public sealed class ChartView : Grid
         };
         if (has) forecast.Click += (_, _) => SelectForecastDay(day);
         menu.Items.Add(forecast);
-        menu.IsOpen = true;
     }
 
     public void BeginDrawLine(string symbol) => BeginDraw(symbol, false, null);
@@ -4886,7 +5346,7 @@ public sealed class ChartView : Grid
         DrawingLinesChanged?.Invoke(symbol, lines);
     }
 
-    private void ShowDrawingVertexMenu(string symbol, int line, int vertex)
+    private void ShowDrawingVertexMenu(string symbol, int line, int vertex, int cx, int cy)
     {
         SelectLine(symbol, line);
         var menu = new ContextMenu { PlacementTarget = this };
@@ -4899,17 +5359,29 @@ public sealed class ChartView : Grid
         var addRight = new MenuItem { Header = "Add point right" };
         addRight.Click += (_, _) => AddDrawingVertex(symbol, line, vertex, false);
         menu.Items.Add(addRight);
+        AddCloneMenuItem(menu, symbol, line);
         menu.Items.Add(new Separator());
         menu.Items.Add(FlattenMenuItem(symbol, line));
+        AddChartMenuItems(menu, cx, cy);
         menu.IsOpen = true;
     }
 
-    private void ShowDrawingLineMenu(string symbol, int line)
+    private void ShowDrawingLineMenu(string symbol, int line, int cx, int cy)
     {
         SelectLine(symbol, line);
         var menu = new ContextMenu { PlacementTarget = this };
+        AddCloneMenuItem(menu, symbol, line);
         menu.Items.Add(FlattenMenuItem(symbol, line));
+        AddChartMenuItems(menu, cx, cy);
         menu.IsOpen = true;
+    }
+
+    private void AddCloneMenuItem(ContextMenu menu, string symbol, int line)
+    {
+        if (IsLevelLine(symbol, line)) return;
+        var clone = new MenuItem { Header = $"Clone {CloneOffsetPips} pips up" };
+        clone.Click += (_, _) => CloneDrawingLine(symbol, line);
+        menu.Items.Add(clone);
     }
 
     private MenuItem FlattenMenuItem(string symbol, int line)
@@ -4941,6 +5413,39 @@ public sealed class ChartView : Grid
         var lines = (PivotPoint[][])s.DrawingLines.Clone();
         lines[line] = np;
         DrawingLinesChanged?.Invoke(symbol, lines);
+    }
+
+    private const int CloneOffsetPips = 20;
+
+    private bool IsLevelLine(string symbol, int line)
+    {
+        var s = GetSeries(symbol);
+        if (s?.DrawingLines == null || line < 0 || line >= s.DrawingLines.Length) return false;
+        var poly = s.DrawingLines[line];
+        return poly.Length > 0 && poly[0].Level;
+    }
+
+    private void CloneDrawingLine(string symbol, int line)
+    {
+        var s = GetSeries(symbol);
+        if (s?.Transform == null || s.DrawingLines == null
+            || line < 0 || line >= s.DrawingLines.Length) return;
+        var poly = s.DrawingLines[line];
+        if (poly.Length == 0 || poly[0].Level) return;
+        int shift = CloneOffsetPips * PipPoints;
+        var copy = new PivotPoint[poly.Length];
+        for (int i = 0; i < poly.Length; i++)
+            copy[i] = poly[i] with
+            {
+                Value = s.Transform.ToRaw(s.Transform.ToDisplay(poly[i].Value) + shift),
+            };
+        var lines = new PivotPoint[s.DrawingLines.Length + 1][];
+        Array.Copy(s.DrawingLines, lines, s.DrawingLines.Length);
+        lines[^1] = copy;
+        DrawingLinesChanged?.Invoke(symbol, lines);
+        var after = GetSeries(symbol);
+        if (after?.DrawingLines != null && after.DrawingLines.Length == lines.Length)
+            SelectLine(symbol, lines.Length - 1);
     }
 
     private void AddDrawingVertex(string symbol, int line, int vertex, bool left)

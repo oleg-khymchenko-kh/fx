@@ -21,6 +21,7 @@ No new bytes: the record stays 16 bytes and the file format version stays
 | 2 | `FlagSpread` - the spread byte below is valid |
 | 3 | `FlagVolume` - see docs/volume.md |
 | 4 | `FlagProvisional` |
+| 5 | `FlagWideSpread` - see docs/wide-spread.md |
 | 8..15 | packed spread byte |
 | 16..31 | volume word - see docs/volume.md |
 
@@ -115,7 +116,7 @@ scaling and mirror do not touch them. `HasStorage` is false, so
 "Recompute indicators" skips it, the Edit dialog has no Refresh button,
 and delete removes nothing from disk.
 
-Panel: 41 px tall (40 px bars + 1 px gray baseline), stacked with the
+Panel: 41 px of reserved height (bars + 1 px gray baseline), stacked with the
 EntryPoints/PriceAge panels above the bottom margin, bars in the
 indicator color, 1 px per column. A column aggregates its minutes by
 taking the **maximum** spread; minutes without a spread are ignored, and
@@ -123,9 +124,17 @@ a column with no known spread draws no bar. The rollup levels
 (`AggBlock`) carry `SpreadMaxTenths` (-1 = none), so zoomed-out views
 fold blocks like the other panels instead of rescanning raw minutes.
 
-Bar height is linear: 1 pip = 1 px, rounded, minimum 1 px for a known
-spread (so a known 0.0 still shows a tick), capped at 40 px - everything
-at or above 40 pips is a full bar.
+Bar height follows the current price grid: a bar is as tall as the same
+number of pips on the price scale, so a 30 pip spread is exactly as tall
+as a 30 pip price move, and a 100 pip grid step is the ruler for it.
+The height is `tenths / pointsPerRow` (display points are always 10 per
+pip, so tenths of a pip and display points are the same unit), rounded,
+minimum 1 px for a known spread so a known 0.0 still shows a tick.
+
+Zooming the price scale therefore rescales the bars. When zoomed in far
+enough a bar can be taller than the 41 px panel band and draws over the
+chart; it is clipped at the top of the chart. The 41 px is only the space
+reserved for stacking the panel, not a cap on the bars.
 
 Cursor readout: the symbol bar row of a Spread indicator shows the
 hovered column's spread in pips ("GBP Spread: 3.2") instead of a price;

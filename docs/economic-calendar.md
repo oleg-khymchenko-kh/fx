@@ -185,12 +185,13 @@ lines at every zoom. Only the visible time window is scanned each render
 
 ## Right panel (stage 3)
 
-A `Calendar` row sits under the pairs in the symbol bar, above `+ Add`.
-Click toggles the lines like a pair. The row is dimmed when off and only
-shown when the store has events. The on/off flag is saved in
+A `Calendar` button is the first icon in the toolbar above the symbol bar
+(docs/symbol-bar.md). Click toggles the lines like a pair. The button is
+dark when on, light when off, and pale (dead) while the store has no
+events. The on/off flag is saved in
 `ChartViewState.CalendarVisible`, so it is per tab.
 
-Right-click on the row opens its own menu with `Settings...` and
+Right-click on the button opens its own menu with `Settings...` and
 `Find...`. The bar marks right-click handled on the rows it owns,
 otherwise the click reaches the tab item behind the chart and its
 Rename / Duplicate / Delete menu opens instead.

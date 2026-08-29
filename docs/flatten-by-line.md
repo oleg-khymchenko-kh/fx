@@ -71,8 +71,8 @@ active one. Only one line at a time flattens the chart; picking another
 line replaces the previous one.
 
 While the chart is flattened, one common `Unflatten` row appears in the
-symbol bar under `No weekends` (and disappears again when it is clicked),
-so the chart can always be put back without finding the line first.
+symbol bar under the tilted-grid rows (and disappears again when it is
+clicked), so the chart can always be put back without finding the line first.
 
 The choice is kept in the chart state (`FlattenSymbol`, `FlattenLine` in
 the app config), so it survives a restart. It is dropped when the line or

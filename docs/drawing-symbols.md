@@ -129,13 +129,16 @@ price range, so the view can scroll to lines drawn in the future.
 - Escape or a click away from the line deselects (the click falls
   through to normal panning).
 - Delete removes the selected line after a Yes/No confirmation dialog.
-- Right-click a line body opens a menu with `Flatten by line` /
-  `Unflatten`: the chart is bent vertically so that this line becomes
-  horizontal, see docs/flatten-by-line.md. The same item is at the bottom
-  of the per-point menu.
+- Right-click a line body opens a menu with `Clone 20 pips up` (see
+  below, not shown for levels) and `Flatten by line` / `Unflatten`: the
+  chart is bent vertically so that this line becomes horizontal, see
+  docs/flatten-by-line.md. Both items are also in the per-point menu.
+  Below them, after a separator, the menu repeats the common chart block
+  (`Measure distance`, `Draw line - <name>` / `Draw level - <name>`,
+  `Forecast YYYY-MM-DD`), so hitting a line never hides those.
 - Right-click a vertex opens a per-point context menu: `Delete point`,
-  `Add point left`, `Add point right` (the click selects the line first,
-  so the circles show which line is edited).
+  `Add point left`, `Add point right`, `Clone 20 pips up` (the click
+  selects the line first, so the circles show which line is edited).
   - `Delete point` removes just that vertex. If only one point would be
     left, the whole line is removed instead (a 2-point line disappears
     when either point is deleted).
@@ -143,6 +146,10 @@ price range, so the view can scroll to lines drawn in the future.
     clicked one in the polyline order. Between two existing points it is
     their midpoint; at an end point it extends the line by mirroring the
     end segment. Drag the new vertex afterwards to place it.
+  - `Clone 20 pips up` appends an exact copy of the whole line, moved
+    20 pips higher, and selects the copy so it can be dragged right
+    away. Levels have no clone item - the line body carries the price,
+    so a copy of a level is just another level to draw.
   - Edits go through the same drawing.json save + re-render path as a
     vertex drag, and are refused while a DB op / download / load runs.
 - Selection circles re-project on zoom/pan/offset changes. Wheel zoom

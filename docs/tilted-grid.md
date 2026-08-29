@@ -9,8 +9,8 @@ horizontal/vertical grid. The rising lines and the falling lines are two
 independent families: each is switched on and off on its own, and each
 has its own slope, its own anchor and its own lock.
 
-The right bar carries two rows of seven small buttons right after
-"No weekends":
+The right bar carries two rows of seven small buttons right under the
+symbol rows:
 
     [1][2][3][4][5][6][7]   rising lines
     [1][2][3][4][5][6][7]   falling lines
@@ -239,9 +239,9 @@ so they disappear from the config on the first save.
 
 ## Right bar rows
 
-`SymbolBarView` gained two rows right after "No weekends"
-(`TiltedUpRowIndex = WeekendsRowIndex + 1`, `TiltedDownRowIndex` right
-below, "Unflatten" and the Add button shift down accordingly):
+`SymbolBarView` gained two rows right under the symbol rows
+(`TiltedUpRowIndex = _visibleRows.Count`, `TiltedDownRowIndex` right
+below, "Unflatten" shifts down accordingly):
 
 - Instead of a text label each row holds seven small square buttons
   `1`..`7`. The selected one is filled dark, the rest are light; at most

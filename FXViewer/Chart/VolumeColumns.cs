@@ -88,27 +88,24 @@ public static class VolumeColumns
             long tb = bi < blocks.Length ? blocks[bi].StartUnixSeconds : long.MaxValue;
             long tm = mi < minutes.Length ? minutes[mi].MinuteUnixSeconds : long.MaxValue;
             long tl = li < live.Length ? live[li].MinuteUnixSeconds : long.MaxValue;
-            long t;
+            long t = Math.Min(tb, Math.Min(tm, tl));
+            if (t >= toExcl) break;
             long v;
-            if (tb <= tm && tb <= tl)
+            if (t == tb)
             {
-                t = tb;
                 v = blocks[bi].VolumeSum;
                 bi++;
             }
-            else if (tm <= tl)
+            else if (t == tm)
             {
-                t = tm;
                 v = minutes[mi].HasVolume ? minutes[mi].Volume : -1;
                 mi++;
             }
             else
             {
-                t = tl;
                 v = live[li].HasVolume ? live[li].Volume : -1;
                 li++;
             }
-            if (t >= toExcl) break;
             long start = t - t % groupSec;
             if (start != groupStart)
             {

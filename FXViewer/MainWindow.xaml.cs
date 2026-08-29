@@ -66,6 +66,7 @@ public partial class MainWindow : Window, INotesHost
         public bool AverageVolumeWeighted { get; init; }
         public string? ShiftReadSymbol { get; init; }
         public int PriceDiv { get; init; } = 1;
+        public bool IsBasePair { get; init; }
     }
 
     private sealed record SeriesSlot(
@@ -132,14 +133,19 @@ public partial class MainWindow : Window, INotesHost
         return null;
     }
 
-    private static IEnumerable<DisplayConfig> DisplayConfigs(IReadOnlyList<IndicatorSymbol> indicators)
+    private int PairColorOf(string symbol, int defaultColor) =>
+        _config.PairColors.TryGetValue(symbol, out var color) ? color : defaultColor;
+
+    private IEnumerable<DisplayConfig> DisplayConfigs(IReadOnlyList<IndicatorSymbol> indicators)
     {
         var emitted = new HashSet<string>();
         foreach (var c in SymbolConfigs)
         {
-            yield return new DisplayConfig(c.Symbol, c.ColorArgb, c.Mirror, c.PipPoints, false, null, false)
+            yield return new DisplayConfig(c.Symbol, PairColorOf(c.Symbol, c.ColorArgb), c.Mirror,
+                c.PipPoints, false, null, false)
             {
                 PriceDiv = c.PriceDiv,
+                IsBasePair = true,
             };
             foreach (var ind in indicators)
             {
@@ -242,6 +248,7 @@ public partial class MainWindow : Window, INotesHost
     private CalendarFindWindow? _calendarFindWindow;
     private bool _dbBusy;
     private readonly DispatcherTimer _stateSaveTimer;
+    private readonly DispatcherTimer _perfTimer;
     private ChartViewState? _pendingChartState;
     private (string Symbol, long MirrorBase, int PipPoints)[] _seriesTransforms =
         Array.Empty<(string, long, int)>();
@@ -466,6 +473,7 @@ public partial class MainWindow : Window, INotesHost
     public MainWindow()
     {
         InitializeComponent();
+        WideSpreadRule.Hide = _config.HideWideSpread;
         CrashLog.Reported += line => Dispatcher.BeginInvoke(() => AppendLog(line));
         ClientIdBox.Text = _config.ClientId;
         ClientSecretBox.Text = _config.ClientSecret;
@@ -477,11 +485,15 @@ public partial class MainWindow : Window, INotesHost
         Chart.Info += AppendLog;
         Chart.ViewChanged += (k, startBucket, widthPx, map) =>
         {
-            TimeAxis.Update(k, startBucket, widthPx, map);
+            using (Perf.Step("timeaxis.update")) TimeAxis.Update(k, startBucket, widthPx, map);
             OnViewRangeChanged(k, startBucket, widthPx, map);
         };
         Chart.CursorTimeChanged += (unix, xDip) => TimeAxis.SetCursor(unix, xDip);
-        Chart.CursorPricesChanged += (p, d) => SymbolBar.SetCursorPrices(ToTruePrices(p), d);
+        Chart.CursorPricesChanged += (p, d) =>
+        {
+            using var _ = Perf.Step("symbolbar.cursor");
+            SymbolBar.SetCursorPrices(ToTruePrices(p), d);
+        };
         Chart.DensitySelectedChanged += option =>
         {
             bool changed = false;
@@ -595,17 +607,19 @@ public partial class MainWindow : Window, INotesHost
             var ind = _config.Indicators.FirstOrDefault(x => SymbolNameEquals(x.Name, name));
             return ind != null && LoadFindResults(ind) != null;
         };
-        SymbolBar.CalendarClick += () =>
-            SymbolBar.SetCalendarRow(Chart.HasCalendar, Chart.ToggleCalendar());
-        SymbolBar.ForecastClick += () =>
-            SymbolBar.SetForecastRow(Chart.HasForecasts, Chart.ToggleForecasts());
-        SymbolBar.ForecastReloadRequested += ReloadForecasts;
+        ChartTools.AddClick += () => OpenSymbolEditor(null, null);
+        ChartTools.SettingsClick += OpenAppSettings;
+        ChartTools.CalendarClick += () =>
+            ChartTools.SetCalendarRow(Chart.HasCalendar, Chart.ToggleCalendar());
+        ChartTools.ForecastClick += () =>
+            ChartTools.SetForecastRow(Chart.HasForecasts, Chart.ToggleForecasts());
+        ChartTools.ForecastReloadRequested += ReloadForecasts;
         Chart.ForecastDaySelected += () =>
-            SymbolBar.SetForecastRow(Chart.HasForecasts, Chart.ForecastVisible);
-        SymbolBar.CalendarSettingsRequested += OpenCalendarSettings;
-        SymbolBar.CalendarFindRequested += () => _ = OpenCalendarFindAsync();
-        SymbolBar.WeekendsClick += () => SymbolBar.SetWeekendsRow(Chart.ToggleWeekends());
-        SymbolBar.SessionsClick += () => SymbolBar.SetSessionsRow(Chart.ToggleSessions());
+            ChartTools.SetForecastRow(Chart.HasForecasts, Chart.ForecastVisible);
+        ChartTools.CalendarSettingsRequested += OpenCalendarSettings;
+        ChartTools.CalendarFindRequested += () => _ = OpenCalendarFindAsync();
+        ChartTools.WeekendsClick += () => ChartTools.SetWeekendsRow(Chart.ToggleWeekends());
+        ChartTools.SessionsClick += () => ChartTools.SetSessionsRow(Chart.ToggleSessions());
         SymbolBar.UnflattenClick += () => Chart.SetFlattenLine(null, -1);
         SymbolBar.TiltedGridSelected += (up, slot) =>
         {
@@ -626,6 +640,12 @@ public partial class MainWindow : Window, INotesHost
         Chart.DrawingCommitted += OnDrawingCommitted;
         Chart.DrawingLinesChanged += OnDrawingLinesChanged;
         Chart.EditHitRadiusPx = Math.Max(1, _config.EditHitRadiusPx);
+        Chart.SetSeriesOrder(_config.SeriesOrder);
+        Chart.SeriesOrderChanged += () =>
+        {
+            _config.SeriesOrder = new List<string>(Chart.SeriesOrder);
+            _config.Save();
+        };
         Chart.PivotEditRequested += req => _ = ApplyPivotEditAsync(req);
         SeedIndicators();
         _stateSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -641,6 +661,15 @@ public partial class MainWindow : Window, INotesHost
             _stateSaveTimer.Stop();
             _stateSaveTimer.Start();
         };
+        Perf.Line += AppendLog;
+        _perfTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+        _perfTimer.Tick += (_, _) =>
+        {
+            FlushRepeatedLog();
+            var summary = Perf.Flush();
+            if (summary != null) AppendLog(summary);
+        };
+        _perfTimer.Start();
         _liveFlushTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _liveFlushTimer.Tick += (_, _) => FlushLive();
         _liveRepairTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
@@ -802,6 +831,7 @@ public partial class MainWindow : Window, INotesHost
                                 null, entryPanel, null, agePanel)
                             {
                                 PriceMul = configs[i].PriceDiv,
+                                BasePair = configs[i].IsBasePair,
                                 TimeShift = isShift,
                                 AgeMirror = configs[i].AgeMirror,
                             },
@@ -855,6 +885,7 @@ public partial class MainWindow : Window, INotesHost
                             false, null, transform, source, null, entryPanel, null, agePanel)
                         {
                             PriceMul = configs[i].PriceDiv,
+                            BasePair = configs[i].IsBasePair,
                             TimeShift = isShift,
                             AgeMirror = configs[i].AgeMirror,
                         },
@@ -1169,10 +1200,10 @@ public partial class MainWindow : Window, INotesHost
             SymbolBar.SetCollapsedSources(Chart.CollapsedSources);
             foreach (var s in series)
                 SymbolBar.SetSymbolEnabled(s.Symbol, !Chart.HiddenSymbols.Contains(s.Symbol));
-            SymbolBar.SetCalendarRow(_calendarEntries.Length > 0, Chart.CalendarVisible);
-            SymbolBar.SetForecastRow(Chart.HasForecasts, Chart.ForecastVisible);
-            SymbolBar.SetWeekendsRow(Chart.WeekendsHidden);
-            SymbolBar.SetSessionsRow(Chart.SessionsVisible);
+            ChartTools.SetCalendarRow(_calendarEntries.Length > 0, Chart.CalendarVisible);
+            ChartTools.SetForecastRow(Chart.HasForecasts, Chart.ForecastVisible);
+            ChartTools.SetWeekendsRow(Chart.WeekendsHidden);
+            ChartTools.SetSessionsRow(Chart.SessionsVisible);
             SymbolBar.SetTiltedGridRow(Chart.TiltedUpGridIndex, Chart.TiltedDownGridIndex);
             _baseInfo = baseInfo;
             ReconcileLive();
@@ -1337,12 +1368,13 @@ public partial class MainWindow : Window, INotesHost
     {
         var last = db.LastFilledMinuteUtc(symbol);
         if (last == null) return null;
-        var candles = db.ReadRange(symbol, last.Value, last.Value);
-        return candles.Count > 0 ? candles[0] : null;
+        var candles = db.ReadRange(symbol, last.Value.AddDays(-1), last.Value);
+        return candles.Count > 0 ? candles[^1] : null;
     }
 
     private void OnViewRangeChanged(long columnSeconds, long startBucket, int widthPx, WeekendCompressor? map)
     {
+        using var _ = Perf.Step("view.loader");
         long bucketSec = columnSeconds;
         long lo = (startBucket - widthPx) * bucketSec;
         long hi = (startBucket + 2L * widthPx) * bucketSec;
@@ -2040,6 +2072,52 @@ public partial class MainWindow : Window, INotesHost
         if (wrote) await LoadChartAsync();
     }
 
+    private async void BackfillWideSpreadBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_dbBusy)
+        {
+            AppendLog("DB operation already running");
+            return;
+        }
+        _dbBusy = true;
+        SetStatus("Flagging wide spread minutes...");
+        var db = GetDb();
+        try
+        {
+            var total = await Task.Run(() =>
+            {
+                var sum = default(WideSpreadStats);
+                foreach (var (symbol, _, _, _, _) in SymbolConfigs)
+                {
+                    var years = db.ExistingYears(symbol);
+                    if (years.Count == 0) continue;
+                    var perSymbol = default(WideSpreadStats);
+                    foreach (var y in years)
+                        perSymbol = perSymbol.Add(db.RecomputeWideSpread(symbol, y));
+                    db.FlushSymbol(symbol);
+                    sum = sum.Add(perSymbol);
+                    Dispatcher.BeginInvoke(() => AppendLog(
+                        $"{symbol} wide spread: {perSymbol.Wide:N0} of {perSymbol.Scanned:N0} minutes, " +
+                        $"{perSymbol.Changed:N0} flags changed"));
+                }
+                return sum;
+            });
+            AppendLog($"Wide spread backfill done: {total.Wide:N0} of {total.Scanned:N0} minutes flagged, " +
+                $"{total.Changed:N0} changed");
+            SetStatus("Wide spread backfill done");
+            if (total.Changed > 0 && WideSpreadRule.Hide) await LoadChartAsync();
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Wide spread backfill failed: " + ex.Message);
+            SetStatus("Backfill failed");
+        }
+        finally
+        {
+            _dbBusy = false;
+        }
+    }
+
     private async void ExportDealsBtn_Click(object sender, RoutedEventArgs e)
     {
         var client = _client;
@@ -2414,20 +2492,21 @@ public partial class MainWindow : Window, INotesHost
     private void PushLiveTail(string symbol, LiveState s)
     {
         bool hasCurrent = s.MinuteUnix != long.MinValue;
-        var tail = new Candle[s.Closed.Count + (hasCurrent ? 1 : 0)];
-        for (int i = 0; i < s.Closed.Count; i++)
+        var tail = new List<Candle>(s.Closed.Count + 1);
+        foreach (var c in s.Closed)
         {
-            var c = s.Closed[i];
-            tail[i] = MakeLiveCandle(s, c.MinuteUnixSeconds, c.Min, c.Max, c.Avg,
-                c.HasSpread, c.SpreadCode);
+            if (WideSpreadRule.Hidden(c.MinuteUnixSeconds, c.HasSpread, c.SpreadCode)) continue;
+            tail.Add(MakeLiveCandle(s, c.MinuteUnixSeconds, c.Min, c.Max, c.Avg,
+                c.HasSpread, c.SpreadCode));
         }
         if (hasCurrent)
         {
             bool hasSpread = s.MaxSpreadTenths >= 0;
-            tail[^1] = MakeLiveCandle(s, s.MinuteUnix, s.Low, s.High, s.Close,
-                hasSpread, hasSpread ? SpreadCodes.FromTenths(s.MaxSpreadTenths) : 0);
+            int code = hasSpread ? SpreadCodes.FromTenths(s.MaxSpreadTenths) : 0;
+            if (!WideSpreadRule.Hidden(s.MinuteUnix, hasSpread, code))
+                tail.Add(MakeLiveCandle(s, s.MinuteUnix, s.Low, s.High, s.Close, hasSpread, code));
         }
-        Chart.SetLiveTail(symbol, tail);
+        Chart.SetLiveTail(symbol, tail.ToArray());
         PushShiftLiveTails(symbol, s);
     }
 
@@ -2694,10 +2773,10 @@ public partial class MainWindow : Window, INotesHost
         SymbolBar.SetCollapsedSources(Chart.CollapsedSources);
         foreach (var (symbol, _, _) in _seriesTransforms)
             SymbolBar.SetSymbolEnabled(symbol, !Chart.HiddenSymbols.Contains(symbol));
-        SymbolBar.SetCalendarRow(_calendarEntries.Length > 0, Chart.CalendarVisible);
-            SymbolBar.SetForecastRow(Chart.HasForecasts, Chart.ForecastVisible);
-        SymbolBar.SetWeekendsRow(Chart.WeekendsHidden);
-        SymbolBar.SetSessionsRow(Chart.SessionsVisible);
+        ChartTools.SetCalendarRow(_calendarEntries.Length > 0, Chart.CalendarVisible);
+            ChartTools.SetForecastRow(Chart.HasForecasts, Chart.ForecastVisible);
+        ChartTools.SetWeekendsRow(Chart.WeekendsHidden);
+        ChartTools.SetSessionsRow(Chart.SessionsVisible);
         SymbolBar.SetTiltedGridRow(Chart.TiltedUpGridIndex, Chart.TiltedDownGridIndex);
     }
 
@@ -2964,15 +3043,51 @@ public partial class MainWindow : Window, INotesHost
             ConnState.Downloading => (unchecked((int)0xFFFF8C00), "Downloading"),
             _ => (unchecked((int)0xFFB22222), "Offline"),
         };
-        SymbolBar.SetConnStatus(text, color);
+        ChartTools.SetConnStatus(text, color);
     }
+
+    private const int LogBoxMaxLines = 2000;
+    private const int LogBoxTrimLines = 500;
+
+    private string _lastLogMessage = "";
+    private int _repeatedLogCount;
 
     private void AppendLog(string message)
     {
+        using var _ = Perf.Step(Perf.LogName);
+        if (message == _lastLogMessage)
+        {
+            _repeatedLogCount++;
+            return;
+        }
+        FlushRepeatedLog();
+        _lastLogMessage = message;
+        WriteLog(message);
+    }
+
+    private void FlushRepeatedLog()
+    {
+        if (_repeatedLogCount == 0) return;
+        int repeats = _repeatedLogCount;
+        _repeatedLogCount = 0;
+        WriteLog($"... previous line repeated {repeats} more time(s)");
+    }
+
+    private void WriteLog(string message)
+    {
         LogBox.AppendText(DateTime.Now.ToString("HH:mm:ss") + "  " + message + Environment.NewLine);
+        TrimLogBox();
         LogBox.ScrollToEnd();
         try { File.AppendAllText(LogFile, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + message + Environment.NewLine); }
         catch { }
+    }
+
+    private void TrimLogBox()
+    {
+        int lines = LogBox.LineCount;
+        if (lines < 0 || lines <= LogBoxMaxLines) return;
+        int cut = LogBox.GetCharacterIndexFromLineIndex(lines - LogBoxMaxLines + LogBoxTrimLines);
+        if (cut > 0 && cut < LogBox.Text.Length) LogBox.Text = LogBox.Text[cut..];
     }
 
     private async void ImportDbBtn_Click(object sender, RoutedEventArgs e)
@@ -3028,7 +3143,7 @@ public partial class MainWindow : Window, INotesHost
     {
         var marks = LoadForecastMarks();
         Chart.SetForecasts(marks);
-        SymbolBar.SetForecastRow(Chart.HasForecasts, Chart.ForecastVisible);
+        ChartTools.SetForecastRow(Chart.HasForecasts, Chart.ForecastVisible);
         AppendLog(marks.Length == 0
             ? $"Forecasts: nothing to show from {ForecastFolder}"
             : $"Forecasts: {marks.Length} level(s) from {ForecastFolder}, showing day {Chart.ForecastDay}");
@@ -3047,8 +3162,8 @@ public partial class MainWindow : Window, INotesHost
                 return store.Load();
             });
             Chart.SetCalendar(_calendarEntries);
-            SymbolBar.SetCalendarRow(_calendarEntries.Length > 0, Chart.CalendarVisible);
-            SymbolBar.SetForecastRow(Chart.HasForecasts, Chart.ForecastVisible);
+            ChartTools.SetCalendarRow(_calendarEntries.Length > 0, Chart.CalendarVisible);
+            ChartTools.SetForecastRow(Chart.HasForecasts, Chart.ForecastVisible);
             AppendLog($"Calendar: {_calendarEntries.Length:N0} tracked events loaded");
         }
         catch (Exception ex)
@@ -3171,6 +3286,39 @@ public partial class MainWindow : Window, INotesHost
             Chart.SetCalendarSettings(_config.Calendar);
         };
         dlg.ShowDialog();
+    }
+
+    private async void OpenAppSettings()
+    {
+        var pairs = SymbolConfigs
+            .Select(c => (c.Symbol, c.ColorArgb, PairColorOf(c.Symbol, c.ColorArgb)))
+            .ToArray();
+        var dlg = new AppSettingsWindow(pairs, _config.HideWideSpread) { Owner = this };
+        if (dlg.ShowDialog() != true) return;
+        bool changed = false;
+        foreach (var (symbol, defaultColor, currentColor) in pairs)
+        {
+            int picked = dlg.ColorOf(symbol);
+            if (picked == currentColor) continue;
+            changed = true;
+            if (picked == defaultColor) _config.PairColors.Remove(symbol);
+            else _config.PairColors[symbol] = picked;
+            Chart.SetSeriesColor(symbol, picked);
+            SymbolBar.SetSymbolColor(symbol, picked);
+        }
+        bool hideChanged = dlg.HideWideSpread != _config.HideWideSpread;
+        if (hideChanged)
+        {
+            _config.HideWideSpread = dlg.HideWideSpread;
+            WideSpreadRule.Hide = _config.HideWideSpread;
+            changed = true;
+        }
+        if (changed) _config.Save();
+        if (!hideChanged) return;
+        AppendLog(_config.HideWideSpread
+            ? "Wide spread minutes are hidden, reloading chart"
+            : "Wide spread minutes are shown again, reloading chart");
+        await LoadChartAsync();
     }
 
     private async Task OpenCalendarFindAsync()
@@ -4549,6 +4697,10 @@ public partial class MainWindow : Window, INotesHost
                         res.Add($"{symbol} spread: {spread.WithSpread:N0} of {spread.Filled:N0} minutes " +
                             $"({100.0 * spread.WithSpread / Math.Max(1, spread.Filled):F1}%), " +
                             $"avg {spread.AvgPips:F1}, max {spread.MaxPips:F1} pips");
+                    if (spread.Wide > 0)
+                        res.Add($"{symbol} wide spread: {spread.Wide:N0} of {spread.Filled:N0} minutes " +
+                            $"({100.0 * spread.Wide / Math.Max(1, spread.Filled):F2}%)" +
+                            (WideSpreadRule.Hide ? ", hidden" : ""));
                     if (spread.WithVolume > 0)
                         res.Add($"{symbol} volume: {spread.WithVolume:N0} of {spread.Filled:N0} minutes " +
                             $"({100.0 * spread.WithVolume / Math.Max(1, spread.Filled):F1}%), " +

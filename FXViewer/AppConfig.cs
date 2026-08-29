@@ -18,10 +18,13 @@ public sealed class AppConfig
     public List<ChartTab> Tabs { get; set; } = new();
     public int ActiveTab { get; set; }
     public List<IndicatorSymbol> Indicators { get; set; } = new();
+    public List<string> SeriesOrder { get; set; } = new();
     public bool IndicatorsInitialized { get; set; }
     public int EditHitRadiusPx { get; set; } = 3;
     public CalendarSettings Calendar { get; set; } = new();
+    public Dictionary<string, int> PairColors { get; set; } = new();
     public Dictionary<string, long>? MirrorBases { get; set; }
+    public bool HideWideSpread { get; set; }
     public string SierraDataFolder { get; set; } = "";
 
     public static string Dir => AppContext.BaseDirectory;
@@ -152,6 +155,7 @@ public sealed class AppConfig
 
     public void Save()
     {
+        using var _ = Perf.Step("config.save");
         Directory.CreateDirectory(Dir);
         BackupDaily();
         var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });

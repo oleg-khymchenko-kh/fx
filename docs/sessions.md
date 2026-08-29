@@ -4,7 +4,7 @@ Status: implemented, v1.
 
 ## Goal
 
-A switch in the right bar ("Sessions") that paints the chart background
+A switch in the right toolbar (the "Sessions" icon) that paints the chart background
 in four colours, so it is clear which part of the day a move belongs
 to:
 
@@ -81,5 +81,5 @@ The colours live in `ChartPalette` (`SessionEurope`, `SessionOverlap`,
 
 `ChartViewState.SessionsVisible` is saved with the rest of the chart
 state, so the switch is **per tab** (docs/tabs.md) and survives a
-restart. The right bar row is grey when off and dark when on, exactly
+restart. The toolbar button is light when off and dark when on, exactly
 like "No weekends".

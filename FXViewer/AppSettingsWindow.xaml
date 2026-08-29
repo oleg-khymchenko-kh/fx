@@ -1,0 +1,53 @@
+<Window x:Class="FXViewer.AppSettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Settings" SizeToContent="WidthAndHeight" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" MaxWidth="480" HorizontalAlignment="Left" TextWrapping="Wrap"
+                   Foreground="Gray" Margin="0,0,0,12"
+                   Text="Pair colors are global: a change applies to every tab. Pick a pair, then pick a color. Custom takes RRGGBB hex." />
+
+        <Grid Grid.Row="1" Margin="0,0,0,14">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel x:Name="PairsPanel" Grid.Column="0" Margin="0,0,16,0" VerticalAlignment="Top" />
+            <StackPanel Grid.Column="1">
+                <UniformGrid x:Name="PalettePanel" Columns="8" HorizontalAlignment="Left" />
+                <StackPanel x:Name="CustomPanel" Orientation="Horizontal" Margin="2,10,0,0">
+                    <TextBlock Text="Custom" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <TextBox x:Name="CustomBox" Width="90" Height="26" VerticalContentAlignment="Center"
+                             KeyDown="CustomBox_KeyDown" />
+                    <Button x:Name="ApplyCustomBtn" Content="Apply" Width="64" Height="26"
+                            Margin="8,0,0,0" Click="ApplyCustomBtn_Click" />
+                    <Button x:Name="DefaultBtn" Content="Default" Width="64" Height="26"
+                            Margin="8,0,0,0" Click="DefaultBtn_Click" />
+                </StackPanel>
+            </StackPanel>
+        </Grid>
+
+        <StackPanel Grid.Row="2" Margin="0,0,0,14">
+            <CheckBox x:Name="HideWideSpreadCheck" Content="Hide wide spread minutes" />
+            <TextBlock MaxWidth="480" HorizontalAlignment="Left" TextWrapping="Wrap"
+                       Foreground="Gray" Margin="20,4,0,0"
+                       Text="A minute is wide spread when its spread is over 3 pips and it falls between the American close and the Asian open (21:00-00:00 UTC in summer, 22:00-00:00 in winter). Hidden minutes count as missing everywhere: charts, highs and lows, pip counts." />
+        </StackPanel>
+
+        <DockPanel Grid.Row="3" LastChildFill="False">
+            <Button x:Name="CancelBtn" DockPanel.Dock="Right" Content="Cancel" Width="90" Height="28"
+                    IsCancel="True" Click="CancelBtn_Click" />
+            <Button x:Name="OkBtn" DockPanel.Dock="Right" Content="OK" Width="90" Height="28"
+                    Margin="0,0,8,0" IsDefault="True" Click="OkBtn_Click" />
+        </DockPanel>
+    </Grid>
+</Window>

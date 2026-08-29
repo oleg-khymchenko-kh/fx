@@ -108,12 +108,39 @@ Selection rules, in order:
    both extremes are new records): show the side with the larger deviation
    from the previous candle. `upDev = cur.max - prev.max`,
    `downDev = prev.min - cur.min`. If `upDev >= downDev` show `max`, else
-   show `min`. Only one extremum is shown; the other side is lost, this is
-   an accepted trade-off of the 1-pixel constraint.
+   show `min`. The chosen value carries only one extremum, but the other
+   side is not lost: such a candle is marked full-range (see below) and
+   the renderer draws its whole min..max range.
 
 Rule 1 has a known accepted limitation: if the covering candle is far away,
 the current candle dominates everything between them in both directions,
 but we still show `avg`.
+
+## Full-range columns: both extremes stay visible
+
+One value per column hides one side of a column that sets two significant
+extremes at once. Real case, GBPUSD 28 Aug 2026 14:00 UTC: a news minute
+spiked to 1.35983 (a retest of the previous day high) and then the market
+fell to a multi-day low. Zoomed out, one column holds both the spike and
+the start of the fall: `dMin` is huge (fresh low), `dMax` is about one
+day back (the level was touched the day before), so rule 4 picks `min`
+and the retest high is never drawn. It survived on deep zoom only because
+the lookback there was shorter than the distance to the previous day
+high. Any retest of an old level loses this way: a retest has a finite
+`dMax` by definition, and the reversal from the level puts a fresh
+opposite extreme into the same column.
+
+So the decimator marks a column as full-range when both sides are
+significant: rules 1 and 2 did not fire, and both `dMax >= D` and
+`dMin >= D`. A not-found distance (infinity) counts as significant. The
+chosen value still follows rules 3-5 and stays the line's main value
+(connectors, hover readout). The renderer additionally draws the whole
+min..max range of a marked column as a vertical run, like a 1 px candle
+wick.
+
+Measured on GBPUSD August 2026 with `D = 4`: 1-3% of columns get marked
+depending on zoom, the median marked range is 3-17 pips, so the chart
+stays a thin line everywhere except real events.
 
 ## Rendering
 
@@ -156,6 +183,17 @@ renders as one tall column, its neighbors connect diagonally to the ends
 of that column, and a reversal shows the swing column plus a single
 pixel. A flat line still shares exactly one row between neighbors, which
 is what a 1 px horizontal line is.
+
+Full-range columns:
+
+For a column marked full-range the run is the union of the connector run
+and the column's own min..max range. The one-sided clip against
+`[prevLo, prevHi]` is skipped for it: cutting the run to one side of the
+previous column is exactly what would hide the weaker extreme again.
+Only the fully-inside rule stays: if the whole run lies inside
+`[prevLo, prevHi]`, a single pixel at the chosen value is drawn, the
+column adds nothing new. Two adjacent marked columns may overlap a few
+rows; that is accepted, the price really traded there in both columns.
 
 Thicker lines:
 

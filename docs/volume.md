@@ -215,9 +215,38 @@ The scale is `VolumeBarUnit`, the number of contracts that fills the
 40 px band at bar scale 1. It is empty in a new config: the first
 render that has volume fits the tallest visible bar into the band and
 saves that number, and from then on the value is pinned and only the
-wheel moves it. Changing the group multiplies it by the same factor
-(1m -> 15m multiplies it by 15), so a group change keeps the bars
-about the same size instead of blowing them off the screen.
+wheel moves it.
+
+Changing the group moves it too, but not one to one. A group that is
+twice as long trades about twice the volume, so keeping the unit
+proportional would leave the bars exactly as tall as before, and
+keeping the unit fixed would double them. The rule in between is
+**every doubling of the group makes a bar 1.5x taller**:
+
+```
+unit_new = unit_old * (group_new / group_old) ^ (1 - log2(1.5))
+```
+
+The exponent is 0.415, so the height follows `group ^ 0.585`. The
+power law also covers the steps that are not doublings (3, 5, 10, 15
+minutes ...), so every notch of the wheel changes the height by the
+same smooth amount:
+
+| Group | Height vs 1m |
+|---|---|
+| 1m | 1.00x |
+| 2m | 1.50x |
+| 3m | 1.90x |
+| 5m | 2.56x |
+| 10m | 3.85x |
+| 15m | 4.87x |
+| 30m | 7.31x |
+| 60m | 11.0x |
+| 240m | 24.7x |
+| 1440m | 70.4x |
+
+`IndicatorSymbol.ScaleVolumeBarUnit` is the one place that does it,
+used both by the `Alt` wheel and by the Add / Edit dialog.
 
 When one chart column covers several groups (zoomed out), the column
 draws the **tallest** of them, not their sum - the peak group of that
@@ -246,7 +275,7 @@ Both are set in the Add / Edit dialog.
 Over the indicator's row in the symbol bar (the same place the wheel
 moves a normal symbol vertically):
 
-- plain wheel - rescale the bottom bars, 1.25 per notch, 0.25x to 64x.
+- plain wheel - rescale the bottom bars, 1.25 per notch, 0.25x to 200x.
   Bars are not clipped to the band, so scaled-up bars grow over the
   chart above. The new value is saved to the config right away
   (`VolumeBarScale`, default 1), so a restart opens with the same bar
@@ -258,8 +287,8 @@ moves a normal symbol vertically):
   config right away. Nothing happens when the indicator is locked.
 
 The plain and the `Alt` wheel also work over the chart itself, in the
-bottom 10 px of the panel's own band - from the row the bars stand on
-up to 10 px above it. So the bars can be rescaled and the group
+bottom 25 px of the panel's own band - from the row the bars stand on
+up to 25 px above it. So the bars can be rescaled and the group
 stepped without moving the mouse to the symbol bar. That strip wins
 over the chart's own wheel meaning, including the `Alt` rotation of
 the tilted grid; `Ctrl` and `Shift` there keep their chart meaning.
@@ -298,10 +327,14 @@ following the data until the first `Ctrl` + wheel over the indicator's
 row in the symbol bar. From then on it is pinned: the same number of
 contracts is the same bar length whatever the window or the cursor
 does, and only the wheel moves it (1.25 per notch, no practical
-limit). The pinned value is printed in the profile label, e.g.
-`EUR-Volume 3: 5d | 2,400 per bar`, and is saved to the config
-(`DensityScalePerPixel`, the same field the Density indicator uses, see
-"Scale" in docs/price-density.md).
+limit). The pinned value is not printed on the chart; it is saved to
+the config (`DensityScalePerPixel`, the same field the Density
+indicator uses, see "Scale" in docs/price-density.md) and shown in the
+`Scale` box of the Add / Edit dialog.
+
+The profile label shows the window and the group instead, e.g.
+`EUR-Volume 3: 5d | 15m`, with a `*` after the group when it is
+locked - the same text the symbol bar row uses.
 Bars are not clipped to the 120 px band - they grow left across the
 chart, like the bottom bars grow up.
 

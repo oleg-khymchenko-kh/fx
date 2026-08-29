@@ -112,6 +112,20 @@ public static class ChartColumns
         return result;
     }
 
+    public static bool[] ExpandOnce(bool[] source, long sourceFirst, int run, long firstBucket, int count)
+    {
+        var result = new bool[count];
+        long prevMinute = long.MinValue;
+        for (int i = 0; i < count; i++)
+        {
+            long minute = MinuteBucket(firstBucket + i, run);
+            long index = minute - sourceFirst;
+            result[i] = minute != prevMinute && (ulong)index < (ulong)source.Length && source[(int)index];
+            prevMinute = minute;
+        }
+        return result;
+    }
+
     public static long[] ColumnEdges(WeekendCompressor? map, long columnSeconds, long firstBucket, int count)
     {
         var edges = new long[count + 1];
@@ -159,23 +173,25 @@ public static class ChartColumns
         return series;
     }
 
-    public static (ChartSeries View, int[] Chosen) BuildLine(CandleHistory history, long columnSeconds,
-        long firstBucket, int count, WeekendCompressor? map, int lookback, int noiseThreshold)
+    public static (ChartSeries View, int[] Chosen, bool[] FullRange) BuildLine(CandleHistory history,
+        long columnSeconds, long firstBucket, int count, WeekendCompressor? map, int lookback, int noiseThreshold)
     {
         int run = MinuteRun(columnSeconds);
         if (run == 1)
         {
             var view = BuildView(history, columnSeconds, firstBucket, count, map);
-            return (view, LineDecimator.ChooseValues(view.Columns, lookback, noiseThreshold));
+            var (values, fullRange) = LineDecimator.ChooseValues(view.Columns, lookback, noiseThreshold);
+            return (view, values, fullRange);
         }
         long minuteFirst = MinuteBucket(firstBucket, run);
         var minutes = BuildView(history, MinuteSeconds, minuteFirst, MinuteCount(count, run), map);
-        var minuteChosen = LineDecimator.ChooseValues(minutes.Columns, lookback, noiseThreshold);
+        var (minuteChosen, minuteFullRange) = LineDecimator.ChooseValues(minutes.Columns, lookback, noiseThreshold);
         return (
             new ChartSeries(
                 Expand(minutes.Columns, minuteFirst, run, firstBucket, count, default),
                 columnSeconds, firstBucket),
-            Expand(minuteChosen, minuteFirst, run, firstBucket, count, 0));
+            Expand(minuteChosen, minuteFirst, run, firstBucket, count, 0),
+            ExpandOnce(minuteFullRange, minuteFirst, run, firstBucket, count));
     }
 
     public static int LevelFor(long columnSeconds, WeekendCompressor? map)
@@ -412,28 +428,6 @@ public static class ChartColumns
         }
         if (n > 0) columns[col] = new ColumnAggregate(mn, mx, Rollup.RoundAvg(sum, n), true);
     }
-
-    public static ColumnAggregate NearestColumn(Candle[] minutes, long columnSeconds, long bucket,
-        WeekendCompressor? map)
-    {
-        if (minutes.Length == 0) return default;
-        long lo = map == null ? bucket * columnSeconds : map.ToReal(bucket * columnSeconds);
-        long hi = map == null ? lo + columnSeconds : map.ToReal((bucket + 1) * columnSeconds);
-        int idx = LowerBound(minutes, lo);
-        if (idx < minutes.Length && minutes[idx].MinuteUnixSeconds < hi)
-            return RecomputeColumn(minutes, Array.Empty<Candle>(), lo, hi);
-        long? left = idx > 0 ? BucketOf(minutes[idx - 1].MinuteUnixSeconds, columnSeconds, map) : null;
-        long? right = idx < minutes.Length ? BucketOf(minutes[idx].MinuteUnixSeconds, columnSeconds, map) : null;
-        long chosen = left == null ? right!.Value
-            : right == null ? left.Value
-            : bucket - left.Value <= right.Value - bucket ? left.Value : right.Value;
-        long clo = map == null ? chosen * columnSeconds : map.ToReal(chosen * columnSeconds);
-        long chi = map == null ? clo + columnSeconds : map.ToReal((chosen + 1) * columnSeconds);
-        return RecomputeColumn(minutes, Array.Empty<Candle>(), clo, chi);
-    }
-
-    private static long BucketOf(long unixSeconds, long columnSeconds, WeekendCompressor? map) =>
-        (map == null ? unixSeconds : map.ToVirtual(unixSeconds)) / columnSeconds;
 
     private static int LowerBound(Candle[] minutes, long unixSeconds)
     {

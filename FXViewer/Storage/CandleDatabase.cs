@@ -4,7 +4,8 @@ using System.IO;
 namespace FXViewer.Storage;
 
 public readonly record struct Candle(long MinuteUnixSeconds, int Min, int Max, int Avg, bool AvgApproximated,
-    bool HasSpread = false, int SpreadCode = 0, bool HasVolume = false, int Volume = 0)
+    bool HasSpread = false, int SpreadCode = 0, bool HasVolume = false, int Volume = 0,
+    bool WideSpread = false)
 {
     public DateTime TimeUtc => DateTimeOffset.FromUnixTimeSeconds(MinuteUnixSeconds).UtcDateTime;
 
@@ -116,6 +117,9 @@ public sealed class CandleDatabase : IDisposable
         }
     }
 
+    public WideSpreadStats RecomputeWideSpread(string symbol, int year) =>
+        FileExists(symbol, year) ? GetFile(symbol, year).RecomputeWideSpread() : default;
+
     public SpreadStats ReadSpreadStats(string symbol, int year) =>
         FileExists(symbol, year) ? GetFile(symbol, year).ReadSpreadStats() : default;
 
@@ -167,7 +171,7 @@ public sealed class CandleDatabase : IDisposable
             {
                 long minuteUnix = yearStart + (long)sc.MinuteOfYear * 60;
                 res.Add(new Candle(minuteUnix, sc.Min, sc.Max, sc.Avg, sc.AvgApproximated,
-                    sc.HasSpread, sc.SpreadCode, sc.HasVolume, sc.Volume));
+                    sc.HasSpread, sc.SpreadCode, sc.HasVolume, sc.Volume, sc.WideSpread));
             }
         }
         return res;

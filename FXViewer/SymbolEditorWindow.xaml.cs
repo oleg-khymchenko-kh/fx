@@ -659,7 +659,7 @@ public partial class SymbolEditorWindow : Window
             DensitySelected = _editing?.DensitySelected ?? 0,
             VolumeGroupMinutes = volumeGroup,
             VolumeBarScale = volumeBarScale,
-            VolumeBarUnit = volumeBarUnit * volumeGroup / volumeGroupWas,
+            VolumeBarUnit = IndicatorSymbol.ScaleVolumeBarUnit(volumeBarUnit, volumeGroupWas, volumeGroup),
             VolumeGroupLocked = volumeLocked,
             VolumeSplitSides = volumeSplit,
             ColorArgb = _selectedColor,

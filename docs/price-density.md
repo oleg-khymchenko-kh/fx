@@ -116,8 +116,8 @@ Leave the box empty and the scale is automatic again: the window
 maximum fills the band, which is what the profile always did. As soon
 as the wheel moves it or a number is typed, it is fixed - the same
 count is the same bar length whatever the window, the cursor or a
-background year load does. The current value is shown in the profile
-label as `| 80/px`.
+background year load does. The value is not printed on the chart - it
+lives in the `Scale` box of the Add / Edit dialog.
 
 Each key gets its own percent on top of that one scale, in the same
 dialog, `Key 1` through `Key 9` plus `Key 0` for the all-history
@@ -134,7 +134,9 @@ and the overlay canvas has hit testing off so it never eats mouse
 input.
 
 A label per visible Density indicator sits at the top right and shows
-the active option as `Name 3: 1d` in the indicator color.
+the active option as `Name 3: 1d` in the indicator color. A Volume
+indicator adds its group after a `|`, e.g. `Name 3: 1d | 15m`, with a
+`*` when the group is locked (see "Grouping" in docs/volume.md).
 
 The series itself is an empty `CandleHistory` with
 `SymbolSeries.DensityPanel = true`, which joins the shared
