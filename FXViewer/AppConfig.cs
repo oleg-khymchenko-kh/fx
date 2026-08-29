@@ -19,6 +19,7 @@ public sealed class AppConfig
     public int ActiveTab { get; set; }
     public List<IndicatorSymbol> Indicators { get; set; } = new();
     public List<string> SeriesOrder { get; set; } = new();
+    public List<ZoomLevel> ZoomLevels { get; set; } = new();
     public bool IndicatorsInitialized { get; set; }
     public int EditHitRadiusPx { get; set; } = 3;
     public CalendarSettings Calendar { get; set; } = new();
@@ -47,6 +48,7 @@ public sealed class AppConfig
             cfg.EnsureTabs();
             bool merged = cfg.MergeVolumeProfiles();
             if (cfg.RebaseShiftAnchors()) merged = true;
+            if (cfg.EnsureZoomLevels()) merged = true;
             BackupDaily();
             if (path != FilePath || merged) cfg.Save();
             return cfg;
@@ -61,7 +63,16 @@ public sealed class AppConfig
     {
         var cfg = new AppConfig();
         cfg.EnsureTabs();
+        cfg.EnsureZoomLevels();
         return cfg;
+    }
+
+    private bool EnsureZoomLevels()
+    {
+        int removed = ZoomLevels.RemoveAll(x => x is not { IsValid: true });
+        if (ZoomLevels.Count > 0) return removed > 0;
+        ZoomLevels = ZoomLevel.Defaults();
+        return true;
     }
 
     private bool MergeVolumeProfiles()

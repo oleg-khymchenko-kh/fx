@@ -368,9 +368,11 @@ public sealed class SeriesDataLoader : IDisposable
         {
             ct.ThrowIfCancellationRequested();
             SetProgress(job, y.ToString());
-            raw.AddRange(_db.ReadRange(st.ReadSymbol, YearStart(y), YearEnd(y)));
+            raw.AddRange(_db.ReadRange(st.ReadSymbol, YearStart(y), YearEnd(y), includeWide: true));
         }
         if (st.IsShift) raw = ShiftedSymbol.Shift(raw, st.ShiftDelta);
+        var (minutes, rawHidden) = SplitHidden(raw);
+        raw = minutes;
         SetProgress(job, "merge");
         for (int attempt = 0; attempt < 4; attempt++)
         {
@@ -382,19 +384,23 @@ public sealed class SeriesDataLoader : IDisposable
             });
             if (snap == null) return;
             List<Candle> chunk;
+            SpreadMark[] hiddenChunk;
             if (snap.History.Minutes.Length == 0)
             {
                 chunk = raw;
+                hiddenChunk = rawHidden;
             }
             else if (side == Side.Prepend || side == Side.Init)
             {
                 long first = snap.History.Minutes[0].MinuteUnixSeconds;
                 chunk = raw.Where(c => c.MinuteUnixSeconds < first).ToList();
+                hiddenChunk = rawHidden.Where(m => m.UnixSeconds < first).ToArray();
             }
             else
             {
                 long last = snap.History.Minutes[^1].MinuteUnixSeconds;
                 chunk = raw.Where(c => c.MinuteUnixSeconds > last).ToList();
+                hiddenChunk = rawHidden.Where(m => m.UnixSeconds > last).ToArray();
             }
             if (chunk.Count == 0)
             {
@@ -411,6 +417,9 @@ public sealed class SeriesDataLoader : IDisposable
             var newHistory = prepend
                 ? snap.History.WithReplacedRange(0, 0, transformed)
                 : snap.History.WithReplacedRange(snap.History.Minutes.Length, 0, transformed);
+            newHistory.SetHiddenSpreads(prepend
+                ? CandleHistory.MergeMarks(hiddenChunk, snap.History.HiddenSpreads)
+                : CandleHistory.MergeMarks(snap.History.HiddenSpreads, hiddenChunk));
             var newTransform = newBase ? new SeriesTransform(true, mb, st.PipPoints) : null;
             bool committed = await _dispatcher.InvokeAsync(() =>
             {
@@ -473,7 +482,20 @@ public sealed class SeriesDataLoader : IDisposable
     }
 
     internal static List<Candle> ReadYears(CandleDatabase db, string symbol, int yearLo, int yearHi) =>
-        db.ReadRange(symbol, YearStart(yearLo), YearEnd(yearHi));
+        db.ReadRange(symbol, YearStart(yearLo), YearEnd(yearHi), includeWide: true);
+
+    internal static (List<Candle> Minutes, SpreadMark[] Hidden) SplitHidden(List<Candle> candles)
+    {
+        if (!WideSpreadRule.Hide) return (candles, Array.Empty<SpreadMark>());
+        var minutes = new List<Candle>(candles.Count);
+        var hidden = new List<Candle>();
+        foreach (var c in candles)
+        {
+            if (c.WideSpread) hidden.Add(c);
+            else minutes.Add(c);
+        }
+        return (minutes, CandleHistory.MarksOf(hidden));
+    }
 
     internal static long ChartToSource(long chartUnix, long shiftDelta)
     {

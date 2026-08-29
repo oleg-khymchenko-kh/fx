@@ -235,7 +235,7 @@ public sealed class CandleYearFile : IDisposable
         return true;
     }
 
-    public List<StoredCandle> ReadRange(int fromMinute, int toMinute)
+    public List<StoredCandle> ReadRange(int fromMinute, int toMinute, bool includeWide = false)
     {
         var result = new List<StoredCandle>();
         fromMinute = Math.Max(0, fromMinute);
@@ -253,7 +253,7 @@ public sealed class CandleYearFile : IDisposable
             int off = i * RecordSize;
             var flags = BinaryPrimitives.ReadUInt32LittleEndian(buf.AsSpan(off + 12));
             if ((flags & FlagFilled) == 0) continue;
-            if (WideSpreadRule.Hide && (flags & FlagWideSpread) != 0) continue;
+            if (WideSpreadRule.Hide && !includeWide && (flags & FlagWideSpread) != 0) continue;
             result.Add(new StoredCandle(
                 fromMinute + i,
                 BinaryPrimitives.ReadInt32LittleEndian(buf.AsSpan(off + 0)),

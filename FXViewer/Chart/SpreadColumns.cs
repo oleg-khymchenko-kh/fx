@@ -23,7 +23,20 @@ public static class SpreadColumns
         if (level >= 0) Fill(history.Levels[level], edges, columns);
         else Fill(history.Minutes, edges, columns);
         Fill(history.Live, edges, columns);
+        Fill(history.HiddenSpreads, edges, columns);
+        Fill(history.LiveHiddenSpreads, edges, columns);
         return columns;
+    }
+
+    private static void Fill(SpreadMark[] marks, long[] edges, int[] columns)
+    {
+        int i = LowerBound(marks, edges[0]);
+        for (int col = 0; col < columns.Length && i < marks.Length; col++)
+        {
+            long hi = edges[col + 1];
+            for (; i < marks.Length && marks[i].UnixSeconds < hi; i++)
+                if (marks[i].Tenths > columns[col]) columns[col] = marks[i].Tenths;
+        }
     }
 
     private static void Fill(AggBlock[] blocks, long[] edges, int[] columns)
@@ -50,6 +63,19 @@ public static class SpreadColumns
                 if (tenths > columns[col]) columns[col] = tenths;
             }
         }
+    }
+
+    private static int LowerBound(SpreadMark[] marks, long unixSeconds)
+    {
+        int lo = 0;
+        int hi = marks.Length;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) >> 1;
+            if (marks[mid].UnixSeconds < unixSeconds) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
     }
 
     private static int LowerBound(Candle[] minutes, long unixSeconds)

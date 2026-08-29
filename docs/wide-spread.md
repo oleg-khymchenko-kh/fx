@@ -17,8 +17,8 @@ global setting decides whether such a minute is shown at all.
 
 A minute is wide spread when **both** are true:
 
-- its stored spread is over 3 pips (`WideSpreadRule.MinTenths` = 31
-  tenths, so 3.1 pips and up), and
+- its stored spread is over 4 pips (`WideSpreadRule.MinTenths` = 41
+  tenths, so 4.1 pips and up), and
 - it falls between the American close and the Asian open.
 
 A minute without a stored spread is never wide: the flag says "measured
@@ -103,6 +103,32 @@ minute that was never downloaded:
 - highs, lows, the price scale, the pips of a selection and everything
   else that reads the loaded series follow automatically, because the
   minute simply is not there.
+
+## The Spread panel is the exception
+
+Hiding the widest spreads from the Spread indicator would hide exactly
+what that panel exists for, so the spread of a hidden minute is kept and
+drawn (docs/spread.md).
+
+The price of such a minute is dropped as everywhere else - only the
+spread survives, as a `SpreadMark` (unix second + tenths of a pip):
+
+- the chart load paths read with `includeWide: true`
+  (`CandleDatabase.ReadRange`) and split the result in
+  `SeriesDataLoader.SplitHidden`: the visible minutes go into the series,
+  the hidden ones become marks in `CandleHistory.HiddenSpreads`;
+- the live tail does the same into `LiveHiddenSpreads`;
+- `SpreadColumns.Build` folds both arrays over the columns it already
+  built from the minutes or the rollup blocks, taking the maximum like
+  everywhere else. So a column that has nothing but hidden minutes still
+  draws its bar, and the cursor readout shows its value.
+
+The marks carry no prices, so they cannot leak into a high, a low or a
+mirror base by accident. `WithReplacedRange` carries them over, which is
+what keeps them alive through a volume patch or an average rebuild.
+
+When the setting is off nothing is split: the minutes stay in the series
+and the panel reads them the old way.
 
 Toggling the checkbox reloads the chart, so the change is visible at
 once.

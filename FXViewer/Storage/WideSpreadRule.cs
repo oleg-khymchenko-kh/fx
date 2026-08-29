@@ -4,7 +4,7 @@ namespace FXViewer.Storage;
 
 public static class WideSpreadRule
 {
-    public const int MinTenths = 31;
+    public const int MinTenths = 41;
 
     public static bool Hide;
 

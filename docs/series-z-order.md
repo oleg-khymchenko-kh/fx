@@ -32,9 +32,9 @@ Only when none of those is hit does the line search run. It does not
 swallow the click - the usual left-drag panning starts right after it, so
 grabbing the chart on a line still pans.
 
-Nothing happens when the click lands farther than 2 pixels from every
-line, and a double click keeps its old meaning (align the series to the
-grid); the first click of that double click already raised the line.
+Nothing happens on a single click that lands farther than 2 pixels from
+every line. A double click on that empty space clears the highlight (see
+below).
 
 ## The order
 
@@ -60,16 +60,63 @@ Bottom panels are not reordered: they are stacked by `panelBottom` in a
 separate loop that keeps the plain series order, so raising a line never
 moves a panel.
 
-## While the button is down
+## Highlight
 
-The pressed symbol is drawn 2 pixels wide instead of 1, the same width the
-`Shift` symbol uses when Alt makes it the drag target
-(`SeriesPressWidthPx` = `ShiftHotWidthPx` = 2). The extra pixel is added
-below the line, `DrawLine` and `DrawLastPrice` both honour `RenderLine.Width`.
+One symbol at a time can be highlighted. While a symbol is highlighted every other real pair and every `Shift`
+symbol (`BasePair` or `TimeShift`) is dimmed: its color is mixed with the
+chart background at `SeriesDimmedAlpha` = 0.35, so the line looks 35%
+opaque. The raster writes plain pixels with no alpha channel, so the
+"transparency" is that mix, done once per frame in `DimmedColor`. Every
+other indicator - Average, Drawing, ZigZag, index symbols, bottom panels,
+deal marks - keeps its normal color.
 
-The width lives only as long as the button: mouse up, or a lost mouse
-capture, drops `_pressSymbol` and redraws with the normal 1 pixel line.
-The z-order change is not undone - it was applied on button down and it
+Two things set the highlight:
+
+- `_pressSymbol` - the line under the button while it is held down.
+- `_latchSymbol` - the line of the last double click. It survives the
+  mouse up.
+
+The dimming follows `HighlightSymbol` = `_pressSymbol ?? _latchSymbol`, so
+a press temporarily overrides the latched symbol and the latched one comes
+back on release.
+
+The extra width is separate. Only the pressed line, and only while the
+left button is really down (`_pressHeld`), is drawn 2 pixels wide instead
+of 1 - the same width the `Shift` symbol uses when Alt makes it the drag
+target (`SeriesPressWidthPx` = `ShiftHotWidthPx` = 2). The extra pixel is
+added below the line, `DrawLine` and `DrawLastPrice` both honour
+`RenderLine.Width`. A latched line is 1 pixel wide like every other line -
+it is told apart by the dimmed lines around it.
+
+## Releasing and latching
+
+Mouse up (or a lost mouse capture) clears `_pressHeld` at once, so the
+line goes back to 1 pixel, but it does not drop `_pressSymbol`. It starts
+`_pressReleaseTimer`, and only its tick clears the press and undims the
+other lines. The interval is the Windows double click time
+(`GetDoubleClickTime`, clamped to 200-1000 ms) plus 60 ms, so the gap
+between the two clicks of a double click never flashes the undimmed state.
+A new button down inside that gap stops the timer, so the press simply
+continues.
+
+A double click (`ClickCount > 1` on button down):
+
+- on a line - that line becomes the latched symbol, so it stays thick and
+  everything else stays dimmed after the button is released. Double
+  clicking a dimmed pair moves the latch to it.
+- on empty space - `ClearSeriesHighlight` drops both the press and the
+  latch, and every line goes back to normal.
+
+Escape does the same as a double click on empty space. It sits at the end
+of the Escape chain, after measure, popups, draw mode, the selected line
+and the range, so it only fires when nothing else is open.
+
+The latch is also dropped when the symbol disappears or is hidden (checked
+at the start of every `Rebuild`), on a full series reload, and it follows a
+rename. It is not stored in the config or in `ChartViewState` - it lives
+only for the session.
+
+The z-order change is never undone - it was applied on button down and it
 stays.
 
 Because the raised line is also the last one drawn, the thick line is

@@ -95,6 +95,9 @@
                 <chart:LoadIndicatorView x:Name="LoadIndicator" Grid.Row="0" Grid.Column="0"
                                          HorizontalAlignment="Right" VerticalAlignment="Top"
                                          Margin="0,8,8,0" />
+                <chart:ZoomLevelView x:Name="ZoomLevels" Grid.Row="0" Grid.Column="0"
+                                     HorizontalAlignment="Left" VerticalAlignment="Top"
+                                     Margin="2,2,0,0" />
                 <Grid Grid.Row="0" Grid.Column="1" Background="White">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />

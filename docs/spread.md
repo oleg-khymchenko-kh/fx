@@ -144,6 +144,13 @@ The values come from the columns built at render time
 `CursorPricesChanged` array - `ToTruePrices` skips spread rows and
 `SymbolBarView` formats them as pips.
 
+Wide spread minutes: when "Hide wide spread minutes" is on those minutes
+are gone from the chart, but the panel still draws their spread - it
+would be pointless to hide the widest spreads from the spread panel. The
+values arrive as `CandleHistory.HiddenSpreads` / `LiveHiddenSpreads` and
+`SpreadColumns` folds them on top of the columns. See
+docs/wide-spread.md.
+
 Live: the live tail carries spread now - `MakeLiveCandle` passes
 `HasSpread`/`SpreadCode` through for closed live minutes and uses the
 running `MaxSpreadTenths` for the open minute, and `SpreadColumns` folds

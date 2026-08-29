@@ -153,7 +153,8 @@ public sealed class CandleDatabase : IDisposable
         return null;
     }
 
-    public List<Candle> ReadRange(string symbol, DateTime fromUtc, DateTime toUtc)
+    public List<Candle> ReadRange(string symbol, DateTime fromUtc, DateTime toUtc,
+        bool includeWide = false)
     {
         var res = new List<Candle>();
         var from = AsUtc(fromUtc);
@@ -167,7 +168,7 @@ public sealed class CandleDatabase : IDisposable
             long yearStart = YearStartUnix(year);
             int fromMoy = (int)Math.Max(0, (fromUnix - yearStart) / 60);
             int toMoy = (int)Math.Min(file.MinutesInYear - 1L, (toUnix - yearStart) / 60);
-            foreach (var sc in file.ReadRange(fromMoy, toMoy))
+            foreach (var sc in file.ReadRange(fromMoy, toMoy, includeWide))
             {
                 long minuteUnix = yearStart + (long)sc.MinuteOfYear * 60;
                 res.Add(new Candle(minuteUnix, sc.Min, sc.Max, sc.Avg, sc.AvgApproximated,

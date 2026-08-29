@@ -647,6 +647,18 @@ public partial class MainWindow : Window, INotesHost
             _config.Save();
         };
         Chart.PivotEditRequested += req => _ = ApplyPivotEditAsync(req);
+        Chart.SetZoomLevels(_config.ZoomLevels);
+        Chart.ZoomLevelChanged += RefreshZoomLevelState;
+        ZoomLevels.LevelSelected += Chart.SelectZoomLevel;
+        ZoomLevels.SaveRequested += () => CommitZoomLevels(Chart.SaveCurrentZoomToLevel());
+        ZoomLevels.RevertRequested += Chart.RevertToZoomLevel;
+        ZoomLevels.InsertRequested += index => CommitZoomLevels(Chart.InsertZoomLevel(index));
+        ZoomLevels.DeleteRequested += index => CommitZoomLevels(Chart.DeleteZoomLevel(index));
+        ZoomLevels.LevelEdited += (index, perDay, per100Pips) =>
+        {
+            if (Chart.SetZoomLevelValues(index, perDay, per100Pips)) _config.Save();
+        };
+        RefreshZoomLevels();
         SeedIndicators();
         _stateSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _stateSaveTimer.Tick += (_, _) =>
@@ -848,6 +860,7 @@ public partial class MainWindow : Window, INotesHost
                         hiddenSymbols.Contains(symbol) && !averageSourceNames.Contains(symbol),
                         viewRange, isShift, shiftDelta, minYear, maxYear);
                     var candles = new List<Candle>();
+                    var hiddenSpreads = Array.Empty<SpreadMark>();
                     if (loadYears is { } ly)
                     {
                         _startupJobs[symbol] =
@@ -855,6 +868,7 @@ public partial class MainWindow : Window, INotesHost
                         Dispatcher.BeginInvoke((Action)RefreshLoadIndicator);
                         candles = SeriesDataLoader.ReadYears(db, readSymbol, ly.Lo, ly.Hi);
                         if (isShift) candles = ShiftedSymbol.Shift(candles, shiftDelta);
+                        (candles, hiddenSpreads) = SeriesDataLoader.SplitHidden(candles);
                     }
                     long readMs = swSym.ElapsedMilliseconds;
                     long mirrorBase = persistedBase ?? 0;
@@ -880,8 +894,10 @@ public partial class MainWindow : Window, INotesHost
                         lastUnix = lastCandle?.MinuteUnixSeconds ?? 0;
                     }
                     bool isBase = SymbolConfigs.Any(c => c.Symbol == symbol);
+                    var history = CandleHistory.Build(transformed);
+                    history.SetHiddenSpreads(hiddenSpreads);
                     slots[i] = new SeriesSlot(
-                        new SymbolSeries(symbol, CandleHistory.Build(transformed), color, pipPoints,
+                        new SymbolSeries(symbol, history, color, pipPoints,
                             false, null, transform, source, null, entryPanel, null, agePanel)
                         {
                             PriceMul = configs[i].PriceDiv,
@@ -2493,9 +2509,14 @@ public partial class MainWindow : Window, INotesHost
     {
         bool hasCurrent = s.MinuteUnix != long.MinValue;
         var tail = new List<Candle>(s.Closed.Count + 1);
+        var hidden = new List<SpreadMark>();
         foreach (var c in s.Closed)
         {
-            if (WideSpreadRule.Hidden(c.MinuteUnixSeconds, c.HasSpread, c.SpreadCode)) continue;
+            if (WideSpreadRule.Hidden(c.MinuteUnixSeconds, c.HasSpread, c.SpreadCode))
+            {
+                hidden.Add(new SpreadMark(c.MinuteUnixSeconds, c.SpreadTenths));
+                continue;
+            }
             tail.Add(MakeLiveCandle(s, c.MinuteUnixSeconds, c.Min, c.Max, c.Avg,
                 c.HasSpread, c.SpreadCode));
         }
@@ -2503,10 +2524,12 @@ public partial class MainWindow : Window, INotesHost
         {
             bool hasSpread = s.MaxSpreadTenths >= 0;
             int code = hasSpread ? SpreadCodes.FromTenths(s.MaxSpreadTenths) : 0;
-            if (!WideSpreadRule.Hidden(s.MinuteUnix, hasSpread, code))
+            if (WideSpreadRule.Hidden(s.MinuteUnix, hasSpread, code))
+                hidden.Add(new SpreadMark(s.MinuteUnix, SpreadCodes.ToTenths(code)));
+            else
                 tail.Add(MakeLiveCandle(s, s.MinuteUnix, s.Low, s.High, s.Close, hasSpread, code));
         }
-        Chart.SetLiveTail(symbol, tail.ToArray());
+        Chart.SetLiveTail(symbol, tail.ToArray(), hidden.ToArray());
         PushShiftLiveTails(symbol, s);
     }
 
@@ -2682,6 +2705,20 @@ public partial class MainWindow : Window, INotesHost
         _pendingChartState = null;
         _activeTab.State = state;
         _config.Save();
+    }
+
+    private void RefreshZoomLevels() =>
+        ZoomLevels.SetLevels(_config.ZoomLevels, Chart.ZoomLevelIndex, Chart.ZoomLevelDirty,
+            Chart.CurrentZoom(), Chart.FitPixelsPerDay);
+
+    private void RefreshZoomLevelState() =>
+        ZoomLevels.SetCurrent(Chart.ZoomLevelIndex, Chart.ZoomLevelDirty, Chart.CurrentZoom(),
+            Chart.FitPixelsPerDay);
+
+    private void CommitZoomLevels(bool changed)
+    {
+        RefreshZoomLevels();
+        if (changed) _config.Save();
     }
 
     private ChartTab _activeTab = null!;

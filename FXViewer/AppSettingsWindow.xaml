@@ -40,7 +40,7 @@
             <CheckBox x:Name="HideWideSpreadCheck" Content="Hide wide spread minutes" />
             <TextBlock MaxWidth="480" HorizontalAlignment="Left" TextWrapping="Wrap"
                        Foreground="Gray" Margin="20,4,0,0"
-                       Text="A minute is wide spread when its spread is over 3 pips and it falls between the American close and the Asian open (21:00-00:00 UTC in summer, 22:00-00:00 in winter). Hidden minutes count as missing everywhere: charts, highs and lows, pip counts." />
+                       Text="A minute is wide spread when its spread is over 4 pips and it falls between the American close and the Asian open (21:00-00:00 UTC in summer, 22:00-00:00 in winter). Hidden minutes count as missing everywhere: charts, highs and lows, pip counts." />
         </StackPanel>
 
         <DockPanel Grid.Row="3" LastChildFill="False">

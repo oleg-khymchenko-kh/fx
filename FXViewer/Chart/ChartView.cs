@@ -108,7 +108,9 @@ public sealed class ChartView : Grid
     private const int CursorArmLength = 6;
     private const int NoiseThreshold = 4;
     private const double ZoomStep = 1.25;
-    private const double VerticalZoomShare = 1.0 / 1.75;
+    private const double ZoomLevelTolerance = 1e-6;
+    private const double ZoomLevelStepEpsilon = 1.001;
+    private const int MaxLevelGridLines = 512;
     private const int MinVisibleColumns = 10;
     private const long NavigateColumnSeconds = 300;
     private const int PipPoints = 10;
@@ -135,6 +137,7 @@ public sealed class ChartView : Grid
     private WriteableBitmap? _crosshairVBmp;
     private WriteableBitmap? _crosshairHBmp;
     private readonly DispatcherTimer _rebuildTimer;
+    private readonly DispatcherTimer _pressReleaseTimer;
     private WriteableBitmap? _bitmap;
     private IReadOnlyList<SymbolSeries>? _series;
     private long _firstUnix;
@@ -355,6 +358,7 @@ public sealed class ChartView : Grid
     private const int SeriesHitRadiusPx = 2;
     private const int ShiftHotWidthPx = 2;
     private const int SeriesPressWidthPx = 2;
+    private const double SeriesDimmedAlpha = 0.35;
     private readonly List<(string Symbol, RenderLine Line)> _shiftLines = new();
     private readonly List<(string Symbol, RenderLine Line)> _renderedLines = new();
     private readonly List<string> _seriesOrder = new();
@@ -375,6 +379,8 @@ public sealed class ChartView : Grid
     private const double DensityUnitMax = 1e9;
     private string? _shiftHotSymbol;
     private string? _pressSymbol;
+    private string? _latchSymbol;
+    private bool _pressHeld;
     private string? _shiftDragSymbol;
     private bool _shiftDragging;
     private int _shiftDragStartX;
@@ -401,6 +407,13 @@ public sealed class ChartView : Grid
     public event Action<string, double>? VolumeScaleChanged;
     public event Action<string, double>? VolumeUnitChanged;
     public event Action<string, double>? DensityScaleChanged;
+
+    public event Action? ZoomLevelChanged;
+
+    private List<ZoomLevel> _zoomLevels = new();
+    private int _zoomLevelIndex = -1;
+    private long _zoomAppliedColumnSeconds;
+    private double _zoomAppliedPointsPerRow;
 
     private long _renderedColumnSeconds;
     private long _renderedStartBucket;
@@ -513,6 +526,11 @@ public sealed class ChartView : Grid
                 ClearRange();
                 e.Handled = true;
             }
+            else if (e.Key == Key.Escape && HighlightSymbol != null)
+            {
+                ClearSeriesHighlight();
+                e.Handled = true;
+            }
             else if (e.Key is Key.Right or Key.Left
                 && (Keyboard.Modifiers & ModifierKeys.Shift) != 0
                 && (_cursorOnChart || _hasRange))
@@ -587,9 +605,15 @@ public sealed class ChartView : Grid
             _rebuildTimer.Stop();
             Rebuild();
         };
+        _pressReleaseTimer = new DispatcherTimer { Interval = SeriesPressReleaseDelay() };
+        _pressReleaseTimer.Tick += (_, _) => ReleaseSeriesPress();
         SizeChanged += (_, _) => RequestRebuild();
         Loaded += (_, _) => RequestRebuild();
-        Unloaded += (_, _) => _rebuildTimer.Stop();
+        Unloaded += (_, _) =>
+        {
+            _rebuildTimer.Stop();
+            _pressReleaseTimer.Stop();
+        };
     }
 
     private static Image CreateCrosshairImage()
@@ -639,6 +663,12 @@ public sealed class ChartView : Grid
 
     [DllImport("user32.dll")]
     private static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDoubleClickTime();
+
+    private static TimeSpan SeriesPressReleaseDelay() =>
+        TimeSpan.FromMilliseconds(Math.Clamp(GetDoubleClickTime(), 200, 1000) + 60);
 
     private static void MoveMouseColumns(int columns)
     {
@@ -744,6 +774,10 @@ public sealed class ChartView : Grid
     public void RestoreState(ChartViewState state)
     {
         ClearMeasure();
+        _zoomLevelIndex = state.ZoomLevelIndex >= 0 && state.ZoomLevelIndex < _zoomLevels.Count
+            ? state.ZoomLevelIndex
+            : -1;
+        ForgetAppliedZoom();
         _weekendsHidden = state.WeekendsHidden;
         _sessionsVisible = state.SessionsVisible;
         long saved = state.RestoredColumnSeconds();
@@ -798,6 +832,7 @@ public sealed class ChartView : Grid
         _tiltedDownIndex = state.TiltedDownGridIndex;
         _tiltedNearestUp = null;
         RebuildFlatten();
+        ZoomLevelChanged?.Invoke();
         RequestRebuild();
     }
 
@@ -1139,11 +1174,32 @@ public sealed class ChartView : Grid
         RequestRebuild();
     }
 
-    private void BeginSeriesPress(int cx, int cy)
+    private static int DimmedColor(int argb)
+    {
+        int bg = Palette.Background;
+        int r = Blend((argb >> 16) & 0xFF, (bg >> 16) & 0xFF);
+        int g = Blend((argb >> 8) & 0xFF, (bg >> 8) & 0xFF);
+        int b = Blend(argb & 0xFF, bg & 0xFF);
+        return unchecked((int)0xFF000000) | (r << 16) | (g << 8) | b;
+
+        static int Blend(int color, int back) =>
+            (int)Math.Round(color * SeriesDimmedAlpha + back * (1 - SeriesDimmedAlpha));
+    }
+
+    private string? HighlightSymbol => _pressSymbol ?? _latchSymbol;
+
+    private void BeginSeriesPress(int cx, int cy, int clickCount)
     {
         var symbol = FindSeriesLineAt(cx, cy);
-        if (symbol == null) return;
+        if (symbol == null)
+        {
+            if (clickCount > 1) ClearSeriesHighlight();
+            return;
+        }
+        _pressReleaseTimer.Stop();
         _pressSymbol = symbol;
+        _pressHeld = true;
+        if (clickCount > 1) _latchSymbol = symbol;
         bool onTop = _seriesOrder.Count > 0 && _seriesOrder[^1] == symbol;
         _seriesOrder.Remove(symbol);
         _seriesOrder.Add(symbol);
@@ -1155,7 +1211,30 @@ public sealed class ChartView : Grid
     private void EndSeriesPress()
     {
         if (_pressSymbol == null) return;
+        if (_pressHeld)
+        {
+            _pressHeld = false;
+            Rebuild();
+        }
+        if (!_pressReleaseTimer.IsEnabled) _pressReleaseTimer.Start();
+    }
+
+    private void ReleaseSeriesPress()
+    {
+        _pressReleaseTimer.Stop();
+        if (_pressSymbol == null) return;
         _pressSymbol = null;
+        _pressHeld = false;
+        Rebuild();
+    }
+
+    private void ClearSeriesHighlight()
+    {
+        _pressReleaseTimer.Stop();
+        if (_pressSymbol == null && _latchSymbol == null) return;
+        _pressSymbol = null;
+        _latchSymbol = null;
+        _pressHeld = false;
         Rebuild();
     }
 
@@ -1557,6 +1636,7 @@ public sealed class ChartView : Grid
         if (_flattenSymbol == oldName) _flattenSymbol = newName;
         if (_shiftHotSymbol == oldName) _shiftHotSymbol = newName;
         if (_pressSymbol == oldName) _pressSymbol = newName;
+        if (_latchSymbol == oldName) _latchSymbol = newName;
         if (_shiftDragSymbol == oldName) _shiftDragSymbol = newName;
         int orderIndex = _seriesOrder.IndexOf(oldName);
         if (orderIndex >= 0)
@@ -1676,6 +1756,9 @@ public sealed class ChartView : Grid
         _renderedLines.Clear();
         _shiftHotSymbol = null;
         _pressSymbol = null;
+        _latchSymbol = null;
+        _pressHeld = false;
+        _pressReleaseTimer.Stop();
         _shiftDragSymbol = null;
         _shiftDragging = false;
         _columnSeconds = 0;
@@ -2077,7 +2160,7 @@ public sealed class ChartView : Grid
             if (s.Symbol == symbol) { s.History.ClearLastTick(); return; }
     }
 
-    public void SetLiveTail(string symbol, Candle[] tail)
+    public void SetLiveTail(string symbol, Candle[] tail, SpreadMark[]? hiddenSpreads = null)
     {
         var series = _series;
         if (series == null) return;
@@ -2086,6 +2169,7 @@ public sealed class ChartView : Grid
             if (s.Symbol == symbol) { match = s; break; }
         if (match == null) return;
         match.History.SetLive(tail);
+        match.History.SetLiveHiddenSpreads(hiddenSpreads ?? Array.Empty<SpreadMark>());
         foreach (var s in series)
             if (s.AverageWindowBars > 0
                 && string.Equals(s.SourceSymbol, symbol, StringComparison.OrdinalIgnoreCase))
@@ -2104,9 +2188,6 @@ public sealed class ChartView : Grid
         }
         RequestRebuild();
     }
-
-    private static double PairedVerticalFactor(double horizontalFactor) =>
-        horizontalFactor <= 0 ? 1.0 : Math.Pow(horizontalFactor, VerticalZoomShare);
 
     private bool ApplyVerticalZoom(double factor, double posY)
     {
@@ -2238,7 +2319,7 @@ public sealed class ChartView : Grid
             return;
         }
         if (_selSymbol != null) DeselectLine();
-        BeginSeriesPress(cx, cy);
+        BeginSeriesPress(cx, cy, e.ClickCount);
         int pw = (int)Math.Round(ActualWidth * dpi.DpiScaleX);
         if (pw < 1) return;
         _dragStartX = cx;
@@ -2258,6 +2339,7 @@ public sealed class ChartView : Grid
     private void OnDragMove(object sender, MouseEventArgs e)
     {
         using var _ = Perf.FrameStep("input.drag");
+        if (e.LeftButton != MouseButtonState.Pressed) EndSeriesPress();
         if (_shiftDragging)
         {
             if (e.LeftButton != MouseButtonState.Pressed)
@@ -2451,7 +2533,8 @@ public sealed class ChartView : Grid
     }
 
     private sealed record RangeStats(string Symbol, int ColorArgb, int Digits,
-        double Min, double Max, double SizePips, double Avg, double In, double Out, int Count);
+        double Min, double Max, double SizePips,
+        double PullbackPips, double PullbackPercent, bool HasPullback, int Count);
 
     private static int LowerBound(Candle[] minutes, long unixSeconds)
     {
@@ -2488,41 +2571,69 @@ public sealed class ChartView : Grid
         foreach (var s in series)
         {
             if (IsHidden(s.Symbol) || s.BottomPanel) continue;
+            void Scan(long from, long to, Action<Candle> take)
+            {
+                var minutes = s.History.Minutes;
+                for (int i = LowerBound(minutes, from);
+                     i < minutes.Length && minutes[i].MinuteUnixSeconds <= to; i++)
+                    take(minutes[i]);
+                foreach (var c in s.History.Live)
+                    if (c.MinuteUnixSeconds >= from && c.MinuteUnixSeconds <= to)
+                        take(c);
+            }
             int mn = int.MaxValue;
             int mx = int.MinValue;
-            int first = 0;
-            int last = 0;
-            long sum = 0;
+            long mnUnix = 0;
+            long mxUnix = 0;
             int count = 0;
-            void Take(Candle c)
+            Scan(loUnix, hiUnix, c =>
             {
-                if (c.Min < mn) mn = c.Min;
-                if (c.Max > mx) mx = c.Max;
-                if (count == 0) first = c.Avg;
-                last = c.Avg;
-                sum += c.Avg;
+                if (c.Min < mn)
+                {
+                    mn = c.Min;
+                    mnUnix = c.MinuteUnixSeconds;
+                }
+                if (c.Max > mx)
+                {
+                    mx = c.Max;
+                    mxUnix = c.MinuteUnixSeconds;
+                }
                 count++;
-            }
-            var minutes = s.History.Minutes;
-            for (int i = LowerBound(minutes, loUnix);
-                 i < minutes.Length && minutes[i].MinuteUnixSeconds <= hiUnix; i++)
-                Take(minutes[i]);
-            foreach (var c in s.History.Live)
-                if (c.MinuteUnixSeconds >= loUnix && c.MinuteUnixSeconds <= hiUnix)
-                    Take(c);
+            });
             if (count == 0)
             {
                 result.Add(new RangeStats(s.Symbol, s.ColorArgb, PriceDigits(s.PipPoints * s.PriceMul),
-                    0, 0, 0, 0, 0, 0, 0));
+                    0, 0, 0, 0, 0, false, 0));
                 continue;
             }
             double a = ToTruePoints(s.Transform, mn);
             double b = ToTruePoints(s.Transform, mx);
             int mul = s.PriceMul;
+            double sizePips = Math.Abs(b - a) / s.PipPoints;
+            bool mirror = s.Transform?.Mirror == true;
+            long lowUnix = mirror ? mxUnix : mnUnix;
+            long highUnix = mirror ? mnUnix : mxUnix;
+            bool hasPullback = lowUnix != highUnix;
+            double pullbackPips = 0;
+            double pullbackPercent = 0;
+            if (hasPullback)
+            {
+                bool highIsSecond = lowUnix < highUnix;
+                bool pullbackIsRawMax = highIsSecond == mirror;
+                int secondExtreme = highIsSecond ? (mirror ? mn : mx) : (mirror ? mx : mn);
+                int pullbackRaw = secondExtreme;
+                Scan(Math.Max(lowUnix, highUnix), hiUnix, c =>
+                {
+                    if (pullbackIsRawMax) pullbackRaw = Math.Max(pullbackRaw, c.Max);
+                    else pullbackRaw = Math.Min(pullbackRaw, c.Min);
+                });
+                pullbackPips = Math.Abs(ToTruePoints(s.Transform, pullbackRaw)
+                    - ToTruePoints(s.Transform, secondExtreme)) / s.PipPoints;
+                pullbackPercent = sizePips > 0 ? pullbackPips / sizePips * 100 : 0;
+            }
             result.Add(new RangeStats(s.Symbol, s.ColorArgb, PriceDigits(s.PipPoints * mul),
-                Math.Min(a, b) * mul, Math.Max(a, b) * mul, Math.Abs(b - a) / s.PipPoints,
-                ToTruePoints(s.Transform, sum / (double)count) * mul,
-                ToTruePoints(s.Transform, first) * mul, ToTruePoints(s.Transform, last) * mul, count));
+                Math.Min(a, b) * mul, Math.Max(a, b) * mul, sizePips,
+                pullbackPips, pullbackPercent, hasPullback, count));
         }
         return result;
     }
@@ -2580,7 +2691,7 @@ public sealed class ChartView : Grid
     }
 
     private static readonly string[] StatsHeaders =
-        { "", "min", "max", "pips", "avg", "in", "out" };
+        { "", "min", "max", "pips", "pullback", "pullback %" };
 
     private const double StatsTenthFontSize = 8;
 
@@ -2605,15 +2716,17 @@ public sealed class ChartView : Grid
                     table.Children.Add(StatsCell("-", r + 1, c, brush, true));
                 continue;
             }
-            string format = row.Digits > 0 ? "0." + new string('0', row.Digits) : "0";
             string tenthFormat = "0." + new string('0', row.Digits + 1);
             table.Children.Add(StatsTenthCell(PriceText(row.Min, tenthFormat), r + 1, 1, brush));
             table.Children.Add(StatsTenthCell(PriceText(row.Max, tenthFormat), r + 1, 2, brush));
             table.Children.Add(StatsCell(
                 row.SizePips.ToString("0.0", CultureInfo.InvariantCulture), r + 1, 3, brush, true));
-            table.Children.Add(StatsCell(PriceText(row.Avg, format), r + 1, 4, brush, true));
-            table.Children.Add(StatsCell(PriceText(row.In, format), r + 1, 5, brush, true));
-            table.Children.Add(StatsCell(PriceText(row.Out, format), r + 1, 6, brush, true));
+            table.Children.Add(StatsCell(row.HasPullback
+                ? row.PullbackPips.ToString("0.0", CultureInfo.InvariantCulture)
+                : "-", r + 1, 4, brush, true));
+            table.Children.Add(StatsCell(row.HasPullback
+                ? row.PullbackPercent.ToString("0.0", CultureInfo.InvariantCulture) + "%"
+                : "-", r + 1, 5, brush, true));
         }
         var panel = new StackPanel();
         panel.Children.Add(new TextBlock
@@ -3178,7 +3291,230 @@ public sealed class ChartView : Grid
             OnVerticalZoom(e);
             return;
         }
-        bool horizontalOnly = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
+        if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0)
+        {
+            OnHorizontalZoom(e);
+            return;
+        }
+        if (_series == null) return;
+        e.Handled = true;
+        StepZoomLevel(e.Delta > 0 ? 1 : -1, e.GetPosition(this));
+    }
+
+    public IReadOnlyList<ZoomLevel> ZoomLevels => _zoomLevels;
+
+    public int ZoomLevelIndex => _zoomLevelIndex;
+
+    private long EffectiveColumnSeconds => _columnSeconds > 0 ? _columnSeconds : _renderedColumnSeconds;
+
+    public ZoomLevel CurrentZoom() => new()
+    {
+        PixelsPerDay = ZoomLevel.PixelsPerDayOf(EffectiveColumnSeconds),
+        PixelsPer100Pips = ZoomLevel.PixelsPer100PipsOf(_pointsPerRow),
+    };
+
+    public bool ZoomLevelDirty
+    {
+        get
+        {
+            if (_zoomLevelIndex < 0 || _zoomLevelIndex >= _zoomLevels.Count) return false;
+            var current = CurrentZoom();
+            if (!current.IsValid) return false;
+            return !MatchesAppliedZoom() && !MatchesZoomLevel(_zoomLevels[_zoomLevelIndex], current);
+        }
+    }
+
+    private bool MatchesAppliedZoom() =>
+        _zoomAppliedColumnSeconds > 0 && _zoomAppliedPointsPerRow > 0
+        && _zoomAppliedColumnSeconds == EffectiveColumnSeconds
+        && Math.Abs(_zoomAppliedPointsPerRow - _pointsPerRow) <= _pointsPerRow * ZoomLevelTolerance;
+
+    private bool MatchesZoomLevel(ZoomLevel level, ZoomLevel current)
+    {
+        if (!level.IsValid) return false;
+        if (ZoomLevel.ToColumnSeconds(level.PixelsPerDay)
+            != ZoomLevel.ToColumnSeconds(current.PixelsPerDay)) return false;
+        double ppr = ZoomLevel.ToPointsPerRow(level.PixelsPer100Pips);
+        return Math.Abs(ppr - _pointsPerRow) <= _pointsPerRow * ZoomLevelTolerance;
+    }
+
+    private void MarkZoomApplied()
+    {
+        _zoomAppliedColumnSeconds = EffectiveColumnSeconds;
+        _zoomAppliedPointsPerRow = _pointsPerRow;
+    }
+
+    private void ForgetAppliedZoom()
+    {
+        _zoomAppliedColumnSeconds = 0;
+        _zoomAppliedPointsPerRow = 0;
+    }
+
+    public void SetZoomLevels(List<ZoomLevel> levels)
+    {
+        _zoomLevels = levels;
+        _zoomLevelIndex = _zoomLevelIndex < _zoomLevels.Count ? _zoomLevelIndex : -1;
+        ForgetAppliedZoom();
+        ZoomLevelChanged?.Invoke();
+    }
+
+    public void SelectZoomLevel(int index) =>
+        ApplyZoomLevel(index, ActualWidth / 2, ActualHeight / 2);
+
+    public bool SaveCurrentZoomToLevel()
+    {
+        if (_zoomLevelIndex < 0 || _zoomLevelIndex >= _zoomLevels.Count) return false;
+        var current = CurrentZoom();
+        if (!current.IsValid) return false;
+        _zoomLevels[_zoomLevelIndex].PixelsPerDay = current.PixelsPerDay;
+        _zoomLevels[_zoomLevelIndex].PixelsPer100Pips = current.PixelsPer100Pips;
+        MarkZoomApplied();
+        ZoomLevelChanged?.Invoke();
+        return true;
+    }
+
+    public void RevertToZoomLevel()
+    {
+        if (_zoomLevelIndex < 0 || _zoomLevelIndex >= _zoomLevels.Count) return;
+        SelectZoomLevel(_zoomLevelIndex);
+    }
+
+    public bool SetZoomLevelValues(int index, double pixelsPerDay, double pixelsPer100Pips)
+    {
+        if (index < 0 || index >= _zoomLevels.Count) return false;
+        if (!(pixelsPerDay > 0) || !(pixelsPer100Pips > 0)) return false;
+        var level = _zoomLevels[index];
+        if (level.PixelsPerDay == pixelsPerDay && level.PixelsPer100Pips == pixelsPer100Pips)
+            return false;
+        level.PixelsPerDay = pixelsPerDay;
+        level.PixelsPer100Pips = pixelsPer100Pips;
+        if (index == _zoomLevelIndex) SelectZoomLevel(index);
+        else ZoomLevelChanged?.Invoke();
+        return true;
+    }
+
+    public bool InsertZoomLevel(int index)
+    {
+        if (_zoomLevels.Count >= ZoomLevel.MaxCount) return false;
+        var current = CurrentZoom();
+        if (!current.IsValid) return false;
+        _zoomLevelIndex = Math.Clamp(index, 0, _zoomLevels.Count);
+        _zoomLevels.Insert(_zoomLevelIndex, current);
+        MarkZoomApplied();
+        ZoomLevelChanged?.Invoke();
+        return true;
+    }
+
+    public bool DeleteZoomLevel(int index)
+    {
+        if (index < 0 || index >= _zoomLevels.Count || _zoomLevels.Count <= 1) return false;
+        _zoomLevels.RemoveAt(index);
+        if (_zoomLevelIndex > index) _zoomLevelIndex--;
+        else if (_zoomLevelIndex == index) _zoomLevelIndex = Math.Min(index, _zoomLevels.Count - 1);
+        ZoomLevelChanged?.Invoke();
+        return true;
+    }
+
+    private void StepZoomLevel(int direction, Point pos)
+    {
+        if (direction == 0 || _zoomLevels.Count == 0) return;
+        ApplyZoomLevel(NextZoomLevelIndex(direction), pos.X, pos.Y);
+    }
+
+    private int NextZoomLevelIndex(int direction)
+    {
+        int count = _zoomLevels.Count;
+        if (_zoomLevelIndex >= 0 && _zoomLevelIndex < count && !ZoomLevelDirty)
+            return Math.Clamp(_zoomLevelIndex + direction, 0, count - 1);
+        double current = ZoomLevel.PixelsPerDayOf(EffectiveColumnSeconds);
+        if (!(current > 0)) return Math.Clamp(_zoomLevelIndex, 0, count - 1);
+        if (direction > 0)
+        {
+            for (int i = 0; i < count; i++)
+                if (_zoomLevels[i].PixelsPerDay > current * ZoomLevelStepEpsilon) return i;
+            return count - 1;
+        }
+        for (int i = count - 1; i >= 0; i--)
+            if (_zoomLevels[i].PixelsPerDay < current / ZoomLevelStepEpsilon) return i;
+        return 0;
+    }
+
+    private void ApplyZoomLevel(int index, double posX, double posY)
+    {
+        if (index < 0 || index >= _zoomLevels.Count) return;
+        var level = _zoomLevels[index];
+        _zoomLevelIndex = index;
+        if (!level.IsValid || _series == null)
+        {
+            ZoomLevelChanged?.Invoke();
+            return;
+        }
+        var dpi = VisualTreeHelper.GetDpi(this);
+        int pw = (int)Math.Round(ActualWidth * dpi.DpiScaleX);
+        if (pw < 1)
+        {
+            ZoomLevelChanged?.Invoke();
+            return;
+        }
+        long firstUnix = ViewFirstUnix;
+        long lastUnix = ViewLastUnix;
+        long fit = ChartColumns.FitColumnSeconds(firstUnix, lastUnix, pw);
+        long cs = _columnSeconds <= 0 || _columnSeconds > fit ? fit : _columnSeconds;
+        long startBucket = _columnSeconds <= 0 ? firstUnix / cs : _viewStartBucket;
+        int xm = Math.Clamp((int)Math.Floor(posX * dpi.DpiScaleX), 0, pw - 1);
+        long anchorTime = (startBucket + xm) * cs;
+        long next = ZoomLevel.ToColumnSeconds(level.PixelsPerDay);
+        long newStart = ClampViewStart(anchorTime / next - xm, firstUnix / next, lastUnix / next, pw);
+        _columnSeconds = next;
+        _viewStartBucket = newStart;
+        if (_dragging)
+        {
+            _dragStartX = xm;
+            _dragStartViewBucket = newStart;
+        }
+        ApplyLevelPointsPerRow(ZoomLevel.ToPointsPerRow(level.PixelsPer100Pips), posY);
+        MarkZoomApplied();
+        ZoomLevelChanged?.Invoke();
+        Rebuild();
+    }
+
+    private void ApplyLevelPointsPerRow(double target, double posY)
+    {
+        if (!(target > 0) || _pointsPerRow <= 0 || _series == null) return;
+        var dpi = VisualTreeHelper.GetDpi(this);
+        int ph = (int)Math.Round(ActualHeight * dpi.DpiScaleY);
+        if (ph < 2) return;
+        int cy = Math.Clamp((int)Math.Floor(posY * dpi.DpiScaleY), 0, ph - 1);
+        double anchorPrice = _topPrice - cy * _pointsPerRow;
+        double maxPpr = Math.Max(
+            Math.Max(1.0, (_globalMaxPrice - _globalMinPrice) * 10.0 / (ph - 1)),
+            MaxLevelGridLines * (double)ChartRasterizer.GridPriceStepPoints / (ph - 1));
+        double newPpr = Math.Clamp(target, 0.05, maxPpr);
+        double screenRange = newPpr * (ph - 1);
+        _pointsPerRow = newPpr;
+        _topPrice = Math.Clamp(anchorPrice + cy * newPpr, PanMinPrice, PanMaxPrice + screenRange);
+        if (_dragging)
+        {
+            _dragStartY = cy;
+            _dragStartTopPrice = _topPrice;
+        }
+    }
+
+    public double FitPixelsPerDay
+    {
+        get
+        {
+            if (_series == null || _firstUnix > _lastUnix) return 0;
+            var dpi = VisualTreeHelper.GetDpi(this);
+            int pw = (int)Math.Round(ActualWidth * dpi.DpiScaleX);
+            if (pw < 1) return 0;
+            return ZoomLevel.PixelsPerDayOf(
+                ChartColumns.FitColumnSeconds(ViewFirstUnix, ViewLastUnix, pw));
+        }
+    }
+
+    private void OnHorizontalZoom(MouseWheelEventArgs e)
+    {
         if (_series == null) return;
         var dpi = VisualTreeHelper.GetDpi(this);
         int pw = (int)Math.Round(ActualWidth * dpi.DpiScaleX);
@@ -3193,13 +3529,10 @@ public sealed class ChartView : Grid
         long anchorTime = (startBucket + xm) * cs;
         long next = ChartColumns.Zoomed(cs, e.Delta > 0, ZoomStep);
         e.Handled = true;
-        bool subMinute = cs <= ChartColumns.MinuteSeconds || next <= ChartColumns.MinuteSeconds;
-        bool zoomVertical = !horizontalOnly && !subMinute;
         if (next >= fit)
         {
             if (_columnSeconds <= 0) return;
             _columnSeconds = 0;
-            if (zoomVertical) ApplyVerticalZoom(PairedVerticalFactor((double)fit / cs), pos.Y);
             Rebuild();
             return;
         }
@@ -3211,10 +3544,9 @@ public sealed class ChartView : Grid
         _viewStartBucket = newStart;
         if (_dragging)
         {
-            _dragStartX = (int)Math.Floor(pos.X * dpi.DpiScaleX);
+            _dragStartX = xm;
             _dragStartViewBucket = newStart;
         }
-        if (zoomVertical) ApplyVerticalZoom(PairedVerticalFactor((double)next / cs), pos.Y);
         Rebuild();
     }
 
@@ -3236,6 +3568,8 @@ public sealed class ChartView : Grid
         var seriesList = _series;
         if (seriesList == null) return;
         var visibleSeries = seriesList.Where(s => !IsHidden(s.Symbol)).ToList();
+        if (_latchSymbol != null && (GetSeries(_latchSymbol) == null || IsHidden(_latchSymbol)))
+            _latchSymbol = null;
         var dpi = VisualTreeHelper.GetDpi(this);
         int pw = (int)Math.Round(ActualWidth * dpi.DpiScaleX);
         int ph = (int)Math.Round(ActualHeight * dpi.DpiScaleY);
@@ -3292,7 +3626,8 @@ public sealed class ChartView : Grid
         var swRender = _firstRenderLogged ? null : Stopwatch.StartNew();
         string? hotShift = _shiftHotSymbol;
         int hotShiftWidth = _shiftDragging ? 1 : ShiftHotWidthPx;
-        string? pressSymbol = _pressSymbol;
+        string? highlightSymbol = HighlightSymbol;
+        string? thickSymbol = _pressHeld ? _pressSymbol : null;
         var drawOrder = SeriesDrawOrder(visibleSeries);
         var shiftLines = new List<(string Symbol, RenderLine Line)>();
         var renderedLines = new List<(string Symbol, RenderLine Line)>();
@@ -3320,10 +3655,13 @@ public sealed class ChartView : Grid
                     var last = s.History.LastCandle;
                     int lastPrice = s.History.HasLastTick ? s.History.LastTick : last.Avg;
                     long lastVirtual = map?.ToVirtual(last.MinuteUnixSeconds) ?? last.MinuteUnixSeconds;
-                    var line = new RenderLine(view, chosen, s.ColorArgb, lastPrice,
+                    bool dimmed = highlightSymbol != null && s.Symbol != highlightSymbol
+                        && (s.BasePair || s.TimeShift);
+                    var line = new RenderLine(view, chosen,
+                        dimmed ? DimmedColor(s.ColorArgb) : s.ColorArgb, lastPrice,
                         (lastVirtual + ChartColumns.MinuteSeconds - 1) / k,
                         lineOffsets[si], columnShifts,
-                        s.Symbol == pressSymbol ? SeriesPressWidthPx : 1, fullRange);
+                        s.Symbol == thickSymbol ? SeriesPressWidthPx : 1, fullRange);
                     if (s.TimeShift) shiftLines.Add((s.Symbol, line));
                     renderedLines.Add((s.Symbol, line));
                     if (s.Symbol == hotShift) hotIndex = lines.Count;
@@ -3435,7 +3773,8 @@ public sealed class ChartView : Grid
                             ? null
                             : seriesList.FirstOrDefault(x => x.Symbol == s.SourceSymbol);
                         if (src == null
-                            || (src.History.Minutes.Length == 0 && src.History.Live.Length == 0))
+                            || (src.History.Minutes.Length == 0 && src.History.Live.Length == 0
+                                && src.History.HiddenSpreads.Length == 0))
                             continue;
                         var tenths = SpreadColumns.Build(src.History, k, startBucket, pw, map);
                         spreadCols.Add((s.Symbol, tenths));
@@ -3554,7 +3893,9 @@ public sealed class ChartView : Grid
                     TiltedUpGridIndex = _tiltedUpIndex,
                     TiltedDownGridIndex = _tiltedDownIndex,
                     TiltedGrids = _tiltedGrids.Select(g => g.Clone()).ToList(),
+                    ZoomLevelIndex = _zoomLevelIndex,
                 });
+                ZoomLevelChanged?.Invoke();
                 Perf.Since("chart.statechanged", tUi);
             }
         }

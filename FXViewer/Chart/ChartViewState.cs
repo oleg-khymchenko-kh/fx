@@ -19,6 +19,7 @@ public sealed class ChartViewState
     public bool SessionsVisible { get; set; }
     public string? FlattenSymbol { get; set; }
     public int FlattenLine { get; set; } = -1;
+    public int ZoomLevelIndex { get; set; } = -1;
     public int TiltedUpGridIndex { get; set; }
     public int TiltedDownGridIndex { get; set; }
     public List<TiltedGridState>? TiltedGrids { get; set; }

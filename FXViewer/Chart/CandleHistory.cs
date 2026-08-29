@@ -5,6 +5,8 @@ namespace FXViewer.Chart;
 public readonly record struct AggBlock(long StartUnixSeconds, int Min, int Max, long AvgSum, int Count,
     int SpreadMaxTenths = -1, long VolumeSum = -1, long VolumeMax = -1);
 
+public readonly record struct SpreadMark(long UnixSeconds, int Tenths);
+
 public sealed class CandleHistory
 {
     public static readonly int[] LevelMinutes = { 15, 60, 240, 1440 };
@@ -17,6 +19,43 @@ public sealed class CandleHistory
     public Candle[] Live => _live;
 
     public void SetLive(Candle[] live) => _live = live ?? Array.Empty<Candle>();
+
+    private volatile SpreadMark[] _hiddenSpreads = Array.Empty<SpreadMark>();
+    private volatile SpreadMark[] _liveHiddenSpreads = Array.Empty<SpreadMark>();
+
+    public SpreadMark[] HiddenSpreads => _hiddenSpreads;
+
+    public SpreadMark[] LiveHiddenSpreads => _liveHiddenSpreads;
+
+    public void SetHiddenSpreads(SpreadMark[] marks) =>
+        _hiddenSpreads = marks ?? Array.Empty<SpreadMark>();
+
+    public void SetLiveHiddenSpreads(SpreadMark[] marks) =>
+        _liveHiddenSpreads = marks ?? Array.Empty<SpreadMark>();
+
+    public static SpreadMark[] MarksOf(IReadOnlyList<Candle> hidden)
+    {
+        if (hidden.Count == 0) return Array.Empty<SpreadMark>();
+        var marks = new List<SpreadMark>(hidden.Count);
+        foreach (var c in hidden)
+            if (c.HasSpread) marks.Add(new SpreadMark(c.MinuteUnixSeconds, c.SpreadTenths));
+        return marks.ToArray();
+    }
+
+    public static SpreadMark[] MergeMarks(SpreadMark[] a, SpreadMark[] b)
+    {
+        if (a.Length == 0) return b;
+        if (b.Length == 0) return a;
+        var result = new SpreadMark[a.Length + b.Length];
+        int i = 0;
+        int j = 0;
+        int k = 0;
+        while (i < a.Length && j < b.Length)
+            result[k++] = a[i].UnixSeconds <= b[j].UnixSeconds ? a[i++] : b[j++];
+        while (i < a.Length) result[k++] = a[i++];
+        while (j < b.Length) result[k++] = b[j++];
+        return result;
+    }
 
     private volatile int _lastTickValue;
     private volatile bool _hasLastTick;
@@ -75,12 +114,19 @@ public sealed class CandleHistory
             lo = Math.Min(lo, replacement[0].MinuteUnixSeconds);
             hi = Math.Max(hi, replacement[^1].MinuteUnixSeconds);
         }
-        if (lo > hi) return new CandleHistory(minutes, Levels);
+        if (lo > hi) return CarryMarks(new CandleHistory(minutes, Levels));
         var levels = new AggBlock[LevelMinutes.Length][];
         levels[0] = PatchLevel(Levels[0], minutes, null, LevelMinutes[0] * 60L, lo, hi);
         for (int i = 1; i < LevelMinutes.Length; i++)
             levels[i] = PatchLevel(Levels[i], null, levels[i - 1], LevelMinutes[i] * 60L, lo, hi);
-        return new CandleHistory(minutes, levels);
+        return CarryMarks(new CandleHistory(minutes, levels));
+    }
+
+    private CandleHistory CarryMarks(CandleHistory next)
+    {
+        next._hiddenSpreads = _hiddenSpreads;
+        next._liveHiddenSpreads = _liveHiddenSpreads;
+        return next;
     }
 
     private static AggBlock[] PatchLevel(AggBlock[] old, Candle[]? minutes, AggBlock[]? lower,
