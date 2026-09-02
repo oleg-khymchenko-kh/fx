@@ -12,7 +12,7 @@ public sealed class Note
     public long EndUnix { get; set; }
     public ChartViewState? State { get; set; }
     public List<ShiftPlacement> Shifts { get; set; } = new();
-    public Dictionary<string, long[][][]> Drawings { get; set; } = new();
+    public Dictionary<string, double[][][]> Drawings { get; set; } = new();
 
     public static string NewId() => Guid.NewGuid().ToString("N");
 

@@ -26,6 +26,7 @@ public sealed class AppConfig
     public Dictionary<string, int> PairColors { get; set; } = new();
     public Dictionary<string, long>? MirrorBases { get; set; }
     public bool HideWideSpread { get; set; }
+    public bool ShowAsk { get; set; }
     public string SierraDataFolder { get; set; } = "";
 
     public static string Dir => AppContext.BaseDirectory;

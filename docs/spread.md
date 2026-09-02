@@ -84,11 +84,12 @@ takes the maximum `ask - bid` per minute.
 
 The "Backfill spread" button runs over every base pair that is subscribed
 (ask pairs are skipped), newest window first, in 24 h windows. The run
-is floored at 2026-01-01 (`SpreadBackfillFloorUtc`) - the broker keeps
-tick history for years, downloading all of it takes hours per pair, so
-older minutes deliberately stay without spread. A failure on one pair
-(like a server timeout) logs and moves on to the next pair. Rules per
-window:
+covers the last `SpreadBackfillDays` days (7), so the window start moves
+with the clock. The broker keeps tick history for years, but downloading
+all of it takes hours per pair, and the gaps worth repairing are the
+fresh ones left by a dead live feed; older minutes keep whatever spread
+they already have. A failure on one pair (like a server timeout) logs and
+moves on to the next pair. Rules per window:
 
 - a window whose minutes are all missing from the DB (weekend, gap) or
   already have a spread is skipped without any request, so a second run
@@ -158,6 +159,13 @@ running `MaxSpreadTenths` for the open minute, and `SpreadColumns` folds
 carry only one side still widen the running maximum: `BumpLiveSpread`
 applies the merged last-known bid/ask spread to the open minute when
 `FeedLive` is not called for that side.
+
+## Users of the stored spread
+
+- "Hide wide spread minutes" drops the noisy post-close minutes, see
+  docs/wide-spread.md;
+- "Show ask instead of bid" draws every pair at bid plus this spread, see
+  docs/ask-view.md.
 
 ## Not in v1
 

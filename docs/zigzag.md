@@ -89,10 +89,16 @@ an up-trend it tracks:
 
 - `High` - the running maximum since the last point (rule 1 confirms it
   as a point when the price drops `Limit1` from it),
-- the **deep** pullback candidate: the lowest low since the last point
-  was confirmed, anchored to the top it fell from (a new maximum does
-  NOT clear it - the trend breaking the old top does not cancel the
-  pullback; a lower low re-anchors it to the latest top),
+- the **deep** pullback candidate: the best counter-move since the last
+  point was confirmed, anchored to the top it fell from (a new maximum
+  does NOT clear it - the trend breaking the old top does not cancel the
+  pullback; a lower low re-anchors it to the latest top). "Best" is by
+  size, not by price: a dip is taken as the new candidate when it is
+  either lower than the stored one, or further from the current top than
+  the stored one is from its own anchor. Without the second test a 5 pip
+  wiggle right after the previous point can hold the slot until the
+  price runs `Limit1` past it, and every real pullback in between is
+  lost,
 - the **late** pullback candidate: the lowest low after the last new
   maximum. It only matters when the deep candidate fails its `Limit2` /
   delay check at confirmation time: then the late dip (measured from
@@ -104,7 +110,7 @@ anchor top. Pass - both the anchor and the low are emitted as points.
 Fail - the candidate is dropped and the late one, if any, is promoted.
 A pullback of `Limit1` or more is an ordinary rule-1 reversal instead.
 
-5.7M minutes of EURUSD produce 8 659 points in ~290 ms at
+5.7M minutes of EURUSD produce 9 037 points in ~290 ms at
 `Limit1 = 50, Limit2 = 20, Limit2Delay = 90`.
 
 ## Anchors
@@ -120,18 +126,29 @@ completes.
 
 ## Guarantees
 
-Checked against the full EURUSD and USDCHF histories (2011-2026, 5.7M
-minutes each) for seven parameter sets, including the degenerate
+Checked against the full EURUSD, GBPUSD and USDCHF histories (2011-2026,
+5.7M minutes each) for seven parameter sets, including the degenerate
 `Limit2 = Limit1` (rule 2 off) and `Limit2 = 0.1 pip, delay 0`:
 
-- every point is the true extremum of its span (from the previous point
-  to the next one),
 - every inner leg is either at least `Limit1`, or at least `Limit2`
   with at least `Limit2Delay` trading minutes of duration,
 - every pullback leg is bracketed by two legs of at least `Limit1`,
 - points strictly alternate high, low, high, low,
 - point minutes never decrease. Two points may share one minute (a news
   minute); this draws a vertical step at that minute.
+
+A point is normally the true extremum of its span (from the previous
+point to the next one), but not always. At `Limit1 = 50, Limit2 = 20,
+Limit2Delay = 90` the full history misses it on 31 points out of 9 037
+on EURUSD, 118 out of 12 587 on GBPUSD and 46 out of 6 816 on USDCHF.
+Almost all of them (28, 115 and 44) sit next to a minute whose own range
+is at least `Limit1`, so the two-tick model guessed the wrong order
+inside that minute - the known limit listed below. The few others are
+cases where a slightly lower low appeared after the anchor was frozen
+and before the pullback was confirmed. The counts are the same as with
+the old price-only deep candidate (30, 119 and 47), so the size test did
+not make this worse; with `Limit2 = 0.1 pip, delay 0` it makes it much
+better (EURUSD 199 instead of 1 111).
 
 ## Rendering
 

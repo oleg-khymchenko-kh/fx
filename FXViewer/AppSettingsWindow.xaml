@@ -41,6 +41,10 @@
             <TextBlock MaxWidth="480" HorizontalAlignment="Left" TextWrapping="Wrap"
                        Foreground="Gray" Margin="20,4,0,0"
                        Text="A minute is wide spread when its spread is over 4 pips and it falls between the American close and the Asian open (21:00-00:00 UTC in summer, 22:00-00:00 in winter). Hidden minutes count as missing everywhere: charts, highs and lows, pip counts." />
+            <CheckBox x:Name="ShowAskCheck" Content="Show ask instead of bid" Margin="0,12,0,0" />
+            <TextBlock MaxWidth="480" HorizontalAlignment="Left" TextWrapping="Wrap"
+                       Foreground="Gray" Margin="20,4,0,0"
+                       Text="Every pair minute is drawn at bid plus its stored spread. A minute without a stored spread counts as missing, so history older than the spread data is empty in this mode. The DB itself stays bid: indicators with storage, backfills and the volume at price store are not touched." />
         </StackPanel>
 
         <DockPanel Grid.Row="3" LastChildFill="False">

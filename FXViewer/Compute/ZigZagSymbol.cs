@@ -3,7 +3,7 @@ using FXViewer.Storage;
 
 namespace FXViewer.Compute;
 
-public readonly record struct PivotPoint(long UnixSeconds, int Value, bool Level = false);
+public readonly record struct PivotPoint(long UnixSeconds, double Value, bool Level = false);
 
 public readonly record struct ZigZagLimits(int Limit1Points, int Limit2Points, int Limit2DelayMinutes)
 {
@@ -141,7 +141,9 @@ public static class ZigZagSymbol
                 st.HasLate = false;
                 return;
             }
-            if (st.HasDeep ? value < st.DeepPull.Value : value < st.High.Value)
+            if (st.HasDeep
+                ? value < st.DeepPull.Value || BiggerPullback(value, st.High, st.DeepAnchor, st.DeepPull)
+                : value < st.High.Value)
             {
                 st.DeepPull = new Swing(unix, virt, value);
                 st.DeepAnchor = st.High;
@@ -195,7 +197,9 @@ public static class ZigZagSymbol
             st.HasLate = false;
             return;
         }
-        if (st.HasDeep ? value > st.DeepPull.Value : value > st.Low.Value)
+        if (st.HasDeep
+            ? value > st.DeepPull.Value || BiggerPullback(value, st.Low, st.DeepAnchor, st.DeepPull)
+            : value > st.Low.Value)
         {
             st.DeepPull = new Swing(unix, virt, value);
             st.DeepAnchor = st.Low;
@@ -211,6 +215,9 @@ public static class ZigZagSymbol
             st.HasLate = true;
         }
     }
+
+    private static bool BiggerPullback(int value, Swing edge, Swing anchor, Swing pull) =>
+        Math.Abs(value - edge.Value) > Math.Abs(pull.Value - anchor.Value);
 
     private static bool PullbackQualifies(Swing from, Swing pull, ZigZagLimits limits) =>
         Math.Abs(pull.Value - from.Value) >= limits.Limit2Points
@@ -267,8 +274,8 @@ public static class ZigZagSymbol
                 bool sharesMinute = pts[i].UnixSeconds == pts[i - 1].UnixSeconds
                     || pts[i].UnixSeconds == pts[i + 1].UnixSeconds;
                 if (!sharesMinute) continue;
-                long before = (long)pts[i].Value - pts[i - 1].Value;
-                long after = (long)pts[i + 1].Value - pts[i].Value;
+                double before = pts[i].Value - pts[i - 1].Value;
+                double after = pts[i + 1].Value - pts[i].Value;
                 if (before == 0 || after == 0 || Math.Sign(before) == Math.Sign(after))
                 {
                     pts.RemoveAt(i);

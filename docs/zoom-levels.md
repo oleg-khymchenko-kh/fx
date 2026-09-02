@@ -30,7 +30,8 @@ rotates the grid.
 
 `ZoomLevelView` is a small chip in the very top left corner of the chart
 (same grid cell as the chart, 2 px margin; `LoadIndicatorView` sits in
-the top right). It shows
+the top right). It hides while the `Q` measure popup covers that corner,
+see `docs/measure-distance.md`. It shows
 
     Zoom 7/20
 
@@ -139,6 +140,24 @@ it is clear where that boundary is:
 
     All history fills the width at 0.27 px/day - below that the chart
     leaves empty space
+
+Because a level may sit below the fit scale, the code that re-anchors
+the view must read the **current** `_columnSeconds`, never `fit`. An
+earlier version wrote
+
+    long cs = _columnSeconds <= 0 || _columnSeconds > fit ? fit : _columnSeconds;
+
+which mixed two scales: `startBucket` stays measured in
+`_columnSeconds`, so `(startBucket + xm) * fit` gave an anchor time that
+was `fit / _columnSeconds` of the real one - years off. The view then
+hit the left `ClampViewStart` limit and the time under the cursor jumped
+into the empty space before the first candle. `fit` is now used only
+when there is no explicit zoom yet (`_columnSeconds <= 0`).
+
+`Shift + wheel` shares that code. Its "never zoom out past fit" branch
+now fires only while the chart is at or below the fit scale, so a level
+that is coarser than fit can still be zoomed with `Shift + wheel`
+instead of collapsing to the fit view.
 
 The vertical still has a ceiling, but a wide one. `DrawPriceLines`
 walks the whole visible price range in 100-pip steps, so a very large

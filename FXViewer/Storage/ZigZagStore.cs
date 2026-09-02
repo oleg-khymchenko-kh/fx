@@ -36,7 +36,7 @@ public static class ZigZagStore
         Directory.CreateDirectory(symbolDir);
         var raw = new long[points.Count][];
         for (int i = 0; i < points.Count; i++)
-            raw[i] = new[] { points[i].UnixSeconds, points[i].Value };
+            raw[i] = new[] { points[i].UnixSeconds, (long)Math.Round(points[i].Value) };
         var path = Path.Combine(symbolDir, FileName);
         var tmp = path + ".tmp";
         File.WriteAllText(tmp, JsonSerializer.Serialize(raw));

@@ -108,8 +108,8 @@ Shift + Left/Right drives the same time range selection as Shift + drag:
   one side and shrinks back when the direction is reversed. The anchor
   (the start column) never moves.
 - The mouse pointer stays where it is; only the range band changes.
-- Escape clears the range as usual. The stats popup is closed on every
-  keyboard range change, press Space to reopen it for the new range.
+- Escape clears the range as usual. If the stats popup is open, it stays
+  open and recomputes its numbers on every keyboard range change.
 
 Starting needs the cursor on the chart; extending an existing range
 works as long as the chart has keyboard focus.

@@ -18,6 +18,9 @@ candles). Display uses the source pair's transform (pip scale + mirror),
 so the drawing lives in the same display space as the source symbol and
 follows its offset (offsets are stored relative to the source).
 
+The value is fractional (9 decimals of a point) so that a point can sit
+exactly on a parallel slope, see docs/parallel-lines.md.
+
 File: `data/<SYMBOL>/drawing.json`, format
 `[[[unixSeconds, value], ...], ...]` (lines -> points -> pair). The file
 sits in the same per-symbol folder as candle data, so Rename moves it
@@ -152,6 +155,10 @@ price range, so the view can scroll to lines drawn in the future.
     so a copy of a level is just another level to draw.
   - Edits go through the same drawing.json save + re-render path as a
     vertex drag, and are refused while a DB op / download / load runs.
+- While a line is drawn, or a vertex of it is dragged, lines parallel to
+  the segment under the cursor are drawn 2 px thick and the committed
+  point is placed exactly parallel to the first of them, see
+  docs/parallel-lines.md.
 - Selection circles re-project on zoom/pan/offset changes. Wheel zoom
   during a selection drag is ignored (same as pivot drags), otherwise
   the accumulated drag delta would be reinterpreted under the new

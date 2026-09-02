@@ -312,6 +312,9 @@ public static class IndicatorTypes
     public static bool IsPriceAge(string type) =>
         string.Equals(type, PriceAge, StringComparison.OrdinalIgnoreCase);
 
+    public static bool HasRangeStats(string type) =>
+        IsZigZag(type) || IsShift(type) || IsIndex(type) || IsCurrency(type);
+
     public static bool NeedsSource(string type) => !IsIndex(type);
 
     public static bool SourceIsIndex(string type) => IsCurrency(type);

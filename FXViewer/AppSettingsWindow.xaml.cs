@@ -45,16 +45,19 @@ public partial class AppSettingsWindow : Window
     private UniformGrid? _shadeGrid;
 
     public AppSettingsWindow(IReadOnlyList<(string Symbol, int DefaultColorArgb, int ColorArgb)> pairs,
-        bool hideWideSpread)
+        bool hideWideSpread, bool showAsk)
     {
         InitializeComponent();
         foreach (var (symbol, defaultColor, color) in pairs) AddPairRow(symbol, defaultColor, color);
         BuildSwatches();
         SetColorControlsEnabled(false);
         HideWideSpreadCheck.IsChecked = hideWideSpread;
+        ShowAskCheck.IsChecked = showAsk;
     }
 
     public bool HideWideSpread => HideWideSpreadCheck.IsChecked == true;
+
+    public bool ShowAsk => ShowAskCheck.IsChecked == true;
 
     private void SetColorControlsEnabled(bool enabled)
     {

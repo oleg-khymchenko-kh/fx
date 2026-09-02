@@ -6,7 +6,7 @@ Status: implemented, v1.
 
 Right-click the chart -> `Measure distance`, then move the mouse. A
 half-transparent rectangle is drawn between the point of the right-click
-and the cursor, and a popup at the top of the chart says how big that
+and the cursor, and a popup at a free edge of the chart says how big that
 rectangle is: pips, time span, and which price its edges sit at for every
 visible main pair.
 
@@ -58,17 +58,40 @@ measurement as well.
 
 ## The popup
 
-It is pinned to the top edge of the chart and centred horizontally in it.
-It does not follow the mouse and does not follow the rectangle - only its
-numbers change while the rectangle is being drawn.
+It sits in one of six corners/edges of the chart and never overlaps the
+rectangle. The candidates are tried in this order:
+
+1. top centre,
+2. top left,
+3. top right,
+4. bottom centre,
+5. bottom left,
+6. bottom right.
+
+The first one that does not intersect the rectangle wins. If all six
+intersect it (a rectangle that covers the whole chart), the one with the
+smallest intersection area is used. The rectangle used for that test is the
+part of it that is on screen, so a rectangle whose body is off to the left
+does not push the popup away.
+
+The choice is redone on every update, so while the second corner is being
+dragged the popup jumps to whichever spot is free.
+
+The zoom chip (`ZoomLevelView`) sits in the top left corner of the same
+grid cell, above the chart, so it would show through the popup. While the
+popup covers it the chip is hidden: `ChartView` raises
+`MeasureLabelBoundsChanged` with the popup rectangle (or `null` when there
+is no popup), and `MainWindow` sets the chip to `Hidden` when the two
+rectangles intersect. `Hidden`, not `Collapsed`, so the chip keeps its
+size and the next overlap test still works.
 
 Its width is fixed, so it does not jump around while the digits change.
 The width is computed once, on the first measurement, from the widest text
 each line can ever hold (`MeasureLabelWidth`):
 
-- pips line: `-99999.9 pips` in the bold Consolas of that line,
-- time line: `00-WWW-00 00:00  →  00-WWW-00 00:00     9999d 23h 59m` (`W`
-  is wider than any month name or digit in the UI font),
+- pips line: `-99999.9 pips   9999:23:59` in the bold Consolas of that line,
+- time line: `00-WWW-00 00:00  →  00-WWW-00 00:00` (`W` is wider than any
+  month name or digit in the UI font),
 - table: `WWWWWWWW` for the symbol plus two `00000.00000` price cells,
   each with the 14 dip gap a stats cell carries,
 
@@ -77,9 +100,17 @@ plus the border and padding (22 dip) and the close button with its gap
 `FormattedText` in the real fonts, so the number follows the system font
 and DPI instead of being a guessed constant.
 
-Line 1 - the height of the rectangle:
+That widest-case number is then cut to 60% (`MeasureWidthScale`), because
+the real texts are far shorter than the widest ones (`1.16234`, not
+`00000.00000`). To keep the cut safe the popup never gets narrower than
+what its current content needs: the width is
+`max(widestWidth * 0.6, desiredWidth)`. The content is monospace, so
+`desiredWidth` does not change while the digits change and the popup still
+does not jitter.
 
-    +12.4 pips
+Line 1 - the height of the rectangle and how long it lasts:
+
+    +12.4 pips   0:03:25
 
 The sign is the direction from the first corner to the second one: `+` when
 the second click is higher on the screen. The value is a screen distance,
@@ -88,9 +119,12 @@ one pip is always 10 display points, so a 12.4 pip rectangle is 12.4 pips
 for every pair on it. For a mirrored pair (USDCHF, USDJPY, USDCAD) "up on
 the screen" is a falling price, the number stays the same.
 
-Line 2 - the time span, same format as the selection label:
+The duration after it is `D:HH:MM` - days, hours, minutes of the time span,
+days always printed even when they are `0`.
 
-    24-Aug-26 09:15  →  24-Aug-26 12:40     3h 25m
+Line 2 - the time span, without the duration:
+
+    24-Aug-26 09:15  →  24-Aug-26 12:40
 
 Then one row per **main pair** (the pairs of `SymbolConfigs` - EURUSD,
 GBPUSD, EURGBP, USDCHF, USDJPY, AUDUSD, NZDUSD, USDCAD, GER40), skipping

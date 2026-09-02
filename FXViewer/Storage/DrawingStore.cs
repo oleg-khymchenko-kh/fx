@@ -12,10 +12,10 @@ public static class DrawingStore
     {
         var path = Path.Combine(symbolDir, FileName);
         if (!File.Exists(path)) return Array.Empty<PivotPoint[]>();
-        long[][][]? raw;
+        double[][][]? raw;
         try
         {
-            raw = JsonSerializer.Deserialize<long[][][]>(File.ReadAllText(path));
+            raw = JsonSerializer.Deserialize<double[][][]>(File.ReadAllText(path));
         }
         catch
         {
@@ -25,7 +25,9 @@ public static class DrawingStore
         return FromRaw(raw);
     }
 
-    public static PivotPoint[][] FromRaw(long[][][]? raw)
+    public const int ValueDecimals = 9;
+
+    public static PivotPoint[][] FromRaw(double[][][]? raw)
     {
         if (raw == null) return Array.Empty<PivotPoint[]>();
         var lines = new List<PivotPoint[]>(raw.Length);
@@ -38,22 +40,28 @@ public static class DrawingStore
             var points = new List<PivotPoint>(line.Length);
             foreach (var p in line)
                 if (p is { Length: >= 2 })
-                    points.Add(new PivotPoint(p[0] - p[0] % 60, (int)p[1], level));
+                {
+                    long t = (long)p[0];
+                    points.Add(new PivotPoint(t - t % 60, p[1], level));
+                }
             if (points.Count > 0) lines.Add(points.ToArray());
         }
         return lines.ToArray();
     }
 
-    public static long[][][] ToRaw(PivotPoint[][] lines)
+    public static double[][][] ToRaw(PivotPoint[][] lines)
     {
-        var raw = new long[lines.Length][][];
+        var raw = new double[lines.Length][][];
         for (int i = 0; i < lines.Length; i++)
         {
-            raw[i] = new long[lines[i].Length][];
+            raw[i] = new double[lines[i].Length][];
             for (int j = 0; j < lines[i].Length; j++)
+            {
+                double value = Math.Round(lines[i][j].Value, ValueDecimals);
                 raw[i][j] = lines[i][j].Level
-                    ? new[] { lines[i][j].UnixSeconds, lines[i][j].Value, 1L }
-                    : new[] { lines[i][j].UnixSeconds, (long)lines[i][j].Value };
+                    ? new[] { (double)lines[i][j].UnixSeconds, value, 1.0 }
+                    : new[] { (double)lines[i][j].UnixSeconds, value };
+            }
         }
         return raw;
     }

@@ -370,6 +370,7 @@ public sealed class SeriesDataLoader : IDisposable
             SetProgress(job, y.ToString());
             raw.AddRange(_db.ReadRange(st.ReadSymbol, YearStart(y), YearEnd(y), includeWide: true));
         }
+        raw = AskViewRule.ToAsk(raw, st.ReadSymbol);
         if (st.IsShift) raw = ShiftedSymbol.Shift(raw, st.ShiftDelta);
         var (minutes, rawHidden) = SplitHidden(raw);
         raw = minutes;
