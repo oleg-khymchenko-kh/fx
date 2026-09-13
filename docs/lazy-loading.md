@@ -47,10 +47,20 @@ Chunk splicing:
   (`CandleTransforms.Transform`), and spliced into the existing
   `CandleHistory` with `WithReplacedRange` (prepend or append). The agg
   levels are patched incrementally, not rebuilt.
+- Averages derived from the series are rebuilt on the worker too,
+  before the commit. The worker asks the chart for the jobs
+  (`AverageJobsOf`: symbol, spec, current history, cached parent array;
+  hidden averages are left out), runs `AverageSeries.Recompute` against
+  the spliced minutes and hands the ready histories to `ReplaceSeries`.
+  Without this the whole recompute ran inside the commit: prepending
+  2011-2023 to GBPUSD, which carries three 40-window bands, blocked the
+  UI thread for about 17 of the 19.6 s the load reported.
 - The splice is committed on the UI thread only if the series' history
   is still the same object that the chunk was computed against
-  (optimistic retry, max 4 attempts). Live tail and last tick are
-  carried over to the new history object.
+  (optimistic retry, max 4 attempts). Each ready average is checked the
+  same way and quietly dropped if its own history or cached parent
+  moved on. Live tail and last tick are carried over to the new history
+  object.
 - Overlap is removed by filtering the chunk to strictly before/after
   the loaded minutes.
 
@@ -86,9 +96,52 @@ Clicking it toggles a popup listing every job:
     EURUSD 2018-2020 · reading 2019 (scroll)
     GBPUSD 2011-2026 · queued (find)
 
+A job that has read its years and is rebuilding the averages shows
+`reading averages`. The load line in the log names the same work:
+`Loaded GBPUSD 2018-2023: 2,205,824 candles in 4210 ms, 3 average(s) in
+2950 ms (scroll)`.
+
 Sources of lines: startup reads (reason "startup") and loader jobs
 (reasons "scroll", "fit", "toggle", "find"). The list refreshes as jobs
 progress; the indicator hides when the queue is empty.
+
+## What a reload costs, and what is cached
+
+`LoadChartAsync` is not only the startup path. Editing an indicator, a
+wide spread backfill, the ask toggle and a few other operations run it
+again, and it rebuilds every series from scratch. Two things used to
+dominate it.
+
+**Reading the side stores.** Depth, volume profiles, the order book and
+the deals file are read per symbol, and the depth store alone is tens of
+MB (`data/EURUSD/depth/2026.dpt` was 75 MB). They are now cached in
+`MainWindow` and only re-read when the files on disk actually changed:
+
+- `_storeCache` keys volume profiles, order books and deals by a folder
+  or file stamp (name + size + last write time). A stamp that cannot be
+  read is empty, and an empty stamp means "do not cache", so an error
+  never freezes a stale result.
+- Depth has its own cache (`_depthCache`) because its files are
+  append-only fixed-size records. It keeps the parsed snapshots per year
+  plus the byte length already read, and `DepthStore.ReadYearFrom`
+  continues from that offset. A minute added by the live collector costs
+  one record, not the whole file. If the file shrank or the header does
+  not parse, the year is read again from the start.
+
+**Moving averages.** The 40 SMA passes of an `AverageBand` over 250k
+candles take ~600 ms each, and a reload recomputed them even when the
+parent data had not moved. `CachedAverage` keys the result by the
+parent's fingerprint (length, first and last minute, the sum of the
+average prices, a wide spread mask, the volume sum) plus the
+`AverageSpec`. Equal fingerprint means the same input, so the previous
+array is reused. The fingerprint is one pass over the parent, well under
+a millisecond.
+
+The indicator half of the load (drawings, ZigZag, deals, density,
+spread, volume, order book, levels, averages) also runs in parallel now,
+with the same degree of parallelism as the pair half. Nothing in it
+reads another indicator's slot: every source is a pair or an index, and
+those are filled by the first pass.
 
 ## Consistency with other operations
 

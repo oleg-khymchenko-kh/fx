@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -20,9 +20,10 @@ public sealed class ChartToolBarView : FrameworkElement
     private const int ForecastButton = 1;
     private const int WeekendsButton = 2;
     private const int SessionsButton = 3;
-    private const int AddButton = 4;
-    private const int SettingsButton = 5;
-    private const int ButtonCount = 6;
+    private const int CommentsButton = 4;
+    private const int AddButton = 5;
+    private const int SettingsButton = 6;
+    private const int ButtonCount = 7;
     private const int ConnHoverIndex = ButtonCount;
 
     private static readonly Pen BorderPen = CreateFrozenPen(0xE0, 0xE0, 0xE0, 1);
@@ -42,7 +43,7 @@ public sealed class ChartToolBarView : FrameworkElement
 
     private static readonly string[] ButtonTips =
     {
-        "Calendar", "Forecast", "No weekends", "Sessions", "Add symbol", "Settings",
+        "Calendar", "Forecast", "No weekends", "Sessions", "Comments", "Add symbol", "Settings",
     };
 
     private bool _calendarPresent;
@@ -51,6 +52,7 @@ public sealed class ChartToolBarView : FrameworkElement
     private bool _forecastEnabled;
     private bool _weekendsHidden;
     private bool _sessionsVisible;
+    private bool _commentsVisible;
     private int _hoverButton = -1;
     private string? _connText;
     private Brush _connBrush = CreateFrozenBrush(0x80, 0x80, 0x80);
@@ -59,6 +61,7 @@ public sealed class ChartToolBarView : FrameworkElement
     public event Action? ForecastClick;
     public event Action? WeekendsClick;
     public event Action? SessionsClick;
+    public event Action? CommentsClick;
     public event Action? AddClick;
     public event Action? SettingsClick;
     public event Action? CalendarSettingsRequested;
@@ -78,6 +81,7 @@ public sealed class ChartToolBarView : FrameworkElement
                 case ForecastButton: ForecastClick?.Invoke(); break;
                 case WeekendsButton: WeekendsClick?.Invoke(); break;
                 case SessionsButton: SessionsClick?.Invoke(); break;
+                case CommentsButton: CommentsClick?.Invoke(); break;
                 case AddButton: AddClick?.Invoke(); break;
                 case SettingsButton: SettingsClick?.Invoke(); break;
             }
@@ -143,6 +147,12 @@ public sealed class ChartToolBarView : FrameworkElement
         InvalidateVisual();
     }
 
+    public void SetCommentsRow(bool visible)
+    {
+        _commentsVisible = visible;
+        InvalidateVisual();
+    }
+
     public void SetConnStatus(string text, int colorArgb)
     {
         _connText = text;
@@ -188,6 +198,7 @@ public sealed class ChartToolBarView : FrameworkElement
                 case ForecastButton: DrawForecastIcon(dc, rect, pen, brush); break;
                 case WeekendsButton: DrawWeekendsIcon(dc, rect, brush, thick); break;
                 case SessionsButton: DrawSessionsIcon(dc, rect, brush); break;
+                case CommentsButton: DrawCommentsIcon(dc, rect, pen, brush); break;
                 case AddButton: DrawAddIcon(dc, rect, thick); break;
                 case SettingsButton: DrawSettingsIcon(dc, rect, thick); break;
             }
@@ -256,6 +267,24 @@ public sealed class ChartToolBarView : FrameworkElement
         dc.DrawRectangle(brush, null, new Rect(x + 14, y + 6, 4, 11));
     }
 
+    private static void DrawCommentsIcon(DrawingContext dc, Rect r, Pen pen, Brush brush)
+    {
+        double x = r.X, y = r.Y;
+        var body = new Rect(x + 4.5, y + 5.5, 13, 9.5);
+        dc.DrawRoundedRectangle(null, pen, body, 2.5, 2.5);
+        var tail = new StreamGeometry();
+        using (var g = tail.Open())
+        {
+            g.BeginFigure(new Point(x + 7.5, y + 14), true, true);
+            g.LineTo(new Point(x + 7.5, y + 18), true, false);
+            g.LineTo(new Point(x + 11.5, y + 14), true, false);
+        }
+        tail.Freeze();
+        dc.DrawGeometry(brush, null, tail);
+        for (int i = 0; i < 3; i++)
+            dc.DrawRectangle(brush, null, new Rect(x + 7 + i * 3, y + 9.5, 2, 1.5));
+    }
+
     private static void DrawAddIcon(DrawingContext dc, Rect r, Pen pen)
     {
         double cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2;
@@ -311,6 +340,7 @@ public sealed class ChartToolBarView : FrameworkElement
         ForecastButton => _forecastEnabled,
         WeekendsButton => _weekendsHidden,
         SessionsButton => _sessionsVisible,
+        CommentsButton => _commentsVisible,
         _ => false,
     };
 

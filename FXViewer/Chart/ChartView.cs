@@ -49,8 +49,35 @@ public sealed record ForecastMark(
 
 public sealed record ForecastMarker(int X, int Y, int HalfPx, ForecastMark Mark, int ColorArgb);
 
+public sealed record CommentMark(string Id, string Pair, long MinuteUnix, int Value);
+
+public sealed record CommentEditRequest(string? Id, string Pair, long MinuteUnix, int Value,
+    IReadOnlyList<PlayLevel> Levels);
+
+public readonly record struct CommentStyle(int Radius, int ColorArgb, int Alpha)
+{
+    public const int DefaultDiameterPx = 15;
+    public const int DefaultColorArgb = unchecked((int)0xFF808080);
+    public const int DefaultOpacityPercent = 60;
+    public const int MinDiameterPx = 3;
+    public const int MaxDiameterPx = 99;
+
+    public static CommentStyle Of(int diameterPx, int colorArgb, int opacityPercent) => new(
+        Math.Clamp(diameterPx, MinDiameterPx, MaxDiameterPx) / 2,
+        unchecked((int)0xFF000000) | (colorArgb & 0xFFFFFF),
+        Math.Clamp(opacityPercent, 1, 100) * 255 / 100);
+
+    public static CommentStyle Default =>
+        Of(DefaultDiameterPx, DefaultColorArgb, DefaultOpacityPercent);
+}
+
 public sealed record DealMark(
     long EntryUnix, int EntryValue, long ExitUnix, int ExitValue, bool Buy, bool Win, bool Closed);
+
+public sealed record GameMark(string Symbol, bool Pending, bool Buy, long FromUnix, long ToUnix, int Price,
+    int StopPrice, int TakePrice, bool HasStop, bool HasTake, bool Closed, int ClosePrice, bool Win);
+
+public readonly record struct PlayLevel(string Symbol, int Price);
 
 public sealed record SymbolSeries(string Symbol, CandleHistory History, int ColorArgb, int PipPoints = 10,
     bool Editable = false, PivotPoint[]? Pivots = null, SeriesTransform? Transform = null,
@@ -62,9 +89,8 @@ public sealed record SymbolSeries(string Symbol, CandleHistory History, int Colo
     public bool RangeStatsRow { get; init; }
     public bool TimeShift { get; init; }
     public bool AgeMirror { get; init; }
-    public int AverageWindowBars { get; init; }
-    public bool AverageFromFuture { get; init; }
-    public bool AverageVolumeWeighted { get; init; }
+    public AverageSpec? Average { get; init; }
+    public int AverageWindowBars => Average?.WindowBars ?? 0;
     public bool DensityPanel { get; init; }
     public int[]? DensityWindows { get; init; }
     public int[]? DensityScalePercents { get; init; }
@@ -85,8 +111,13 @@ public sealed record SymbolSeries(string Symbol, CandleHistory History, int Colo
     public OrderBook.OrderBookSnapshot[]? OrderBookSnapshots { get; init; }
     public OrderBook.DepthSnapshot[]? DepthSnapshots { get; init; }
     public int DepthPipPoints { get; init; } = 10;
+    public bool LevelsPanel { get; init; }
+    public int LevelWindowMinutes { get; init; }
+    public int LevelLengthPx { get; init; } = IndicatorSymbol.DefaultLevelLengthPx;
+    public int LevelStepPx { get; init; } = IndicatorSymbol.DefaultLevelStepPx;
+    public string? GameDrawing { get; init; }
     public bool BottomPanel => EntryPanel || AgePanel || DensityPanel || SpreadPanel || VolumePanel
-        || OrderBookPanel;
+        || OrderBookPanel || LevelsPanel;
 }
 
 public sealed record PivotEditRequest(string Symbol, IReadOnlyList<PivotPoint> Points);
@@ -104,9 +135,11 @@ public sealed class ChartView : Grid
         unchecked((int)0xFFE0E0E0),
         unchecked((int)0xFFC8C8C8),
         unchecked((int)0xFF8C8C8C),
-        unchecked((int)0xFFEAF2FB),
+        unchecked((int)0xFFE2EDF9),
+        unchecked((int)0xFFF2F7FD),
         unchecked((int)0xFFF9EBD2),
         unchecked((int)0xFFFCF3E5),
+        unchecked((int)0xFFF9F9F9),
         unchecked((int)0xFFDCDCDC));
 
     private const double TiltedAngleStepDegrees = 1;
@@ -166,6 +199,7 @@ public sealed class ChartView : Grid
     private double _priceOffsetPoints;
     private readonly Dictionary<string, double> _seriesOffsetPoints = new();
     private readonly Dictionary<string, Candle[]> _averageParents = new();
+    private readonly HashSet<string> _averageRefreshing = new(StringComparer.Ordinal);
     private readonly HashSet<string> _offsetLockedSymbols = new();
     private readonly HashSet<string> _hiddenSymbols = new();
     private readonly HashSet<string> _collapsedSources = new();
@@ -191,6 +225,11 @@ public sealed class ChartView : Grid
     private string _forecastDay = "";
     private bool _forecastHidden;
     private Popup? _forecastPopup;
+    private CommentMark[] _commentMarks = Array.Empty<CommentMark>();
+    private readonly List<CommentSpot> _commentSpots = new();
+    private CommentStyle _commentStyle = CommentStyle.Default;
+    private bool _commentsHidden;
+    private string? _commentFocusId;
     private int _calHoverX = -1;
     private double _calCircleCenterX;
     private double _calCircleCenterY;
@@ -375,6 +414,8 @@ public sealed class ChartView : Grid
     private int _densityUsedPx = DensityMaxWidthPx;
     private int _densitySelected;
     private long _densityAnchorColumn = long.MinValue;
+    private int[] _levelRowLeft = Array.Empty<int>();
+    private int[] _levelTrend = Array.Empty<int>();
 
     private const int SeriesHitRadiusPx = 2;
     private const int ShiftHotWidthPx = 2;
@@ -433,8 +474,78 @@ public sealed class ChartView : Grid
 
     public event Action<Rect?>? MeasureLabelBoundsChanged;
 
+    public event Action<long>? PlayToggleRequested;
+    public event Action? PlayRandomDayRequested;
+    public event Action? PlayNextDayRequested;
+    public event Action? PlayReplayDayRequested;
+    public event Action? GameStatsRequested;
+    public event Action<int>? PlayStepRequested;
+    public event Action<IReadOnlyList<PlayLevel>, string?>? PlayOrderRequested;
+    public event Action<string>? SeriesReplaced;
+
+    private long _playTimeUnix;
+    private bool _playLocked;
+    private bool _playDayGame;
+    private bool _playHasNextDay;
+    private bool _playFutureOpen;
+    private GameMark[] _playMarks = Array.Empty<GameMark>();
+
+    public long PlayTimeUnix => _playTimeUnix;
+
+    private long PlayLimitUnix => _playFutureOpen ? 0 : _playTimeUnix;
+
+    private long PlayCutUnix
+    {
+        get
+        {
+            long limit = PlayLimitUnix;
+            return limit > 0 ? limit + ChartColumns.MinuteSeconds : long.MaxValue;
+        }
+    }
+
+    public void SetPlay(long timeUnix, IReadOnlyList<GameMark>? marks, bool follow = false, bool locked = false,
+        bool dayGame = false, bool hasNextDay = false, bool futureOpen = false)
+    {
+        long previous = _playTimeUnix;
+        _playTimeUnix = timeUnix > 0 ? timeUnix : 0;
+        _playLocked = _playTimeUnix > 0 && locked;
+        _playDayGame = _playTimeUnix > 0 && dayGame;
+        _playHasNextDay = _playDayGame && hasNextDay;
+        _playFutureOpen = _playTimeUnix > 0 && futureOpen;
+        _playMarks = _playTimeUnix > 0 && marks is { Count: > 0 }
+            ? marks.ToArray()
+            : Array.Empty<GameMark>();
+        if (follow) KeepPlayTimeVisible();
+        Rebuild();
+        if (_playTimeUnix != previous) RefreshStatsPopup();
+    }
+
+    private long PlayClampEnd(long loUnix, long hiUnix)
+    {
+        long limit = PlayLimitUnix;
+        return limit > 0 ? Math.Max(loUnix, Math.Min(hiUnix, limit)) : hiUnix;
+    }
+
+    private bool KeepPlayTimeVisible()
+    {
+        if (_playTimeUnix <= 0 || _renderedColumnSeconds <= 0 || _columnSeconds <= 0) return false;
+        var dpi = VisualTreeHelper.GetDpi(this);
+        int pw = (int)Math.Round(ActualWidth * dpi.DpiScaleX);
+        if (pw < MinVisibleColumns) return false;
+        long bucket = ToVirtual(_playTimeUnix) / _columnSeconds;
+        long x = bucket - _viewStartBucket;
+        int margin = Math.Max(2, pw / 20);
+        if (x >= margin && x < pw - margin) return false;
+        long start = ClampViewStart(bucket - pw * 2 / 3,
+            ViewFirstUnix / _columnSeconds, ViewLastUnix / _columnSeconds, pw);
+        if (start == _viewStartBucket) return false;
+        _viewStartBucket = start;
+        return true;
+    }
+
     private List<ZoomLevel> _zoomLevels = new();
     private int _zoomLevelIndex = -1;
+    private double _customZoom = 1;
     private long _zoomAppliedColumnSeconds;
     private double _zoomAppliedPointsPerRow;
 
@@ -512,6 +623,11 @@ public sealed class ChartView : Grid
             else if (e.Key == Key.Q && _cursorOnChart)
             {
                 BeginMeasure(_cursorPx, _cursorPy);
+                e.Handled = true;
+            }
+            else if (e.Key is Key.P or Key.O && _playTimeUnix > 0)
+            {
+                PlayStepRequested?.Invoke(e.Key == Key.P ? 1 : -1);
                 e.Handled = true;
             }
             else if (e.Key == Key.Escape && (_measuring || _hasMeasure))
@@ -844,9 +960,11 @@ public sealed class ChartView : Grid
         if (state.CollapsedSymbols != null)
             foreach (var symbol in state.CollapsedSymbols) _collapsedSources.Add(symbol);
         RefreshHidden();
+        ScheduleAverageRefresh();
         SeriesOffsetsChanged?.Invoke();
         _calendarVisible = state.CalendarVisible;
         _forecastHidden = state.ForecastHidden;
+        _commentsHidden = state.CommentsHidden;
         _flattenSymbol = state.FlattenSymbol;
         _flattenLine = state.FlattenSymbol == null ? -1 : state.FlattenLine;
         state.EnsureTiltedGrids();
@@ -867,6 +985,7 @@ public sealed class ChartView : Grid
     {
         if (!_collapsedSources.Remove(symbol)) _collapsedSources.Add(symbol);
         RefreshHidden();
+        ScheduleAverageRefresh();
         if (_selSymbol != null && IsHidden(_selSymbol)) DeselectLine();
         Rebuild();
         return _collapsedSources.Contains(symbol);
@@ -901,6 +1020,7 @@ public sealed class ChartView : Grid
     {
         if (!_hiddenSymbols.Remove(symbol)) _hiddenSymbols.Add(symbol);
         RefreshHidden();
+        ScheduleAverageRefresh();
         if (_selSymbol != null && IsHidden(_selSymbol)) DeselectLine();
         Rebuild();
         return !_hiddenSymbols.Contains(symbol);
@@ -1005,6 +1125,43 @@ public sealed class ChartView : Grid
         CloseForecastPopup();
         Rebuild();
         ForecastDaySelected?.Invoke();
+    }
+
+    public event Action<CommentEditRequest>? CommentEditRequested;
+
+    public bool CommentsVisible => !_commentsHidden;
+
+    public void SetComments(IReadOnlyList<CommentMark> marks)
+    {
+        _commentMarks = marks.ToArray();
+        Rebuild();
+    }
+
+    public void SetCommentStyle(CommentStyle style)
+    {
+        _commentStyle = style;
+        Rebuild();
+    }
+
+    public bool ToggleComments()
+    {
+        _commentsHidden = !_commentsHidden;
+        Rebuild();
+        return !_commentsHidden;
+    }
+
+    public void ShowComments()
+    {
+        if (!_commentsHidden) return;
+        _commentsHidden = false;
+        Rebuild();
+    }
+
+    public void SetCommentFocus(string? id)
+    {
+        if (_commentFocusId == id) return;
+        _commentFocusId = id;
+        Rebuild();
     }
 
     private ForecastMark[] SelectedDayForecasts() =>
@@ -1539,8 +1696,7 @@ public sealed class ChartView : Grid
     {
         if (_offsetLockedSymbols.Contains(symbol)) return;
         double total = SeriesOffset(symbol);
-        double aligned = Math.Round(total / ChartRasterizer.GridPriceStepPoints)
-            * ChartRasterizer.GridPriceStepPoints;
+        double aligned = GridAlignedOffset(GetSeries(symbol), total);
         if (aligned == total) return;
         _seriesOffsetPoints[symbol] =
             _seriesOffsetPoints.GetValueOrDefault(symbol) + aligned - total;
@@ -1565,14 +1721,20 @@ public sealed class ChartView : Grid
         }
         double center = _topPrice - _pointsPerRow * (ph - 1) / 2;
         double middle = (range.Lo + range.Hi) / 2;
-        const double step = ChartRasterizer.GridPriceStepPoints;
-        double total = Math.Round((center - middle) / step) * step;
+        double total = GridAlignedOffset(s, center - middle);
         double sourceOffset = s.SourceSymbol == null ? 0 : EffectiveSeriesOffset(s.SourceSymbol);
         double own = total - _priceOffsetPoints - sourceOffset;
         if (_seriesOffsetPoints.GetValueOrDefault(symbol) == own) return;
         _seriesOffsetPoints[symbol] = own;
         SeriesOffsetsChanged?.Invoke();
         Rebuild();
+    }
+
+    private static double GridAlignedOffset(SymbolSeries? s, double offset)
+    {
+        const double step = ChartRasterizer.GridPriceStepPoints;
+        double priceZero = s?.Transform?.ToDisplay(0.0) ?? 0;
+        return Math.Round((offset + priceZero) / step) * step - priceZero;
     }
 
     private (double Lo, double Hi)? VisibleDisplayRange(SymbolSeries s, int pw) =>
@@ -1585,7 +1747,8 @@ public sealed class ChartView : Grid
         long bucketSec = columnSeconds;
         if (s.History.Minutes.Length > 0)
         {
-            var view = ChartColumns.BuildView(s.History, columnSeconds, viewStart, pw, Compressor);
+            var view = ChartColumns.BuildView(
+                s.History, columnSeconds, viewStart, pw, Compressor, PlayCutUnix);
             var shifts = _flatten?.ColumnShifts(viewStart, pw, bucketSec);
             for (int i = 0; i < view.Columns.Length; i++)
             {
@@ -1653,6 +1816,7 @@ public sealed class ChartView : Grid
         if (_seriesOffsetPoints.Remove(oldName, out var offset)) _seriesOffsetPoints[newName] = offset;
         if (_offsetLockedSymbols.Remove(oldName)) _offsetLockedSymbols.Add(newName);
         if (_averageParents.Remove(oldName, out var parentMinutes)) _averageParents[newName] = parentMinutes;
+        if (_averageRefreshing.Remove(oldName)) _averageRefreshing.Add(newName);
         if (_hiddenSymbols.Remove(oldName)) _hiddenSymbols.Add(newName);
         if (_collapsedSources.Remove(oldName)) _collapsedSources.Add(newName);
         RefreshHidden();
@@ -1753,7 +1917,7 @@ public sealed class ChartView : Grid
         for (int i = 0; i < list.Count; i++)
         {
             var s = list[i];
-            if (s.AverageWindowBars <= 0) continue;
+            if (s.Average is not { } spec) continue;
             _offsetLockedSymbols.Add(s.Symbol);
             if (s.SourceSymbol == null) continue;
             SymbolSeries? parent = null;
@@ -1767,9 +1931,8 @@ public sealed class ChartView : Grid
             if (s.History.Minutes.Length == 0 && parent.History.Minutes.Length > 0)
                 list[i] = s with
                 {
-                    History = CandleHistory.Build(AverageSeries.Compute(
-                        parent.History.Minutes, s.AverageWindowBars, s.AverageFromFuture,
-                        s.AverageVolumeWeighted)),
+                    History = CandleHistory.Build(
+                        AverageSeries.Compute(parent.History.Minutes, spec)),
                 };
             _averageParents[s.Symbol] = parent.History.Minutes;
         }
@@ -1819,7 +1982,25 @@ public sealed class ChartView : Grid
         RequestRebuild();
     }
 
-    public void ReplaceSeries(string symbol, CandleHistory history, SeriesTransform? transform = null)
+    public IReadOnlyList<AverageJob> AverageJobsOf(string parentSymbol)
+    {
+        var series = _series;
+        if (series == null) return Array.Empty<AverageJob>();
+        List<AverageJob>? jobs = null;
+        foreach (var s in series)
+        {
+            if (s.Average is not { } spec
+                || !string.Equals(s.SourceSymbol, parentSymbol, StringComparison.OrdinalIgnoreCase)
+                || IsHidden(s.Symbol))
+                continue;
+            jobs ??= new List<AverageJob>();
+            jobs.Add(new AverageJob(s.Symbol, spec, s.History, _averageParents.GetValueOrDefault(s.Symbol)));
+        }
+        return jobs ?? (IReadOnlyList<AverageJob>)Array.Empty<AverageJob>();
+    }
+
+    public void ReplaceSeries(string symbol, CandleHistory history, SeriesTransform? transform = null,
+        IReadOnlyList<AverageResult>? averages = null)
     {
         var series = _series;
         if (series == null || history.Minutes.Length == 0) return;
@@ -1837,12 +2018,13 @@ public sealed class ChartView : Grid
             Transform = transform ?? list[idx].Transform,
         };
         _series = list;
-        UpdateAveragesOf(symbol);
+        UpdateAveragesOf(symbol, averages);
         if (transform != null) SeriesOffsetsChanged?.Invoke();
         RecomputeGlobalRange();
         RebuildPivots();
         RebuildFlatten();
         Rebuild();
+        SeriesReplaced?.Invoke(symbol);
     }
 
     public void SetSeriesColor(string symbol, int argb)
@@ -1876,7 +2058,7 @@ public sealed class ChartView : Grid
         Rebuild();
     }
 
-    private void UpdateAveragesOf(string parentSymbol)
+    private void UpdateAveragesOf(string parentSymbol, IReadOnlyList<AverageResult>? ready = null)
     {
         var series = _series;
         if (series == null) return;
@@ -1892,38 +2074,97 @@ public sealed class ChartView : Grid
         for (int i = 0; i < series.Count; i++)
         {
             var s = series[i];
-            if (s.AverageWindowBars <= 0
+            if (s.Average is not { } spec
                 || !string.Equals(s.SourceSymbol, parentSymbol, StringComparison.OrdinalIgnoreCase))
                 continue;
             var minutes = parent.History.Minutes;
             var used = _averageParents.GetValueOrDefault(s.Symbol);
             if (ReferenceEquals(used, minutes)) continue;
-            CandleHistory? updated = null;
-            if (used is { Length: > 0 } && s.History.Minutes.Length == used.Length)
-            {
-                var diff = AverageSeries.Diff(
-                    used, minutes, s.AverageWindowBars, s.AverageFromFuture, s.AverageVolumeWeighted);
-                if (diff == null)
-                {
-                    _averageParents[s.Symbol] = minutes;
-                    continue;
-                }
-                var replacement = AverageSeries.ComputeRange(
-                    minutes, s.AverageWindowBars, s.AverageFromFuture, s.AverageVolumeWeighted,
-                    diff.Value.NewFrom, diff.Value.NewToExcl);
-                updated = s.History.WithReplacedRange(
-                    diff.Value.OldFrom, diff.Value.OldToExcl - diff.Value.OldFrom, replacement);
-            }
-            updated ??= CandleHistory.Build(AverageSeries.Compute(
-                minutes, s.AverageWindowBars, s.AverageFromFuture, s.AverageVolumeWeighted));
-            updated.SetLive(AverageSeries.LiveTail(
-                minutes, parent.History.Live, s.AverageWindowBars, s.AverageFromFuture,
-                s.AverageVolumeWeighted));
+            if (!TryTakeReady(ready, s, used, out var updated)) continue;
             _averageParents[s.Symbol] = minutes;
+            if (updated == null) continue;
+            updated.SetLive(AverageSeries.LiveTail(minutes, parent.History.Live, spec));
             list ??= new List<SymbolSeries>(series);
             list[i] = s with { History = updated };
         }
         if (list != null) _series = list;
+        ScheduleAverageRefresh();
+    }
+
+    private static bool TryTakeReady(IReadOnlyList<AverageResult>? ready, SymbolSeries series,
+        Candle[]? used, out CandleHistory? history)
+    {
+        history = null;
+        if (ready == null) return false;
+        foreach (var r in ready)
+        {
+            if (r.Job.Symbol != series.Symbol) continue;
+            if (!ReferenceEquals(r.Job.History, series.History)
+                || !ReferenceEquals(r.Job.Parent, used))
+                return false;
+            history = r.History;
+            return true;
+        }
+        return false;
+    }
+
+    private void ScheduleAverageRefresh()
+    {
+        var series = _series;
+        if (series == null) return;
+        foreach (var s in series)
+        {
+            if (s.Average is not { } spec || s.SourceSymbol == null) continue;
+            if (IsHidden(s.Symbol) || _averageRefreshing.Contains(s.Symbol)) continue;
+            var parent = GetSeries(s.SourceSymbol);
+            if (parent == null) continue;
+            var minutes = parent.History.Minutes;
+            if (minutes.Length == 0) continue;
+            var used = _averageParents.GetValueOrDefault(s.Symbol);
+            if (ReferenceEquals(used, minutes)) continue;
+            var job = new AverageJob(s.Symbol, spec, s.History, used);
+            string source = s.SourceSymbol;
+            _averageRefreshing.Add(s.Symbol);
+            Task.Run(() =>
+            {
+                AverageResult result;
+                using (Perf.Step("average.rebuild")) result = AverageSeries.Rebuild(job, minutes);
+                Dispatcher.BeginInvoke(() => ApplyAverageRefresh(source, minutes, result));
+            });
+        }
+    }
+
+    private void ApplyAverageRefresh(string parentSymbol, Candle[] minutes, AverageResult result)
+    {
+        _averageRefreshing.Remove(result.Job.Symbol);
+        var series = _series;
+        if (series == null) return;
+        var parent = GetSeries(parentSymbol);
+        if (parent == null || !ReferenceEquals(parent.History.Minutes, minutes))
+        {
+            ScheduleAverageRefresh();
+            return;
+        }
+        int idx = -1;
+        for (int i = 0; i < series.Count; i++)
+            if (series[i].Symbol == result.Job.Symbol) { idx = i; break; }
+        if (idx < 0) return;
+        var s = series[idx];
+        if (s.Average is not { } spec || !spec.Equals(result.Job.Spec)
+            || !ReferenceEquals(s.History, result.Job.History)
+            || !ReferenceEquals(_averageParents.GetValueOrDefault(s.Symbol), result.Job.Parent))
+        {
+            ScheduleAverageRefresh();
+            return;
+        }
+        _averageParents[s.Symbol] = minutes;
+        if (result.History == null) return;
+        result.History.SetLive(AverageSeries.LiveTail(minutes, parent.History.Live, spec));
+        var list = new List<SymbolSeries>(series);
+        list[idx] = s with { History = result.History };
+        _series = list;
+        RecomputeGlobalRange();
+        Rebuild();
     }
 
     public void SetAverageWindow(string symbol, int windowBars)
@@ -1939,10 +2180,10 @@ public sealed class ChartView : Grid
             }
         if (idx < 0) return;
         var s = series[idx];
-        if (s.AverageWindowBars <= 0 || s.AverageWindowBars == windowBars || s.SourceSymbol == null)
+        if (s.Average is not { } spec || spec.WindowBars == windowBars || s.SourceSymbol == null)
             return;
         var list = new List<SymbolSeries>(series);
-        list[idx] = s with { AverageWindowBars = windowBars };
+        list[idx] = s with { Average = spec with { WindowBars = windowBars } };
         _series = list;
         _averageParents.Remove(s.Symbol);
         UpdateAveragesOf(s.SourceSymbol);
@@ -2194,11 +2435,9 @@ public sealed class ChartView : Grid
         match.History.SetLive(tail);
         match.History.SetLiveHiddenSpreads(hiddenSpreads ?? Array.Empty<SpreadMark>());
         foreach (var s in series)
-            if (s.AverageWindowBars > 0
+            if (s.Average is { } spec
                 && string.Equals(s.SourceSymbol, symbol, StringComparison.OrdinalIgnoreCase))
-                s.History.SetLive(AverageSeries.LiveTail(
-                    match.History.Minutes, tail, s.AverageWindowBars, s.AverageFromFuture,
-                    s.AverageVolumeWeighted));
+                s.History.SetLive(AverageSeries.LiveTail(match.History.Minutes, tail, spec));
         if (tail.Length > 0)
         {
             long last = tail[^1].MinuteUnixSeconds;
@@ -2295,6 +2534,13 @@ public sealed class ChartView : Grid
                 }
             }
             BeginRangeSelect(cx);
+            return;
+        }
+        if (e.ClickCount >= 2 && FindCommentSpotAt(cx, cy) is { } spot)
+        {
+            e.Handled = true;
+            CloseChartPopups();
+            RequestCommentEdit(spot.Id, cx, cy);
             return;
         }
         var forecastHits = FindForecastMarkersAt(cx, cy);
@@ -2588,6 +2834,7 @@ public sealed class ChartView : Grid
 
     private List<RangeStats> ComputeRangeStats(long loUnix, long hiUnix)
     {
+        hiUnix = Math.Min(hiUnix, PlayCutUnix - 1);
         var result = new List<RangeStats>();
         var series = _series;
         if (series == null) return result;
@@ -2655,7 +2902,8 @@ public sealed class ChartView : Grid
                 bool backIsRawMax = highIsSecond == mirror;
                 int secondExtreme = highIsSecond ? (mirror ? mn : mx) : (mirror ? mx : mn);
                 int backRaw = secondExtreme;
-                Scan(Math.Max(lowUnix, highUnix), hiUnix, c =>
+                long afterExtremeUnix = Math.Max(lowUnix, highUnix) + 1;
+                Scan(afterExtremeUnix, hiUnix, c =>
                 {
                     if (backIsRawMax) backRaw = Math.Max(backRaw, c.Max);
                     else backRaw = Math.Min(backRaw, c.Min);
@@ -2692,6 +2940,7 @@ public sealed class ChartView : Grid
             hi = ColumnTime(cx + StatsCursorRadiusPx);
             if (hi < lo) (lo, hi) = (hi, lo);
         }
+        hi = PlayClampEnd(lo, hi);
         var rows = ComputeRangeStats(MinuteFloor(lo), hi + _renderedColumnSeconds - 1);
         if (rows.Count == 0) return;
         CloseStatsPopup();
@@ -2725,6 +2974,7 @@ public sealed class ChartView : Grid
             return;
         }
         var (lo, hi) = sel;
+        hi = PlayClampEnd(lo, hi);
         var rows = ComputeRangeStats(MinuteFloor(lo), hi + _renderedColumnSeconds - 1);
         if (rows.Count == 0)
         {
@@ -3190,6 +3440,7 @@ public sealed class ChartView : Grid
 
     private double? RangeExtreme(SymbolSeries s, long loUnix, long hiUnix, bool toMax)
     {
+        hiUnix = Math.Min(hiUnix, PlayCutUnix - 1);
         double best = 0;
         bool has = false;
         void Take(Candle c)
@@ -3282,6 +3533,92 @@ public sealed class ChartView : Grid
         if (!changed) return;
         SeriesOffsetsChanged?.Invoke();
         Rebuild();
+    }
+
+    private void CompactPairs(int cx, int cy)
+    {
+        if (_series == null || _pointsPerRow <= 0 || _renderedColumnSeconds <= 0) return;
+        var dpi = VisualTreeHelper.GetDpi(this);
+        int ph = (int)Math.Round(ActualHeight * dpi.DpiScaleY);
+        if (ph < 2) return;
+        var (lo, hi) = SelectedRange ?? (ColumnTime(cx), ColumnTime(cx));
+        hi = PlayClampEnd(lo, hi);
+        long loUnix = MinuteFloor(lo);
+        long hiUnix = Math.Min(hi + _renderedColumnSeconds - 1, PlayCutUnix - 1);
+        var pairs = new List<SymbolSeries>();
+        var spans = new List<List<MinuteSpan>>();
+        foreach (var symbol in VisiblePairs())
+        {
+            var s = GetSeries(symbol)!;
+            var pairSpans = CompactSpans(s, loUnix, hiUnix);
+            if (pairSpans.Count == 0) continue;
+            pairs.Add(s);
+            spans.Add(pairSpans);
+        }
+        if (pairs.Count == 0)
+        {
+            Info?.Invoke(SelectedRange == null
+                ? "Compact: no candles at the cursor"
+                : "Compact: no candles inside the selection");
+            return;
+        }
+        const long step = ChartRasterizer.GridPriceStepPoints;
+        var layout = PairCompactor.Solve(spans, step);
+        double bundleLo = double.MaxValue;
+        double bundleHi = double.MinValue;
+        for (int i = 0; i < pairs.Count; i++)
+            foreach (var span in spans[i])
+            {
+                double shift = step * layout.GridSteps[i] + FlattenShift(span.MinuteUnixSeconds);
+                bundleLo = Math.Min(bundleLo, span.Low + shift);
+                bundleHi = Math.Max(bundleHi, span.High + shift);
+            }
+        double cursor = _topPrice - cy * _pointsPerRow;
+        double lift = step * Math.Round((cursor - (bundleLo + bundleHi) / 2) / step);
+        bool changed = false;
+        for (int i = 0; i < pairs.Count; i++)
+        {
+            var s = pairs[i];
+            double offset = step * layout.GridSteps[i] + lift
+                - s.Transform!.ToDisplay(0.0) - _priceOffsetPoints;
+            if (_seriesOffsetPoints.GetValueOrDefault(s.Symbol) == offset) continue;
+            _seriesOffsetPoints[s.Symbol] = offset;
+            changed = true;
+        }
+        double screenRange = _pointsPerRow * (ph - 1);
+        bundleLo += lift;
+        bundleHi += lift;
+        if (bundleLo < _topPrice - screenRange || bundleHi > _topPrice)
+        {
+            double newTop = Math.Clamp(_topPrice + (bundleLo + bundleHi) / 2 - cursor,
+                PanMinPrice, PanMaxPrice + screenRange);
+            if (newTop != _topPrice)
+            {
+                _topPrice = newTop;
+                changed = true;
+            }
+        }
+        Info?.Invoke("Compact: max distance "
+            + (layout.MaxDistance / (double)PipPoints).ToString("0.0", CultureInfo.InvariantCulture)
+            + " pips");
+        if (!changed) return;
+        SeriesOffsetsChanged?.Invoke();
+        Rebuild();
+    }
+
+    private static List<MinuteSpan> CompactSpans(SymbolSeries s, long loUnix, long hiUnix)
+    {
+        long zero = (long)s.Transform!.ToDisplay(0.0);
+        var spans = new List<MinuteSpan>();
+        void Take(Candle c) => spans.Add(new MinuteSpan(c.MinuteUnixSeconds, c.Min - zero, c.Max - zero));
+        var minutes = s.History.Minutes;
+        for (int i = LowerBound(minutes, loUnix);
+             i < minutes.Length && minutes[i].MinuteUnixSeconds <= hiUnix; i++)
+            Take(minutes[i]);
+        foreach (var c in s.History.Live)
+            if (c.MinuteUnixSeconds >= loUnix && c.MinuteUnixSeconds <= hiUnix)
+                Take(c);
+        return spans;
     }
 
     private static long ClampViewStart(long start, long firstBucket, long lastBucket, int pw)
@@ -3425,6 +3762,38 @@ public sealed class ChartView : Grid
         PixelsPer100Pips = ZoomLevel.PixelsPer100PipsOf(_pointsPerRow),
     };
 
+    public double CustomZoom => _customZoom;
+
+    public void SetCustomZoom(double value) => _customZoom = ZoomLevel.ClampCustomZoom(value);
+
+    public void ChangeCustomZoom(double value)
+    {
+        double next = ZoomLevel.ClampCustomZoom(value);
+        if (next == _customZoom) return;
+        bool clean = _zoomLevelIndex >= 0 && !ZoomLevelDirty;
+        double factor = _customZoom / next;
+        _customZoom = next;
+        if (_series == null || _pointsPerRow <= 0)
+        {
+            ZoomLevelChanged?.Invoke();
+            return;
+        }
+        ApplyLevelPointsPerRow(_pointsPerRow * factor, ActualHeight / 2);
+        if (clean) MarkZoomApplied();
+        ZoomLevelChanged?.Invoke();
+        Rebuild();
+    }
+
+    private double LevelPointsPerRow(ZoomLevel level) =>
+        ZoomLevel.ToPointsPerRow(level.PixelsPer100Pips) / _customZoom;
+
+    private ZoomLevel BaseZoom()
+    {
+        var zoom = CurrentZoom();
+        zoom.PixelsPer100Pips /= _customZoom;
+        return zoom;
+    }
+
     public bool ZoomLevelDirty
     {
         get
@@ -3446,7 +3815,7 @@ public sealed class ChartView : Grid
         if (!level.IsValid) return false;
         if (ZoomLevel.ToColumnSeconds(level.PixelsPerDay)
             != ZoomLevel.ToColumnSeconds(current.PixelsPerDay)) return false;
-        double ppr = ZoomLevel.ToPointsPerRow(level.PixelsPer100Pips);
+        double ppr = LevelPointsPerRow(level);
         return Math.Abs(ppr - _pointsPerRow) <= _pointsPerRow * ZoomLevelTolerance;
     }
 
@@ -3476,7 +3845,7 @@ public sealed class ChartView : Grid
     public bool SaveCurrentZoomToLevel()
     {
         if (_zoomLevelIndex < 0 || _zoomLevelIndex >= _zoomLevels.Count) return false;
-        var current = CurrentZoom();
+        var current = BaseZoom();
         if (!current.IsValid) return false;
         _zoomLevels[_zoomLevelIndex].PixelsPerDay = current.PixelsPerDay;
         _zoomLevels[_zoomLevelIndex].PixelsPer100Pips = current.PixelsPer100Pips;
@@ -3508,7 +3877,7 @@ public sealed class ChartView : Grid
     public bool InsertZoomLevel(int index)
     {
         if (_zoomLevels.Count >= ZoomLevel.MaxCount) return false;
-        var current = CurrentZoom();
+        var current = BaseZoom();
         if (!current.IsValid) return false;
         _zoomLevelIndex = Math.Clamp(index, 0, _zoomLevels.Count);
         _zoomLevels.Insert(_zoomLevelIndex, current);
@@ -3584,7 +3953,7 @@ public sealed class ChartView : Grid
             _dragStartX = xm;
             _dragStartViewBucket = newStart;
         }
-        ApplyLevelPointsPerRow(ZoomLevel.ToPointsPerRow(level.PixelsPer100Pips), posY);
+        ApplyLevelPointsPerRow(LevelPointsPerRow(level), posY);
         MarkZoomApplied();
         ZoomLevelChanged?.Invoke();
         Rebuild();
@@ -3734,6 +4103,15 @@ public sealed class ChartView : Grid
         var flatten = _flatten;
         var tiltedGrid = new TiltedGridSettings(
             TiltedRenderSettings(true), TiltedRenderSettings(false));
+        long cut = PlayCutUnix;
+        long playNow = _playFutureOpen && _playTimeUnix > 0
+            ? map?.ToVirtual(_playTimeUnix) ?? _playTimeUnix
+            : -1;
+        var playMarks = _playMarks;
+        var commentMarks = _commentsHidden ? Array.Empty<CommentMark>() : _commentMarks;
+        var commentStyle = _commentStyle;
+        var commentFocus = _commentFocusId;
+        var commentSpots = new List<CommentSpot>();
         var edges = ChartColumns.ColumnEdges(map, k, startBucket, pw);
         var swRender = _firstRenderLogged ? null : Stopwatch.StartNew();
         string? hotShift = _shiftHotSymbol;
@@ -3763,10 +4141,17 @@ public sealed class ChartView : Grid
                     var s = visibleSeries[si];
                     if (s.History.Minutes.Length == 0 || s.BottomPanel) continue;
                     var (view, chosen, fullRange) = ChartColumns.BuildLine(
-                        s.History, k, startBucket - pw, pw * 2, map, pw, NoiseThreshold);
-                    var last = s.History.LastCandle;
-                    int lastPrice = s.History.HasLastTick ? s.History.LastTick : last.Avg;
-                    long lastVirtual = map?.ToVirtual(last.MinuteUnixSeconds) ?? last.MinuteUnixSeconds;
+                        s.History, k, startBucket - pw, pw * 2, map, pw, NoiseThreshold, cut);
+                    var last = LastCandleBefore(s.History, cut);
+                    int lastPrice = last == null
+                        ? 0
+                        : cut == long.MaxValue && s.History.HasLastTick
+                            ? s.History.LastTick
+                            : last.Value.Avg;
+                    long lastReal = last?.MinuteUnixSeconds ?? long.MaxValue / 2;
+                    long lastVirtual = last == null
+                        ? lastReal
+                        : map?.ToVirtual(lastReal) ?? lastReal;
                     bool dimmed = highlightSymbol != null && s.Symbol != highlightSymbol
                         && (s.BasePair || s.TimeShift);
                     var line = new RenderLine(view, chosen,
@@ -3825,8 +4210,12 @@ public sealed class ChartView : Grid
                 }
                 if (_staging.Length < pw * ph) _staging = new int[pw * ph];
                 t = Perf.Since("chart.fitscale", t);
+                if (pointsPerRow > 0 && commentMarks.Length > 0)
+                    BuildCommentSpots(commentSpots, commentMarks, visibleSeries, lineOffsets, flatten,
+                        map, k, startBucket, topPrice, pointsPerRow, pw, ph, commentStyle, commentFocus,
+                        cut);
                 ChartRasterizer.Render(_staging, pw, ph, lines, Palette, k, startBucket, edges,
-                    topPrice, pointsPerRow, tiltedGrid, sessionBands);
+                    topPrice, pointsPerRow, tiltedGrid, sessionBands, commentSpots);
                 t = Perf.Since("chart.raster", t);
                 if (pointsPerRow > 0)
                     foreach (int si in drawOrder)
@@ -3846,6 +4235,7 @@ public sealed class ChartView : Grid
                                 if (i - 1 == skipAround || i == skipAround) continue;
                                 long ta = poly[i - 1].UnixSeconds;
                                 long tb = poly[i].UnixSeconds;
+                                if (ownPivots && Math.Max(ta, tb) >= cut) continue;
                                 if (Math.Max(ta, tb) < edges[0] || Math.Min(ta, tb) > edges[pw]) continue;
                                 long va = map?.ToVirtual(ta) ?? ta;
                                 long vb = map?.ToVirtual(tb) ?? tb;
@@ -3863,8 +4253,23 @@ public sealed class ChartView : Grid
                         var s = visibleSeries[si];
                         if (s.DealMarks is not { Length: > 0 } || s.Transform == null) continue;
                         DrawDealMarks(_staging, pw, ph, s, flatten, map, k, startBucket,
+                            topPrice, pointsPerRow, lineOffsets[si], cut);
+                    }
+                if (pointsPerRow > 0 && playMarks.Length > 0)
+                    for (int si = 0; si < visibleSeries.Count; si++)
+                    {
+                        var s = visibleSeries[si];
+                        if (s.Transform == null || s.BottomPanel || !s.BasePair) continue;
+                        DrawGameMarks(_staging, pw, ph, s, playMarks, flatten, map, k, startBucket,
                             topPrice, pointsPerRow, lineOffsets[si]);
                     }
+                if (playNow >= 0)
+                {
+                    long playX = playNow / k - startBucket;
+                    if (playX >= 0 && playX < pw)
+                        ChartRasterizer.DrawVerticalDashed(_staging, pw, ph, (int)playX,
+                            PlayNowArgb, GameDashOnPx, GameDashOnPx + GameDashOffPx);
+                }
                 if (pointsPerRow > 0 && forecastMarks.Length > 0)
                     DrawForecasts(_staging, pw, ph, forecastMarks, forecastHover, visibleSeries,
                         lineOffsets, flatten, map, k, startBucket, topPrice, pointsPerRow,
@@ -3888,7 +4293,7 @@ public sealed class ChartView : Grid
                             || (src.History.Minutes.Length == 0 && src.History.Live.Length == 0
                                 && src.History.HiddenSpreads.Length == 0))
                             continue;
-                        var tenths = SpreadColumns.Build(src.History, k, startBucket, pw, map);
+                        var tenths = SpreadColumns.Build(src.History, k, startBucket, pw, map, cut);
                         spreadCols.Add((s.Symbol, tenths));
                         ChartRasterizer.DrawSpreadPanel(
                             _staging, pw, ph, tenths, panelBottom, s.ColorArgb, pointsPerRow);
@@ -3909,7 +4314,7 @@ public sealed class ChartView : Grid
                             ? vg
                             : Math.Max(1, s.VolumeGroupMinutes);
                         var vols = VolumeColumns.Build(src.History, s.VolumeProfiles,
-                            k, startBucket, pw, map, group);
+                            k, startBucket, pw, map, group, cut);
                         t = Perf.Since("panel.volume.build", t);
                         volumeCols.Add((s.Symbol, vols));
                         double used = ChartRasterizer.DrawVolumePanel(
@@ -3929,14 +4334,14 @@ public sealed class ChartView : Grid
                     if (s.AgePanel)
                     {
                         var ages = PriceAgeColumns.Build(
-                            s.History, k, startBucket, pw, map, s.AgeMirror);
+                            s.History, k, startBucket, pw, map, s.AgeMirror, cut);
                         ChartRasterizer.DrawAgePanel(_staging, pw, ph, ages, panelBottom, s.ColorArgb);
                         t = Perf.Since("panel.age", t);
                         panelBottom -= ChartRasterizer.AgePanelHeightPx + ChartRasterizer.EntryPanelGapPx;
                     }
                     else if (s.EntryPanel)
                     {
-                        var states = EntryPointsColumns.Build(s.History, k, startBucket, pw, map);
+                        var states = EntryPointsColumns.Build(s.History, k, startBucket, pw, map, cut);
                         ChartRasterizer.DrawEntryPanel(
                             _staging, pw, ph, states, panelBottom, Palette.Background);
                         t = Perf.Since("panel.entry", t);
@@ -3974,6 +4379,8 @@ public sealed class ChartView : Grid
                 }
                 _forecastMarkers.Clear();
                 _forecastMarkers.AddRange(forecastMarkers);
+                _commentSpots.Clear();
+                _commentSpots.AddRange(commentSpots);
                 tUi = Perf.Since("chart.publish", tUi);
                 Present(pw, ph, dpi);
                 tUi = Perf.Since("chart.present", tUi);
@@ -4000,6 +4407,7 @@ public sealed class ChartView : Grid
                     CollapsedSymbols = new List<string>(_collapsedSources),
                     CalendarVisible = _calendarVisible,
                     ForecastHidden = _forecastHidden,
+                    CommentsHidden = _commentsHidden,
                     FlattenSymbol = _flattenSymbol,
                     FlattenLine = _flattenLine,
                     TiltedUpGridIndex = _tiltedUpIndex,
@@ -4024,6 +4432,38 @@ public sealed class ChartView : Grid
         {
             _pending = false;
             Rebuild();
+        }
+    }
+
+    private static void BuildCommentSpots(List<CommentSpot> spots, CommentMark[] marks,
+        List<SymbolSeries> all, double[] offsets, FlattenMap? flatten, WeekendCompressor? map,
+        long columnSeconds, long startBucket, double topPrice, double pointsPerRow, int pw, int ph,
+        CommentStyle style, string? focusId, long cut)
+    {
+        int radius = style.Radius;
+        int dimAlpha = Math.Max(1, style.Alpha / 2);
+        foreach (var mark in marks)
+        {
+            if (mark.MinuteUnix >= cut) continue;
+            int ti = -1;
+            for (int i = 0; i < all.Count; i++)
+            {
+                if (all[i].Transform == null || all[i].BottomPanel || !all[i].BasePair) continue;
+                if (IndicatorSymbol.NameKey(all[i].Symbol) != IndicatorSymbol.NameKey(mark.Pair))
+                    continue;
+                ti = i;
+                break;
+            }
+            if (ti < 0) continue;
+            long v = map?.ToVirtual(mark.MinuteUnix) ?? mark.MinuteUnix;
+            int x = (int)Math.Floor(v / (double)columnSeconds - startBucket);
+            if (x < -radius || x >= pw + radius) continue;
+            double display = all[ti].Transform!.ToDisplay((double)mark.Value);
+            double shift = flatten?.ShiftAt(v) ?? 0;
+            int y = (int)Math.Round((topPrice - offsets[ti] - display - shift) / pointsPerRow);
+            if (y < -radius || y >= ph + radius) continue;
+            spots.Add(new CommentSpot(mark.Id, x, y, radius, style.ColorArgb,
+                focusId != null && mark.Id != focusId ? dimAlpha : style.Alpha));
         }
     }
 
@@ -4313,16 +4753,36 @@ public sealed class ChartView : Grid
         AddField("Outcome", r.Outcome, false);
     }
 
+    private static Candle? LastCandleBefore(CandleHistory history, long maxUnix)
+    {
+        if (maxUnix == long.MaxValue) return history.LastCandle;
+        var live = history.Live;
+        for (int i = live.Length - 1; i >= 0; i--)
+            if (live[i].MinuteUnixSeconds < maxUnix) return live[i];
+        var minutes = history.Minutes;
+        int lo = 0;
+        int hi = minutes.Length;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) >> 1;
+            if (minutes[mid].MinuteUnixSeconds < maxUnix) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo > 0 ? minutes[lo - 1] : null;
+    }
+
     private static void DrawDealMarks(int[] buffer, int pw, int ph, SymbolSeries s,
         FlattenMap? flatten, WeekendCompressor? map, long columnSeconds, long startBucket,
-        double topPrice, double pointsPerRow, double offset)
+        double topPrice, double pointsPerRow, double offset, long cut = long.MaxValue)
     {
         double bucketSec = columnSeconds;
         double X(long v) => v / bucketSec - startBucket;
         double Y(long v, double display) =>
             (topPrice - offset - display - (flatten?.ShiftAt(v) ?? 0)) / pointsPerRow;
-        foreach (var mark in s.DealMarks!)
+        foreach (var raw in s.DealMarks!)
         {
+            if (raw.EntryUnix >= cut) continue;
+            var mark = raw.Closed && raw.ExitUnix >= cut ? raw with { Closed = false } : raw;
             long va = map?.ToVirtual(mark.EntryUnix) ?? mark.EntryUnix;
             long vb = mark.Closed ? map?.ToVirtual(mark.ExitUnix) ?? mark.ExitUnix : va;
             double xa = X(va);
@@ -4363,6 +4823,67 @@ public sealed class ChartView : Grid
             ChartRasterizer.FillTriangle(buffer, pw, ph,
                 (int)Math.Round(xa), (int)Math.Round(ya),
                 ChartRasterizer.DealMarkerHalfPx, mark.Buy, color);
+        }
+    }
+
+    private const int GameBuyArgb = unchecked((int)0xFF1565C0);
+    private const int GameSellArgb = unchecked((int)0xFF8E24AA);
+    private const int GameStopArgb = unchecked((int)0xFFD32F2F);
+    private const int GameTakeArgb = unchecked((int)0xFF2E7D32);
+    private const int GameDashOnPx = 4;
+    private const int GameDashOffPx = 4;
+    private const int PlayNowArgb = unchecked((int)0xFF8E24AA);
+
+    private static void DrawGameMarks(int[] buffer, int pw, int ph, SymbolSeries s, GameMark[] marks,
+        FlattenMap? flatten, WeekendCompressor? map, long columnSeconds, long startBucket,
+        double topPrice, double pointsPerRow, double offset)
+    {
+        string key = IndicatorSymbol.NameKey(s.Symbol);
+        double bucketSec = columnSeconds;
+        int half = ChartRasterizer.DealMarkerHalfPx;
+        double X(long v) => v / bucketSec - startBucket;
+        double Y(long v, double display) =>
+            (topPrice - offset - display - (flatten?.ShiftAt(v) ?? 0)) / pointsPerRow;
+        void Level(double xFrom, double xTo, int price, int color, bool dashed)
+        {
+            double display = s.Transform!.ToDisplay(price);
+            int x0 = Math.Max(0, (int)Math.Floor(xFrom));
+            int x1 = Math.Min(pw - 1, (int)Math.Ceiling(xTo));
+            for (int x = x0; x <= x1; x++)
+            {
+                if (dashed && (x % (GameDashOnPx + GameDashOffPx)) >= GameDashOnPx) continue;
+                long v = (startBucket + x) * columnSeconds;
+                int y = (int)Math.Round(Y(v, display));
+                if (y >= 0 && y < ph) buffer[y * pw + x] = color;
+            }
+        }
+        foreach (var mark in marks)
+        {
+            if (IndicatorSymbol.NameKey(mark.Symbol) != key) continue;
+            long va = map?.ToVirtual(mark.FromUnix) ?? mark.FromUnix;
+            long vb = map?.ToVirtual(mark.ToUnix) ?? mark.ToUnix;
+            double xa = X(va);
+            double xb = Math.Max(xa, X(vb));
+            if (xb < -half || xa >= pw + half) continue;
+            int sideColor = mark.Buy ? GameBuyArgb : GameSellArgb;
+            if (mark.Closed) sideColor = mark.Win ? GameTakeArgb : GameStopArgb;
+            if (!mark.Closed)
+            {
+                Level(xa, xb, mark.Price, sideColor, mark.Pending);
+                if (mark.HasStop) Level(xa, xb, mark.StopPrice, GameStopArgb, true);
+                if (mark.HasTake) Level(xa, xb, mark.TakePrice, GameTakeArgb, true);
+            }
+            double ya = Y(va, s.Transform!.ToDisplay(mark.Price));
+            if (mark.Closed)
+            {
+                double yb = Y(vb, s.Transform.ToDisplay(mark.ClosePrice));
+                ChartRasterizer.BlendSegment(buffer, pw, ph, xa, ya, xb, yb,
+                    sideColor, ChartRasterizer.DealConnectorAlpha);
+                ChartRasterizer.FillDisc(buffer, pw, ph,
+                    (int)Math.Round(xb), (int)Math.Round(yb), half, sideColor);
+            }
+            ChartRasterizer.FillTriangle(buffer, pw, ph,
+                (int)Math.Round(xa), (int)Math.Round(ya), half, mark.Buy != s.Transform.Mirror, sideColor);
         }
     }
 
@@ -4480,7 +5001,8 @@ public sealed class ChartView : Grid
                 if (!IsHidden(s.Symbol) && s.SourceSymbol != null
                     && ((s.DensityPanel && s.DensityWindows is { Length: > 0 })
                         || (s.OrderBookPanel && (s.OrderBookSnapshots is { Length: > 0 }
-                            || s.DepthSnapshots is { Length: > 0 }))))
+                            || s.DepthSnapshots is { Length: > 0 }))
+                        || (s.LevelsPanel && _pivots.ContainsKey(s.SourceSymbol))))
                     (panels ??= new List<SymbolSeries>()).Add(s);
         if (panels == null)
         {
@@ -4501,6 +5023,8 @@ public sealed class ChartView : Grid
             rangeEndUnix = ToRealEnd((ToVirtual(r.EndUnix) / bucketSec + 1) * bucketSec) - 1;
         }
         long anchorUnix = range != null ? rangeEndUnix : MinuteFloor(ColumnEndUnix(_densityAnchorColumn));
+        long playLimit = PlayLimitUnix;
+        if (playLimit > 0 && anchorUnix > playLimit) anchorUnix = playLimit;
         long tDensity = Perf.Now();
         if (_densityStaging.Length < pw * ph)
             _densityStaging = new int[pw * ph];
@@ -4513,6 +5037,18 @@ public sealed class ChartView : Grid
         {
             DensityHistogram histogram;
             DensityHistogram candle = default;
+            if (s.LevelsPanel)
+            {
+                long levelsFrom = range != null
+                    ? rangeStartUnix
+                    : TradingMinutesBefore(anchorUnix, s.LevelWindowMinutes);
+                int levelsWidth = DrawLevels(_densityStaging, pw, ph, s, levelsFrom, anchorUnix);
+                tDensity = Perf.Since("density.levels", tDensity);
+                if (levelsWidth <= 0) continue;
+                used = Math.Max(used, levelsWidth);
+                drew = true;
+                continue;
+            }
             if (s.OrderBookPanel)
             {
                 var source = GetSeries(s.SourceSymbol!);
@@ -4605,6 +5141,84 @@ public sealed class ChartView : Grid
         tDensity = Perf.Since("density.blit", tDensity);
         UpdateDensityLabels(panels, anchorUnix);
         Perf.Since("density.labels", tDensity);
+    }
+
+    private static long TradingMinutesBefore(long unixSeconds, int minutes)
+    {
+        var map = WeekendCompressor.Instance;
+        long back = (long)Math.Max(1, minutes) * ChartColumns.MinuteSeconds;
+        return map.ToReal(map.ToVirtual(unixSeconds) - back);
+    }
+
+    private static bool LevelFromBelow(int[] values, int index) =>
+        index > 0
+            ? values[index] > values[index - 1]
+            : values.Length > 1 && values[0] > values[1];
+
+    private void BuildLevelTrends(int[] values, int last)
+    {
+        if (_levelTrend.Length <= last) _levelTrend = new int[last + 1];
+        int trend = 0;
+        int direction = 0;
+        int prevHigh = 0;
+        int prevLow = 0;
+        bool hasHigh = false;
+        bool hasLow = false;
+        for (int i = 0; i <= last; i++)
+        {
+            int value = values[i];
+            bool fromBelow = LevelFromBelow(values, i);
+            bool wellFormed = hasHigh && hasLow && (fromBelow ? prevLow < prevHigh : prevHigh > value);
+            int reference = fromBelow ? prevHigh : prevLow;
+            bool fitsUp = wellFormed && value > reference;
+            bool fitsDown = wellFormed && value < reference;
+            if (direction == 0) direction = fitsUp ? 1 : fitsDown ? -1 : 0;
+            else if (direction > 0 ? !fitsUp : !fitsDown)
+            {
+                trend++;
+                direction = fitsUp ? 1 : fitsDown ? -1 : 0;
+            }
+            _levelTrend[i] = trend;
+            if (fromBelow) (prevHigh, hasHigh) = (value, true);
+            else (prevLow, hasLow) = (value, true);
+        }
+    }
+
+    private int DrawLevels(int[] buffer, int width, int height, SymbolSeries s,
+        long fromUnix, long anchorUnix)
+    {
+        if (s.SourceSymbol == null || !_pivots.TryGetValue(s.SourceSymbol, out var sp)) return 0;
+        int last = ZigZagSymbol.FirstAtOrAfter(sp.Raw, anchorUnix + 1) - 1;
+        if (last < 0) return 0;
+        BuildLevelTrends(sp.Display, last);
+        if (_levelRowLeft.Length < height) _levelRowLeft = new int[height];
+        for (int y = 0; y < height; y++) _levelRowLeft[y] = int.MaxValue;
+        int step = Math.Max(1, s.LevelStepPx);
+        int length = Math.Max(1, s.LevelLengthPx);
+        double offset = SeriesOffset(s.SourceSymbol);
+        int belowColor = s.ColorArgb | unchecked((int)0xFF000000);
+        int aboveColor = (s.SellColorArgb == 0 ? s.ColorArgb : s.SellColorArgb)
+            | unchecked((int)0xFF000000);
+        int newestTrend = _levelTrend[last];
+        int widest = 0;
+        for (int i = last; i >= 0 && sp.Raw[i].UnixSeconds >= fromUnix; i--)
+        {
+            int slotRight = width - (newestTrend - _levelTrend[i]) * step;
+            if (slotRight <= 0) break;
+            int y = (int)Math.Floor(DisplayToY(sp.Display[i], offset, anchorUnix));
+            if (y < 0 || y >= height) continue;
+            int left = slotRight - length;
+            int right = Math.Min(slotRight, _levelRowLeft[y]);
+            if (left < 0) left = 0;
+            if (right <= left) continue;
+            _levelRowLeft[y] = left;
+            int color = LevelFromBelow(sp.Display, i) ? belowColor : aboveColor;
+            int row = y * width;
+            for (int x = left; x < right; x++)
+                buffer[row + x] = BlendOverPremultiplied(buffer[row + x], color);
+            if (width - left > widest) widest = width - left;
+        }
+        return widest;
     }
 
     private void DrawOrderBook(int[] buffer, int width, int height, OrderBookSides sides,
@@ -4769,7 +5383,13 @@ public sealed class ChartView : Grid
         {
             var s = panels[i];
             var label = (TextBlock)_densityLabelPanel.Children[i];
-            if (s.OrderBookPanel)
+            if (s.LevelsPanel)
+            {
+                label.Text = SelectedRange != null
+                    ? $"{s.Symbol}: selection"
+                    : $"{s.Symbol}: {FormatDensityWindow(s.LevelWindowMinutes)}";
+            }
+            else if (s.OrderBookPanel)
             {
                 long? bookUnix = s.DepthSnapshots is { Length: > 0 } depth
                     ? DepthProfile.At(depth, anchorUnix)?.MinuteUnix
@@ -5461,21 +6081,103 @@ public sealed class ChartView : Grid
         menu.IsOpen = true;
     }
 
+    private string? PlayPairAt(int cx, int cy)
+    {
+        var series = _series;
+        if (series == null) return null;
+        string? best = null;
+        double bestDy = double.MaxValue;
+        foreach (var (symbol, line) in _renderedLines)
+        {
+            var s = GetSeries(symbol);
+            if (s == null || !s.BasePair || s.BottomPanel || s.Transform == null) continue;
+            double? row = LineRowAt(line, (int)(_renderedStartBucket - line.Series.FirstBucket) + cx);
+            double dy = row == null ? double.MaxValue : Math.Abs(row.Value - cy);
+            if (dy >= bestDy) continue;
+            bestDy = dy;
+            best = symbol;
+        }
+        return best ?? VisiblePairs().FirstOrDefault();
+    }
+
+    public List<string> VisiblePairs()
+    {
+        var pairs = new List<string>();
+        var series = _series;
+        if (series == null) return pairs;
+        foreach (var s in series)
+            if (s.BasePair && !s.BottomPanel && s.Transform != null && !IsHidden(s.Symbol))
+                pairs.Add(s.Symbol);
+        return pairs;
+    }
+
+    private int PlayPriceAt(SymbolSeries s, int cx, int cy) =>
+        (int)Math.Round(s.Transform!.ToRaw(YToDisplay(cy, SeriesOffset(s.Symbol), ColumnTime(cx))));
+
+    private void AddPlayMenuItems(ContextMenu menu, int cx, int cy)
+    {
+        bool playing = _playTimeUnix > 0;
+        var pairs = VisiblePairs();
+        long t = ColumnTime(cx);
+        var play = new MenuItem
+        {
+            Header = "Play",
+            IsCheckable = true,
+            IsChecked = playing,
+            IsEnabled = playing || pairs.Count > 0,
+        };
+        play.Click += (_, _) => PlayToggleRequested?.Invoke(t);
+        menu.Items.Add(play);
+        var randomDay = new MenuItem { Header = "Play random day", IsEnabled = pairs.Count > 0 };
+        randomDay.Click += (_, _) => PlayRandomDayRequested?.Invoke();
+        menu.Items.Add(randomDay);
+        if (_playDayGame)
+        {
+            var nextDay = new MenuItem { Header = "Play next day", IsEnabled = _playHasNextDay && pairs.Count > 0 };
+            nextDay.Click += (_, _) => PlayNextDayRequested?.Invoke();
+            menu.Items.Add(nextDay);
+            var replayDay = new MenuItem { Header = "Replay day", IsEnabled = pairs.Count > 0 };
+            replayDay.Click += (_, _) => PlayReplayDayRequested?.Invoke();
+            menu.Items.Add(replayDay);
+        }
+        if (playing && !_playLocked && pairs.Count > 0)
+        {
+            var levels = pairs
+                .Select(symbol => new PlayLevel(symbol, PlayPriceAt(GetSeries(symbol)!, cx, cy)))
+                .ToList();
+            string? nearest = PlayPairAt(cx, cy);
+            var order = new MenuItem { Header = "Order" };
+            order.Click += (_, _) => PlayOrderRequested?.Invoke(levels, nearest);
+            menu.Items.Add(order);
+        }
+        var stats = new MenuItem { Header = "Game stats", IsEnabled = pairs.Count > 0 };
+        stats.Click += (_, _) => GameStatsRequested?.Invoke();
+        menu.Items.Add(stats);
+        menu.Items.Add(new Separator());
+    }
+
     private void AddChartMenuItems(ContextMenu menu, int cx, int cy)
     {
         if (menu.Items.Count > 0) menu.Items.Add(new Separator());
+        AddPlayMenuItems(menu, cx, cy);
         long t = ColumnTime(cx);
         string day = DateTimeOffset.FromUnixTimeSeconds(t).UtcDateTime.ToString("yyyy-MM-dd");
         bool has = _forecastDays.Contains(day, StringComparer.Ordinal);
         menu.Items.Add(MeasureMenuItem(cx, cy));
+        var compact = new MenuItem { Header = "Compact", IsEnabled = VisiblePairs().Count > 0 };
+        compact.Click += (_, _) => CompactPairs(cx, cy);
+        menu.Items.Add(compact);
+        AddCommentMenuItems(menu, cx, cy);
         menu.Items.Add(new Separator());
         var series = _series;
         if (series != null)
         {
+            string? gamePair = series.Any(s => s.GameDrawing != null) ? PlayPairAt(cx, cy) : null;
             int drawCount = 0;
-            foreach (var s in series)
+            foreach (var s in series.OrderBy(s => s.GameDrawing == null))
             {
                 if (s.DrawingLines == null || s.Transform == null || IsHidden(s.Symbol)) continue;
+                if (s.GameDrawing != null && s.SourceSymbol != gamePair) continue;
                 string symbol = s.Symbol;
                 var draw = new MenuItem { Header = $"Draw line - {symbol}" };
                 draw.Click += (_, _) => BeginDraw(symbol, false, (cx, cy));
@@ -5495,6 +6197,71 @@ public sealed class ChartView : Grid
         };
         if (has) forecast.Click += (_, _) => SelectForecastDay(day);
         menu.Items.Add(forecast);
+    }
+
+    private void AddCommentMenuItems(ContextMenu menu, int cx, int cy)
+    {
+        var spot = FindCommentSpotAt(cx, cy);
+        if (spot != null)
+        {
+            string id = spot.Id;
+            var edit = new MenuItem { Header = "Comment" };
+            edit.Click += (_, _) => RequestCommentEdit(id, cx, cy);
+            menu.Items.Add(edit);
+        }
+        var add = new MenuItem { Header = "Add comment", IsEnabled = VisiblePairs().Count > 0 };
+        add.Click += (_, _) => RequestCommentAdd(cx, cy);
+        menu.Items.Add(add);
+    }
+
+    private CommentSpot? FindCommentSpotAt(int cx, int cy)
+    {
+        if (_commentsHidden) return null;
+        CommentSpot? best = null;
+        double bestDist = double.MaxValue;
+        foreach (var spot in _commentSpots)
+        {
+            double dx = cx - spot.X;
+            double dy = cy - spot.Y;
+            double dist = dx * dx + dy * dy;
+            double r = spot.Radius;
+            if (dist > r * r || dist >= bestDist) continue;
+            bestDist = dist;
+            best = spot;
+        }
+        return best;
+    }
+
+    private void RequestCommentEdit(string id, int cx, int cy)
+    {
+        var mark = _commentMarks.FirstOrDefault(m => m.Id == id);
+        if (mark == null) return;
+        CommentEditRequested?.Invoke(new CommentEditRequest(
+            id, mark.Pair, mark.MinuteUnix, mark.Value, CursorLevels(cx, cy)));
+    }
+
+    private void RequestCommentAdd(int cx, int cy)
+    {
+        var levels = CursorLevels(cx, cy);
+        if (levels.Count == 0) return;
+        string pair = PlayPairAt(cx, cy) ?? levels[0].Symbol;
+        int value = levels[0].Price;
+        foreach (var level in levels)
+            if (level.Symbol == pair) value = level.Price;
+        CommentEditRequested?.Invoke(
+            new CommentEditRequest(null, pair, ColumnMinute(cx), value, levels));
+    }
+
+    private List<PlayLevel> CursorLevels(int cx, int cy)
+    {
+        var levels = new List<PlayLevel>();
+        foreach (var symbol in VisiblePairs())
+        {
+            var s = GetSeries(symbol);
+            if (s?.Transform == null) continue;
+            levels.Add(new PlayLevel(symbol, PlayPriceAt(s, cx, cy)));
+        }
+        return levels;
     }
 
     public void BeginDrawLine(string symbol) => BeginDraw(symbol, false, null);
@@ -5659,6 +6426,32 @@ public sealed class ChartView : Grid
         RebuildFlatten();
         Rebuild();
     }
+
+    public void SetGameDrawings(IReadOnlyList<SymbolSeries> drawings)
+    {
+        var series = _series;
+        if (series == null) return;
+        var current = series.Where(s => s.GameDrawing != null).ToList();
+        if (current.Count == drawings.Count && current.Zip(drawings).All(x => SameGameDrawing(x.First, x.Second)))
+            return;
+        var kept = new HashSet<string>(drawings.Select(s => s.Symbol), StringComparer.Ordinal);
+        if (_drawSymbol != null && GetSeries(_drawSymbol)?.GameDrawing != null && !kept.Contains(_drawSymbol))
+            CancelDrawing();
+        if (_selSymbol != null && GetSeries(_selSymbol)?.GameDrawing != null && !kept.Contains(_selSymbol))
+            DeselectLine();
+        var list = series.Where(s => s.GameDrawing == null).ToList();
+        list.AddRange(drawings);
+        _series = list;
+        RefreshHidden();
+        RecomputeGlobalRange();
+        RebuildFlatten();
+        Rebuild();
+    }
+
+    private static bool SameGameDrawing(SymbolSeries a, SymbolSeries b) =>
+        a.Symbol == b.Symbol && a.GameDrawing == b.GameDrawing && a.ColorArgb == b.ColorArgb
+        && a.SourceSymbol == b.SourceSymbol && Equals(a.Transform, b.Transform)
+        && ReferenceEquals(a.DrawingLines, b.DrawingLines);
 
     public (long Lo, long Hi)? VisibleRealRange()
     {

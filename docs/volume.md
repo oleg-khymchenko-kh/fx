@@ -381,14 +381,49 @@ volume moved into the app, where the writes go through the handles
 at a byte offset instead of the header, so each pass reads only the
 records Sierra appended since the last one. It returns the new offset,
 and restarts from the header when the file got shorter or the offset
-no longer lands on a record boundary.
+no longer lands on a record boundary. `ReadRecent` scans a file
+backwards from its end and returns the volume of the last 24 and 96
+hours plus the time of the newest record; the contract pick below
+uses it, and a frozen file costs one block read.
 
 `VolumeCollector` polls every 30 seconds:
 
-- the front contract comes from the calendar - the quarterly month
+- the contract is picked from the data, not from the calendar alone
+  (v6, 2026-09-09). The calendar names the front quarterly month
   (H/M/U/Z) whose roll date, 8 days before the third Wednesday, is
-  still ahead. On 2026-08-18 that is `6EU26-CME.scid`. A switch is
-  logged, and it resets the offset;
+  still ahead, and the month before it. While the collector is not
+  on the calendar month it compares both `.scid` tails every 5
+  minutes and takes the one with more volume in the last 24 hours
+  (the last 96 hours when both are quiet, then the newer last
+  record). A file Sierra has no chart for never grows, so it loses
+  to the live one, and the log says so once an hour: `staying on
+  6EU26 121,575 in 24h, calendar 6EZ26 no trades since 2026-08-14
+  20:58 UTC, open a chart for 6EZ26-CME in Sierra`. The switch
+  happens when the new month really takes the volume - for 6E that
+  is the Friday before expiry week, three days after the calendar
+  date. A switch is logged, resets the offset, and fences the new
+  contract below the last minute the old one wrote, so a back month
+  never overwrites front-month volume. `DepthCollector` follows the
+  same choice through `VolumeCollector.ContractFor`. Before v6 the
+  calendar alone decided: on 2026-09-08 00:00 UTC it switched all
+  seven pairs to frozen Z26 files, volume stopped, and the first read
+  of each frozen file wrote two weeks of back-month volume over the
+  real one (see the write rule below);
+- a frozen file is never picked (v7, 2026-09-11). A candidate whose
+  newest record is more than an hour behind the freshest candidate's
+  is skipped whatever its 24 hour volume, and the check now runs
+  every 5 minutes on every contract, the calendar month included.
+  The hourly reminder and its `open a chart for ...` advice use the
+  same rule, so the line reads `staying on 6BU26 35,909 in 24h,
+  calendar 6BZ26 no trades since 2026-09-11 07:21 UTC, open a chart
+  for 6BZ26-CME in Sierra`. Before v7 the pick compared volume only
+  and the calendar month was never re-checked: on 2026-09-11, roll
+  week, the Z26 charts were closed in Sierra at 07:31 UTC while the
+  U26 ones stayed open; the frozen Z26 files still held more volume
+  in the last 24 hours, so GBPUSD switched to 6BZ26 at 11:57 UTC and
+  EURUSD at 14:02 UTC (USDCHF had switched minutes before the
+  freeze), collection stopped without a log line, and every restart
+  rewrote the 48 hour horizon from the frozen file;
 - records are accumulated per minute in memory, because the newest
   minute is still growing. Every poll rewrites the minutes it holds
   and only drops a minute once it is 3 minutes behind the newest one,
@@ -404,8 +439,15 @@ no longer lands on a record boundary.
   but is still waiting logs the count at most once per 5 minutes;
 - a minute is written only when its value actually changed, so a quiet
   market costs nothing;
-- the first pass reads the whole file but writes only the last 48
-  hours. Deeper history stays the console tool's job.
+- every pass writes only minutes within 48 hours of the newest
+  record, or of now when the file is behind. The first pass reads the
+  whole file, later passes read the tail, and neither writes older
+  minutes. Deeper history stays the console tool's job. Before v6 the
+  48 hour cut applied to the first pass only, which is how the
+  2026-09-08 switch could overwrite 2026-07-31 .. 2026-08-14;
+- a contract whose file has had no record for 4 days is reported
+  every 6 hours: `no trades in 6JU26-CME.scid since ... UTC, is a
+  chart for it open in Sierra?`.
 
 Writes go through `CandleDatabase.WriteVolume`, which still refuses a
 minute with no candle. The same `!_dbBusy && _historyCts == null`
@@ -420,6 +462,16 @@ That method exists because `ReplaceSeries` cancels a pivot drag and
 hides the hover readout, which is wrong to do every 30 seconds; a
 volume-only change touches no price, so it only rebuilds the raster.
 
+Minutes newer than the loaded series are not in `Minutes` at all: they
+sit in the live tail (`LiveState.Closed` in `MainWindow`, pushed by
+`PushLiveTail` into `CandleHistory.Live` on every tick). Since v7 the
+same writes also update those candles and push the tail again, and
+`MakeLiveCandle` keeps the volume when it rebuilds the tail, so the
+panel follows the collector all day. Before v7 the tail was rebuilt
+without volume, so the panel stopped at the last chart load and only
+a restart or a tab reload showed the minutes written since; on
+2026-09-11 that gap reached 2.5 hours.
+
 The Sierra data folder is `SierraDataFolder` in the config. Empty
 means read `C:\SierraChart\DataFilesFolder.txt`, and if that is
 missing, `C:\SierraChart\Data`.
@@ -431,11 +483,15 @@ missing, `C:\SierraChart\Data`.
   also hold an open chart for that contract: Sierra only keeps the
   `.scid` of a symbol it is charting up to date. On 2026-08-19 only
   6E and 6B had one, so the other five pairs stopped getting volume
-  on 2026-08-14 while their candles kept arriving. The collector logs
-  no error for this - the file exists, it just never grows.
-- The front contract is picked by the calendar, not by comparing
-  volume between contracts the way the historical fill does. During a
-  roll week the log line shows which one was chosen.
+  on 2026-08-14 while their candles kept arriving. Since v6 the
+  collector reports such a file, since v7 it never picks one while
+  the other month's file is alive, but it cannot open the chart.
+- Only the calendar month and the one before it are candidates. If
+  the volume moved to the month after the calendar one, the
+  collector does not see it.
+- The roll day itself is split at the moment the 24 hour volume
+  flips, not per UTC day like the historical fill. Re-running the
+  fill tool makes the two agree.
 - A redownload that rewrites a `.scid` in place without changing its
   length is not detected and would double count. A restart clears it.
 - Deeper history than 48 hours still comes from the console tool.

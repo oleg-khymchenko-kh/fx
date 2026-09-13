@@ -1,10 +1,13 @@
-namespace FXViewer.Chart;
+﻿namespace FXViewer.Chart;
 
 public readonly record struct ChartPalette(int Background, int Weekend, int GridDay, int GridMonth, int GridYear,
     int GridPrice100, int GridPrice50, int GridPrice10, int GridTilted = 0, int GridTiltedNear = 0,
-    int SessionEurope = 0, int SessionOverlap = 0, int SessionAmerica = 0, int WeekendSession = 0);
+    int SessionAsiaEurope = 0, int SessionEurope = 0, int SessionOverlap = 0, int SessionAmerica = 0,
+    int SessionClosed = 0, int WeekendSession = 0);
 
 public readonly record struct RenderLine(ChartSeries Series, int[] Chosen, int Color, int LastPrice, long LastBucket, double OffsetPoints, double[]? ColumnShift = null, int Width = 1, bool[]? FullRange = null);
+
+public sealed record CommentSpot(string Id, int X, int Y, int Radius, int ColorArgb, int Alpha);
 
 public readonly record struct TiltedFamilySettings(
     bool Visible, double AnchorSeconds, double AnchorPoints, double Slope,
@@ -42,12 +45,18 @@ public static class ChartRasterizer
         IReadOnlyList<RenderLine> lines, ChartPalette palette,
         long columnSeconds, long startBucket, long[] columnEdges,
         double topPrice, double pointsPerRow, TiltedGridSettings tiltedGrid = default,
-        bool sessionBands = false)
+        bool sessionBands = false, IReadOnlyList<CommentSpot>? commentSpots = null)
     {
         Array.Fill(buffer, palette.Background, 0, width * height);
         if (pointsPerRow <= 0) return;
         DrawGrid(buffer, width, height, columnSeconds, startBucket, columnEdges,
             topPrice, pointsPerRow, palette, tiltedGrid, sessionBands);
+        if (commentSpots != null)
+            for (int i = 0; i < commentSpots.Count; i++)
+            {
+                var spot = commentSpots[i];
+                BlendDisc(buffer, width, height, spot.X, spot.Y, spot.Radius, spot.ColorArgb, spot.Alpha);
+            }
         for (int i = 0; i < lines.Count; i++)
             DrawLine(buffer, width, height, lines[i], startBucket, topPrice, pointsPerRow);
         for (int i = 0; i < lines.Count; i++)
@@ -456,6 +465,26 @@ public static class ChartRasterizer
         }
     }
 
+    public static void BlendDisc(int[] buffer, int width, int height,
+        int cx, int cy, int radius, int color, int alpha)
+    {
+        if (radius < 0 || alpha <= 0) return;
+        int r2 = radius * radius + radius / 2;
+        for (int dy = -radius; dy <= radius; dy++)
+        {
+            int y = cy + dy;
+            if (y < 0 || y >= height) continue;
+            for (int dx = -radius; dx <= radius; dx++)
+            {
+                if (dx * dx + dy * dy > r2) continue;
+                int x = cx + dx;
+                if (x < 0 || x >= width) continue;
+                int idx = y * width + x;
+                buffer[idx] = Blend(buffer[idx], color, alpha);
+            }
+        }
+    }
+
     public static void StrokeDisc(int[] buffer, int width, int height,
         int cx, int cy, int radius, int color)
     {
@@ -559,9 +588,11 @@ public static class ChartRasterizer
                 long mid = columnEdges[x] + bucketSec / 2;
                 int color = SessionClock.At(mid) switch
                 {
+                    ChartSession.AsiaEurope => palette.SessionAsiaEurope,
                     ChartSession.Europe => palette.SessionEurope,
                     ChartSession.Overlap => palette.SessionOverlap,
                     ChartSession.America => palette.SessionAmerica,
+                    ChartSession.Closed => palette.SessionClosed,
                     _ => 0,
                 };
                 if (color == 0) continue;
@@ -589,13 +620,10 @@ public static class ChartRasterizer
         int gridMonthWeekend = Shade(palette.GridMonth, WeekendGridShade);
         int gridYearWeekend = Shade(palette.GridYear, WeekendGridShade);
         double bottom = topPrice - pointsPerRow * (height - 1);
-        if (!tiltedGrid.Visible)
-        {
-            if (GridPrice10StepPoints / pointsPerRow >= MinPriceGridSpacingPixels)
-                DrawPriceLines(buffer, width, height, topPrice, bottom, pointsPerRow, GridPrice10StepPoints, palette.GridPrice10, true, weekendMask);
-            if (GridPrice50StepPoints / pointsPerRow >= MinPriceGridSpacingPixels)
-                DrawPriceLines(buffer, width, height, topPrice, bottom, pointsPerRow, GridPrice50StepPoints, palette.GridPrice50, true, weekendMask);
-        }
+        if (GridPrice10StepPoints / pointsPerRow >= MinPriceGridSpacingPixels)
+            DrawPriceLines(buffer, width, height, topPrice, bottom, pointsPerRow, GridPrice10StepPoints, palette.GridPrice10, true, weekendMask);
+        if (!tiltedGrid.Visible && GridPrice50StepPoints / pointsPerRow >= MinPriceGridSpacingPixels)
+            DrawPriceLines(buffer, width, height, topPrice, bottom, pointsPerRow, GridPrice50StepPoints, palette.GridPrice50, true, weekendMask);
         DrawPriceLines(buffer, width, height, topPrice, bottom, pointsPerRow, GridPriceStepPoints, palette.GridPrice100, false, weekendMask);
         if (tiltedGrid.Visible)
             DrawTiltedGrid(buffer, width, height, columnSeconds, startBucket, topPrice, pointsPerRow,

@@ -1,10 +1,12 @@
-using System.Text.Json.Serialization;
+﻿using System.Text.Json.Serialization;
 
 namespace FXViewer.Chart;
 
 public sealed class ZoomLevel
 {
     public const int MaxCount = 60;
+    public const double MinCustomZoom = 0.01;
+    public const double MaxCustomZoom = 100;
 
     private const double DaySeconds = 86400;
     private const double Points100Pips = 1000;
@@ -37,6 +39,9 @@ public sealed class ZoomLevel
 
     public static double PixelsPer100PipsOf(double pointsPerRow) =>
         pointsPerRow > 0 ? Points100Pips / pointsPerRow : 0;
+
+    public static double ClampCustomZoom(double value) =>
+        double.IsFinite(value) && value > 0 ? Math.Clamp(value, MinCustomZoom, MaxCustomZoom) : 1;
 
     private static readonly double[] DefaultPixelsPerDay =
     {

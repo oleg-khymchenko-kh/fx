@@ -1,4 +1,4 @@
-# Wide spread minutes
+﻿# Wide spread minutes
 
 Status: implemented, v1.
 
@@ -21,8 +21,22 @@ A minute is wide spread when **both** are true:
   tenths, so 4.1 pips and up), and
 - it falls between the American close and the Asian open.
 
-A minute without a stored spread is never wide: the flag says "measured
-and bad", not "unknown".
+A minute inside the window that has **no** stored spread is wide too,
+but only from `WideSpreadRule.MeasuredFromUnix` (2026-01-01 UTC) on.
+That date is where spread collection starts, so a later minute without a
+spread is a hole in the collection, not old history: the live writer
+missed it and the trendbar download filled the price alone
+(`SpreadCodes.Keep` had nothing to keep). Such a minute carries the same
+post-close spike as its measured neighbours, so it has to go with them.
+Before that date nothing has a spread at all, so nothing is hidden and
+years of history stay untouched.
+
+This second branch is limited to the pairs that actually collect a
+spread: `WideSpreadRule.SetMeasuredPairs` gets the `SymbolConfigs` names
+at startup, the same way `AskViewRule.SetPairs` does. Without it every
+computed symbol (a currency index, a price age row, the deals symbol)
+would be flagged over its whole evening, because none of them ever
+stores a spread.
 
 The window is the real gap between the two sessions, so its length
 follows the season. Tokyo has no daylight saving and always opens at
@@ -49,7 +63,8 @@ offset 12 (`CandleYearFile.FlagWideSpread`), next to the spread bits.
 See docs/spread.md for the whole word.
 
 The flag is **derived, but stored**. Every write path recomputes it from
-the spread it just wrote and from the minute's own timestamp:
+the spread it just wrote - or from the fact that it wrote none - and from
+the minute's own timestamp:
 
 - `CandleYearFile.Write` - CSV import, trendbar download, ask ticks, the
   live writer (including `SpreadCodes.Keep`, so a repaired minute keeps
@@ -70,8 +85,8 @@ spread and the timestamp are already in the files.
 The run walks every pair of `SymbolConfigs`, every year file, in blocks
 of 4096 records (`CandleYearFile.RecomputeWideSpread`), sets or clears
 bit 5 and writes a block back only when something changed. Indicator
-symbols are not scanned - they have no spread, so they can have no wide
-minutes.
+symbols are not scanned, and they are not in the measured set either, so
+they can have no wide minutes.
 
 The log gets one line per pair:
 `EURUSD wide spread: 12,345 of 3,000,000 minutes, 12,345 flags changed`,
@@ -104,6 +119,13 @@ minute that was never downloaded:
   else that reads the loaded series follow automatically, because the
   minute simply is not there.
 
+## The moving averages always skip them
+
+The `Average` and `AverageBand` indicators drop a flagged minute from
+their window whatever this setting says, so their lines never carry a
+post-close spike and look the same with the setting on or off. See
+docs/moving-average.md.
+
 ## The Spread panel is the exception
 
 Hiding the widest spreads from the Spread indicator would hide exactly
@@ -122,6 +144,10 @@ spread survives, as a `SpreadMark` (unix second + tenths of a pip):
   built from the minutes or the rollup blocks, taking the maximum like
   everywhere else. So a column that has nothing but hidden minutes still
   draws its bar, and the cursor readout shows its value.
+
+A minute hidden because it has no spread produces no mark at all - there
+is nothing to draw - so the panel simply has a hole there, the same hole
+it had before.
 
 The marks carry no prices, so they cannot leak into a high, a low or a
 mirror base by accident. `WithReplacedRange` carries them over, which is
@@ -143,6 +169,13 @@ used by the download bookkeeping, and the volume at price store
 
 - The threshold and the window are constants in `WideSpreadRule`, not
   settings.
-- Minutes older than the spread backfill floor (2026-01-01, see
-  docs/spread.md) have no spread at all, so they can never be flagged.
+- The spread era floor (2026-01-01) is a constant too. Minutes older
+  than it have no spread at all (see docs/spread.md), so they can never
+  be flagged.
+- A whole night that the live writer missed is hidden completely once
+  the trendbar download fills it, because every one of its minutes lands
+  inside the window without a spread. Running "Backfill spread" over
+  those days brings the narrow minutes back.
+- An ask pair (docs/ask-symbol.md) is not in the measured set, so its
+  own file only gets the flag from a stored spread.
 - No visual marker for a wide minute while the setting is off.

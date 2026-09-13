@@ -118,19 +118,24 @@ public static class DepthStore
         }
     }
 
-    public static List<DepthSnapshot> ReadAll(string symbolDirectory, out int pipPoints)
+    public static List<int> ExistingYears(string symbolDirectory)
     {
-        pipPoints = 0;
-        var result = new List<DepthSnapshot>();
-        var dir = Directory(symbolDirectory);
-        if (!System.IO.Directory.Exists(dir)) return result;
         var years = new List<int>();
+        var dir = Directory(symbolDirectory);
+        if (!System.IO.Directory.Exists(dir)) return years;
         foreach (var path in System.IO.Directory.GetFiles(dir, "*.dpt"))
             if (int.TryParse(Path.GetFileNameWithoutExtension(path), NumberStyles.Integer,
                     CultureInfo.InvariantCulture, out var y))
                 years.Add(y);
         years.Sort();
-        foreach (var year in years)
+        return years;
+    }
+
+    public static List<DepthSnapshot> ReadAll(string symbolDirectory, out int pipPoints)
+    {
+        pipPoints = 0;
+        var result = new List<DepthSnapshot>();
+        foreach (var year in ExistingYears(symbolDirectory))
         {
             var part = ReadAll(symbolDirectory, year, out int pp);
             if (pp > 0) pipPoints = pp;
@@ -141,18 +146,37 @@ public static class DepthStore
 
     public static List<DepthSnapshot> ReadAll(string symbolDirectory, int year, out int pipPoints)
     {
-        pipPoints = 0;
         var result = new List<DepthSnapshot>();
+        pipPoints = 0;
+        ReadYearFrom(symbolDirectory, year, 0, result, ref pipPoints);
+        return result;
+    }
+
+    public static long ReadYearFrom(string symbolDirectory, int year, long fromLength,
+        List<DepthSnapshot> into, ref int pipPoints)
+    {
         var path = YearPath(symbolDirectory, year);
-        if (!File.Exists(path)) return result;
+        if (!File.Exists(path))
+        {
+            into.Clear();
+            return 0;
+        }
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        if (!ReadHeader(fs, out int levels, out pipPoints)) return result;
-        if (levels != Levels) return result;
-        long count = (fs.Length - HeaderBytes) / RecordBytes;
-        if (count <= 0) return result;
-        fs.Position = HeaderBytes;
+        if (!ReadHeader(fs, out int levels, out int pp) || levels != Levels)
+        {
+            into.Clear();
+            return 0;
+        }
+        pipPoints = pp;
+        long end = HeaderBytes + (fs.Length - HeaderBytes) / RecordBytes * RecordBytes;
+        bool resume = fromLength >= HeaderBytes && fromLength <= end
+            && (fromLength - HeaderBytes) % RecordBytes == 0;
+        if (!resume) into.Clear();
+        long start = resume ? fromLength : HeaderBytes;
+        if (end <= start) return end;
+        fs.Position = start;
         var buf = new byte[RecordBytes];
-        for (long i = 0; i < count; i++)
+        for (long at = start; at < end; at += RecordBytes)
         {
             fs.ReadExactly(buf);
             var bid = new ushort[Levels];
@@ -162,11 +186,11 @@ public static class DepthStore
                 bid[k] = BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(12 + k * 2));
                 ask[k] = BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(12 + Levels * 2 + k * 2));
             }
-            result.Add(new DepthSnapshot(
+            into.Add(new DepthSnapshot(
                 BinaryPrimitives.ReadInt64LittleEndian(buf.AsSpan(0)),
                 BinaryPrimitives.ReadInt32LittleEndian(buf.AsSpan(8)),
                 bid, ask));
         }
-        return result;
+        return end;
     }
 }

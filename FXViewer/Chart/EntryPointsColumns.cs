@@ -10,7 +10,7 @@ public static class EntryPointsColumns
     public const byte BothLost = 4;
 
     public static byte[] Build(CandleHistory history, long columnSeconds, long firstBucket, int count,
-        WeekendCompressor? map)
+        WeekendCompressor? map, long maxUnix = long.MaxValue)
     {
         var states = new byte[count];
         if (count <= 0) return states;
@@ -19,10 +19,10 @@ public static class EntryPointsColumns
         {
             long minuteFirst = ChartColumns.MinuteBucket(firstBucket, run);
             var minutes = Build(history, ChartColumns.MinuteSeconds, minuteFirst,
-                ChartColumns.MinuteCount(count, run), map);
+                ChartColumns.MinuteCount(count, run), map, maxUnix);
             return ChartColumns.Expand(minutes, minuteFirst, run, firstBucket, count, (byte)0);
         }
-        var edges = ChartColumns.ColumnEdges(map, columnSeconds, firstBucket, count);
+        var edges = ChartColumns.ColumnEdges(map, columnSeconds, firstBucket, count, maxUnix);
         int level = ChartColumns.LevelFor(columnSeconds, map);
         if (level >= 0) Fill(history.Levels[level], edges, states);
         else Fill(history.Minutes, edges, states);

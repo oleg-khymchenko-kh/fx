@@ -86,9 +86,9 @@ public sealed class CandleYearFile : IDisposable
     private uint WithWideSpread(uint flags, int minuteOfYear)
     {
         flags &= ~FlagWideSpread;
-        if ((flags & FlagSpread) == 0) return flags;
+        bool hasSpread = (flags & FlagSpread) != 0;
         int code = (int)((flags & SpreadMask) >> SpreadShift);
-        return WideSpreadRule.IsWide(MinuteUnix(minuteOfYear), true, code)
+        return WideSpreadRule.IsWide(Symbol, MinuteUnix(minuteOfYear), hasSpread, code)
             ? flags | FlagWideSpread
             : flags;
     }

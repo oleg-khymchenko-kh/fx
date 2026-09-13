@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -15,6 +15,10 @@ public partial class SymbolEditorWindow : Window
     private const string FutureLabel = "Future";
     private const string SameAsSourceLabel = "same as source";
     private const string TimeFormat = "hh\\:mm";
+    private const int MaxLevelWindowMinutes = 10_000_000;
+    private const int MaxLevelPixels = 500;
+    private const int MaxBandCount = 200;
+    private const int MaxBandWindowMinutes = 10_000_000;
 
     private static readonly string[] TimeInputFormats = { "hh\\:mm", "h\\:mm" };
 
@@ -35,6 +39,8 @@ public partial class SymbolEditorWindow : Window
 
     private readonly IReadOnlyList<string> _allSources;
     private readonly IReadOnlyList<string> _indexSources;
+    private readonly IReadOnlyList<string> _zigzagSources;
+    private readonly string _wantedSource;
 
     public SymbolEditorWindow(
         IReadOnlyList<string> sources,
@@ -44,7 +50,8 @@ public partial class SymbolEditorWindow : Window
         Func<IndicatorSymbol, IndicatorSymbol?, IProgress<double>, CancellationToken, Task> apply,
         Func<IProgress<double>, CancellationToken, Task>? refresh = null,
         IReadOnlyList<string>? indexPairs = null,
-        IReadOnlyList<string>? indexSources = null)
+        IReadOnlyList<string>? indexSources = null,
+        IReadOnlyList<string>? zigzagSources = null)
     {
         InitializeComponent();
         _editing = editing;
@@ -61,12 +68,15 @@ public partial class SymbolEditorWindow : Window
         Title = editing == null ? "Add symbol" : "Edit symbol";
         _allSources = sources;
         _indexSources = indexSources ?? Array.Empty<string>();
+        _zigzagSources = zigzagSources ?? Array.Empty<string>();
+        _wantedSource = editing?.Source ?? sourcePrefill ?? "";
         foreach (var s in sources) SourceBox.Items.Add(s);
         foreach (var p in indexPairs ?? Array.Empty<string>()) CurrencyPairBox.Items.Add(p);
         TargetBox.Items.Add(SameAsSourceLabel);
         foreach (var p in indexPairs ?? Array.Empty<string>()) TargetBox.Items.Add(p);
         foreach (var t in IndicatorTypes.All) TypeBox.Items.Add(IndicatorTypes.Label(t));
         foreach (var u in IndicatorUnits.All) UnitBox.Items.Add(u);
+        foreach (var u in IndicatorUnits.All) LevelUnitBox.Items.Add(u);
         _densityPeriodBoxes = new[]
         {
             Density1Box, Density2Box, Density3Box, Density4Box, Density5Box,
@@ -87,6 +97,11 @@ public partial class SymbolEditorWindow : Window
                 box.Items.Add(u);
         DirectionBox.Items.Add(PastLabel);
         DirectionBox.Items.Add(FutureLabel);
+        foreach (var m in BandModes.All) BandModeBox.Items.Add(m);
+        foreach (var u in IndicatorUnits.All) BandUnitBox.Items.Add(u);
+        BandCountBox.TextChanged += (_, _) => UpdateBandHint();
+        BandPeriodBox.TextChanged += (_, _) => UpdateBandHint();
+        BandUnitBox.SelectionChanged += (_, _) => UpdateBandHint();
         foreach (var m in IndexMethods.All) MethodBox.Items.Add(m);
         foreach (var a in IndexAlgorithms.All) AlgorithmBox.Items.Add(a);
         BuildPairBoxes(indexPairs ?? Array.Empty<string>(), editing);
@@ -112,6 +127,32 @@ public partial class SymbolEditorWindow : Window
                 u => string.Equals(u, editing.Unit, StringComparison.OrdinalIgnoreCase)) ?? IndicatorUnits.Minutes;
             DirectionBox.SelectedItem = editing.FromFuture ? FutureLabel : PastLabel;
             WeightedBox.IsChecked = editing.AverageWeighted;
+            bool band = IndicatorTypes.IsAverageBand(editing.Type);
+            TimeWindowBox.IsChecked =
+                band ? IndicatorSymbol.DefaultAverageTimeWindow : editing.AverageTimeWindow;
+            BandTimeWindowBox.IsChecked =
+                band ? editing.AverageTimeWindow : IndicatorSymbol.DefaultAverageTimeWindow;
+            BandCountBox.Text = (band && editing.BandCount > 0
+                ? editing.BandCount
+                : IndicatorSymbol.DefaultBandCount).ToString(CultureInfo.InvariantCulture);
+            BandPeriodBox.Text = (band ? editing.Period : IndicatorSymbol.DefaultBandPeriod)
+                .ToString(CultureInfo.InvariantCulture);
+            BandUnitBox.SelectedItem = IndicatorUnits.All.FirstOrDefault(
+                u => string.Equals(u, band ? editing.Unit : IndicatorSymbol.DefaultBandUnit,
+                    StringComparison.OrdinalIgnoreCase)) ?? IndicatorSymbol.DefaultBandUnit;
+            BandModeBox.SelectedItem = band ? BandModes.Effective(editing.BandMode) : BandModes.Max;
+            bool levels = IndicatorTypes.IsLevels(editing.Type);
+            LevelPeriodBox.Text = (levels ? editing.Period : IndicatorSymbol.DefaultLevelPeriod)
+                .ToString(CultureInfo.InvariantCulture);
+            LevelUnitBox.SelectedItem = IndicatorUnits.All.FirstOrDefault(
+                u => string.Equals(u, levels ? editing.Unit : IndicatorSymbol.DefaultLevelUnit,
+                    StringComparison.OrdinalIgnoreCase)) ?? IndicatorSymbol.DefaultLevelUnit;
+            LevelLengthBox.Text = (editing.LevelLengthPx > 0
+                ? editing.LevelLengthPx
+                : IndicatorSymbol.DefaultLevelLengthPx).ToString(CultureInfo.InvariantCulture);
+            LevelStepBox.Text = (editing.LevelStepPx > 0
+                ? editing.LevelStepPx
+                : IndicatorSymbol.DefaultLevelStepPx).ToString(CultureInfo.InvariantCulture);
             long shiftSource = editing.SourceTimeUnix;
             long shiftChart = editing.ChartTimeUnix;
             if (IndicatorTypes.IsShift(editing.Type)
@@ -173,6 +214,21 @@ public partial class SymbolEditorWindow : Window
             UnitBox.SelectedItem = IndicatorUnits.Minutes;
             DirectionBox.SelectedItem = PastLabel;
             WeightedBox.IsChecked = false;
+            TimeWindowBox.IsChecked = IndicatorSymbol.DefaultAverageTimeWindow;
+            BandTimeWindowBox.IsChecked = IndicatorSymbol.DefaultAverageTimeWindow;
+            BandCountBox.Text =
+                IndicatorSymbol.DefaultBandCount.ToString(CultureInfo.InvariantCulture);
+            BandPeriodBox.Text =
+                IndicatorSymbol.DefaultBandPeriod.ToString(CultureInfo.InvariantCulture);
+            BandUnitBox.SelectedItem = IndicatorSymbol.DefaultBandUnit;
+            BandModeBox.SelectedItem = BandModes.Max;
+            LevelPeriodBox.Text =
+                IndicatorSymbol.DefaultLevelPeriod.ToString(CultureInfo.InvariantCulture);
+            LevelUnitBox.SelectedItem = IndicatorSymbol.DefaultLevelUnit;
+            LevelLengthBox.Text =
+                IndicatorSymbol.DefaultLevelLengthPx.ToString(CultureInfo.InvariantCulture);
+            LevelStepBox.Text =
+                IndicatorSymbol.DefaultLevelStepPx.ToString(CultureInfo.InvariantCulture);
             SetAnchor(SourceDate, SourceTimeBox, 0, DefaultSourceTime);
             SetAnchor(ChartDate, ChartTimeBox, 0, DefaultChartTime);
             TargetBox.SelectedItem = SameAsSourceLabel;
@@ -338,16 +394,18 @@ public partial class SymbolEditorWindow : Window
 
     private void FillSources(string? type)
     {
-        var wanted = type != null && IndicatorTypes.SourceIsIndex(type) ? _indexSources : _allSources;
+        var wanted = type == null ? _allSources
+            : IndicatorTypes.SourceIsIndex(type) ? _indexSources
+            : IndicatorTypes.SourceIsZigZag(type) ? _zigzagSources
+            : _allSources;
         if (SourceBox.Items.Count == wanted.Count
             && SourceBox.Items.Cast<string>().SequenceEqual(wanted))
             return;
-        var keep = SourceBox.SelectedItem as string;
+        var keep = (SourceBox.SelectedItem as string) ?? _wantedSource;
         SourceBox.Items.Clear();
         foreach (var s in wanted) SourceBox.Items.Add(s);
-        if (keep != null)
-            SourceBox.SelectedItem = wanted.FirstOrDefault(
-                s => IndicatorSymbol.NameKey(s) == IndicatorSymbol.NameKey(keep));
+        SourceBox.SelectedItem = wanted.FirstOrDefault(
+            s => IndicatorSymbol.NameKey(s) == IndicatorSymbol.NameKey(keep));
     }
 
     private void UpdateParamsVisibility()
@@ -368,6 +426,9 @@ public partial class SymbolEditorWindow : Window
         if (AverageParams != null)
             AverageParams.Visibility =
                 type == IndicatorTypes.Average ? Visibility.Visible : Visibility.Collapsed;
+        if (BandParams != null)
+            BandParams.Visibility =
+                type == IndicatorTypes.AverageBand ? Visibility.Visible : Visibility.Collapsed;
         if (ShiftParams != null)
             ShiftParams.Visibility =
                 type == IndicatorTypes.Shift ? Visibility.Visible : Visibility.Collapsed;
@@ -380,6 +441,9 @@ public partial class SymbolEditorWindow : Window
         if (EntryParams != null)
             EntryParams.Visibility =
                 type == IndicatorTypes.EntryPoints ? Visibility.Visible : Visibility.Collapsed;
+        if (LevelsParams != null)
+            LevelsParams.Visibility =
+                type == IndicatorTypes.Levels ? Visibility.Visible : Visibility.Collapsed;
         if (DealsParams != null)
             DealsParams.Visibility =
                 type == IndicatorTypes.Deals ? Visibility.Visible : Visibility.Collapsed;
@@ -399,13 +463,34 @@ public partial class SymbolEditorWindow : Window
         {
             bool orderBook = type != null && IndicatorTypes.IsOrderBook(type);
             bool volume = type == IndicatorTypes.Volume;
-            SellColorBlock.Visibility = orderBook || volume ? Visibility.Visible : Visibility.Collapsed;
-            ColorLabel.Text = orderBook ? "Buy color" : volume ? "Ask color" : "Color";
+            bool levels = type == IndicatorTypes.Levels;
+            SellColorBlock.Visibility = orderBook || volume || levels
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            ColorLabel.Text = orderBook ? "Buy color" : volume ? "Ask color"
+                : levels ? "From below" : "Color";
             if (SellColorLabel != null)
-                SellColorLabel.Text = volume ? "Bid color" : "Sell color";
+                SellColorLabel.Text = volume ? "Bid color" : levels ? "From above" : "Sell color";
         }
         UpdateCurrencyHint();
+        UpdateBandHint();
     }
+
+    private void UpdateBandHint()
+    {
+        if (BandHint == null) return;
+        string unit = ((BandUnitBox.SelectedItem as string) ?? IndicatorSymbol.DefaultBandUnit)
+            .ToLowerInvariant();
+        BandHint.Text = TryReadPositive(BandCountBox, out int count)
+                        && TryReadPositive(BandPeriodBox, out int period)
+            ? string.Create(CultureInfo.InvariantCulture,
+                $"= {period} .. {(long)period * count} {unit}")
+            : "";
+    }
+
+    private static bool TryReadPositive(TextBox box, out int value) =>
+        int.TryParse(box.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value)
+        && value > 0;
 
     private IndicatorSymbol? BuildDefinition()
     {
@@ -437,7 +522,9 @@ public partial class SymbolEditorWindow : Window
             {
                 Warn(IndicatorTypes.SourceIsIndex(type) && SourceBox.Items.Count == 0
                     ? "A currency index needs a USD Index symbol. Create one first."
-                    : "Pick a source symbol.");
+                    : IndicatorTypes.SourceIsZigZag(type) && SourceBox.Items.Count == 0
+                        ? "ZigZag levels need a ZigZag indicator. Create one first."
+                        : "Pick a source symbol.");
                 return null;
             }
             if (IndicatorSymbol.NameKey(picked) == IndicatorSymbol.NameKey(name))
@@ -454,6 +541,10 @@ public partial class SymbolEditorWindow : Window
         string unit = _editing?.Unit ?? IndicatorUnits.Minutes;
         bool fromFuture = _editing?.FromFuture ?? false;
         bool averageWeighted = _editing?.AverageWeighted ?? false;
+        bool averageTimeWindow =
+            _editing?.AverageTimeWindow ?? IndicatorSymbol.DefaultAverageTimeWindow;
+        int bandCount = _editing?.BandCount ?? IndicatorSymbol.DefaultBandCount;
+        string bandMode = BandModes.Effective(_editing?.BandMode ?? BandModes.Max);
         long sourceTime = _editing?.SourceTimeUnix ?? 0;
         long chartTime = _editing?.ChartTimeUnix ?? 0;
         bool flip = _editing?.Flip ?? false;
@@ -477,6 +568,8 @@ public partial class SymbolEditorWindow : Window
         double volumeBarUnit = _editing?.VolumeBarUnit ?? 0;
         bool volumeLocked = _editing?.VolumeGroupLocked ?? false;
         bool volumeSplit = _editing?.VolumeSplitSides ?? true;
+        int levelLength = _editing?.LevelLengthPx ?? IndicatorSymbol.DefaultLevelLengthPx;
+        int levelStep = _editing?.LevelStepPx ?? IndicatorSymbol.DefaultLevelStepPx;
         if (type == IndicatorTypes.ZigZag)
         {
             if (!int.TryParse(Limit1Box.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture,
@@ -515,6 +608,31 @@ public partial class SymbolEditorWindow : Window
             unit = (UnitBox.SelectedItem as string) ?? IndicatorUnits.Minutes;
             fromFuture = (DirectionBox.SelectedItem as string) == FutureLabel;
             averageWeighted = WeightedBox.IsChecked == true;
+            averageTimeWindow = TimeWindowBox.IsChecked == true;
+        }
+        else if (type == IndicatorTypes.AverageBand)
+        {
+            if (!int.TryParse(BandCountBox.Text.Trim(), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out bandCount)
+                || bandCount <= 0 || bandCount > MaxBandCount)
+            {
+                Warn($"Count must be a whole number of averages, 1 to {MaxBandCount}.");
+                return null;
+            }
+            if (!int.TryParse(BandPeriodBox.Text.Trim(), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out period) || period <= 0)
+            {
+                Warn("Step must be a positive whole number.");
+                return null;
+            }
+            unit = (BandUnitBox.SelectedItem as string) ?? IndicatorSymbol.DefaultBandUnit;
+            if ((long)period * IndicatorUnits.BarsPerUnit(unit) * bandCount > MaxBandWindowMinutes)
+            {
+                Warn("The longest average is too long, keep it under 10M minutes.");
+                return null;
+            }
+            bandMode = BandModes.Effective((BandModeBox.SelectedItem as string) ?? BandModes.Max);
+            averageTimeWindow = BandTimeWindowBox.IsChecked == true;
         }
         else if (type == IndicatorTypes.Shift)
         {
@@ -615,6 +733,35 @@ public partial class SymbolEditorWindow : Window
                 return null;
             }
         }
+        else if (type == IndicatorTypes.Levels)
+        {
+            if (!int.TryParse(LevelPeriodBox.Text.Trim(), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out period) || period <= 0)
+            {
+                Warn("Lookback must be a positive whole number.");
+                return null;
+            }
+            unit = (LevelUnitBox.SelectedItem as string) ?? IndicatorSymbol.DefaultLevelUnit;
+            if ((long)period * IndicatorUnits.BarsPerUnit(unit) > MaxLevelWindowMinutes)
+            {
+                Warn("Lookback is too long, keep it under 10M minutes.");
+                return null;
+            }
+            if (!int.TryParse(LevelLengthBox.Text.Trim(), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out levelLength)
+                || levelLength <= 0 || levelLength > MaxLevelPixels)
+            {
+                Warn($"Length must be a whole number of pixels, 1 to {MaxLevelPixels}.");
+                return null;
+            }
+            if (!int.TryParse(LevelStepBox.Text.Trim(), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out levelStep)
+                || levelStep <= 0 || levelStep > MaxLevelPixels)
+            {
+                Warn($"Step must be a whole number of pixels, 1 to {MaxLevelPixels}.");
+                return null;
+            }
+        }
         else if (type == IndicatorTypes.Density)
         {
             if (ReadDensityOptions() is not { } opts) return null;
@@ -635,6 +782,9 @@ public partial class SymbolEditorWindow : Window
             Unit = unit,
             FromFuture = fromFuture,
             AverageWeighted = averageWeighted,
+            AverageTimeWindow = averageTimeWindow,
+            BandCount = bandCount,
+            BandMode = bandMode,
             SourceTimeUnix = sourceTime,
             ChartTimeUnix = chartTime,
             Flip = flip,
@@ -657,6 +807,8 @@ public partial class SymbolEditorWindow : Window
             DensityScalePercents = densityPercents,
             DensityScalePerPixel = densityPerPixel,
             DensitySelected = _editing?.DensitySelected ?? 0,
+            LevelLengthPx = levelLength,
+            LevelStepPx = levelStep,
             VolumeGroupMinutes = volumeGroup,
             VolumeBarScale = volumeBarScale,
             VolumeBarUnit = IndicatorSymbol.ScaleVolumeBarUnit(volumeBarUnit, volumeGroupWas, volumeGroup),
@@ -768,6 +920,8 @@ public partial class SymbolEditorWindow : Window
         UnitBox.IsEnabled = !busy;
         DirectionBox.IsEnabled = !busy;
         WeightedBox.IsEnabled = !busy;
+        TimeWindowBox.IsEnabled = !busy;
+        BandTimeWindowBox.IsEnabled = !busy;
         SourceDate.IsEnabled = !busy;
         SourceTimeBox.IsEnabled = !busy;
         ChartDate.IsEnabled = !busy;

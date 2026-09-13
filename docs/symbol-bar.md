@@ -31,13 +31,15 @@ The switches that belong to the whole chart, not to one symbol, live in
 bar, outside the `ScrollViewer`, so it is always visible no matter how
 long the symbol list gets.
 
-It draws five square 22 dip buttons in one row, left to right:
+It draws seven square 22 dip buttons in one row, left to right:
 
 1. Calendar (docs/economic-calendar.md),
 2. Forecast (docs/forecast-indicator.md),
 3. No weekends (docs/no-weekends.md),
 4. Sessions (docs/sessions.md),
-5. Add symbol (opens the same editor as the old "+ Add" button).
+5. Comments (docs/comments.md),
+6. Add symbol (opens the same editor as the old "+ Add" button),
+7. Settings (docs/pair-colors.md).
 
 Each icon is vector-drawn in `OnRender`, there is no image file. A button
 is dark with a white icon when its layer is on, light grey with a dark
@@ -57,8 +59,8 @@ bottom of the symbol bar, where a long symbol list pushed it off screen.
 
 `MainWindow` keeps the old method names for the state
 (`SetCalendarRow`, `SetForecastRow`, `SetWeekendsRow`,
-`SetSessionsRow`), they just point at `ChartTools` instead of
-`SymbolBar` now.
+`SetSessionsRow`, `SetCommentsRow`), they just point at `ChartTools`
+instead of `SymbolBar` now.
 
 ## Groups
 
@@ -107,3 +109,22 @@ appears; the toolbar above stays put either way.
 The wheel handler now only marks the event handled when the cursor is
 over a symbol label (the offset/time-shift gestures). Anywhere else it
 lets the event through so the `ScrollViewer` can scroll the list.
+
+## Align to grid and Auto align
+
+Both items of the per-symbol menu change only that symbol's offset
+(`ChartView.AlignSeriesOffsetToGrid`, `ChartView.AutoAlignSeries`).
+After them every 100 pip grid line sits on a round 100 pip price of the
+symbol (0.8100, not 0.8105). Align to grid moves the line by at most 50
+pips; Auto align also brings the visible part of the line near the
+middle of the view.
+
+Grid lines are at multiples of 1000 points on the screen. A plain pair
+is drawn at its own price, so an offset that is a multiple of 1000 is
+enough. A mirrored pair (USDCHF, USDJPY, USDCAD, flipped Shift copies,
+mirrored indexes) is drawn as `MirrorBase - price`, and the mirror base
+is min+max of the data (`AppConfig.MirrorBases`), not a round number.
+So `GridAlignedOffset` snaps `offset + SeriesTransform.ToDisplay(0)` to
+a multiple of 1000 instead of the offset itself. With the old rule
+(offset only) USDCHF (base 174049) ended up 4.9 pips off the grid,
+USDJPY 54.6 pips and USDCAD 0.6 pips.

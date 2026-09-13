@@ -1,9 +1,10 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using FXViewer.Chart;
 
 namespace FXViewer;
 
@@ -45,7 +46,7 @@ public partial class AppSettingsWindow : Window
     private UniformGrid? _shadeGrid;
 
     public AppSettingsWindow(IReadOnlyList<(string Symbol, int DefaultColorArgb, int ColorArgb)> pairs,
-        bool hideWideSpread, bool showAsk)
+        bool hideWideSpread, bool showAsk, int spotDiameterPx, int spotColorArgb, int spotOpacityPercent)
     {
         InitializeComponent();
         foreach (var (symbol, defaultColor, color) in pairs) AddPairRow(symbol, defaultColor, color);
@@ -53,11 +54,23 @@ public partial class AppSettingsWindow : Window
         SetColorControlsEnabled(false);
         HideWideSpreadCheck.IsChecked = hideWideSpread;
         ShowAskCheck.IsChecked = showAsk;
+        SpotDiameterPx = spotDiameterPx;
+        SpotColorArgb = spotColorArgb;
+        SpotOpacityPercent = spotOpacityPercent;
+        SpotSizeBox.Text = spotDiameterPx.ToString(CultureInfo.InvariantCulture);
+        SpotColorBox.Text = HexOf(spotColorArgb);
+        SpotOpacityBox.Text = spotOpacityPercent.ToString(CultureInfo.InvariantCulture);
     }
 
     public bool HideWideSpread => HideWideSpreadCheck.IsChecked == true;
 
     public bool ShowAsk => ShowAskCheck.IsChecked == true;
+
+    public int SpotDiameterPx { get; private set; }
+
+    public int SpotColorArgb { get; private set; }
+
+    public int SpotOpacityPercent { get; private set; }
 
     private void SetColorControlsEnabled(bool enabled)
     {
@@ -263,7 +276,50 @@ public partial class AppSettingsWindow : Window
         ApplyColor(_pairs[_selected].DefaultColor);
     }
 
-    private void OkBtn_Click(object sender, RoutedEventArgs e) => DialogResult = true;
+    private void SpotColorBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (SpotPreview == null) return;
+        SpotPreview.Background = TryParseHex(SpotColorBox.Text, out int argb)
+            ? BrushOf(argb)
+            : Brushes.Transparent;
+    }
+
+    private void OkBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (!int.TryParse(SpotSizeBox.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture,
+                out int diameter)
+            || diameter < CommentStyle.MinDiameterPx || diameter > CommentStyle.MaxDiameterPx)
+        {
+            MessageBox.Show(this,
+                $"The comment spot diameter must be {CommentStyle.MinDiameterPx} to "
+                + $"{CommentStyle.MaxDiameterPx} pixels.",
+                "Invalid input", MessageBoxButton.OK, MessageBoxImage.Warning);
+            SpotSizeBox.Focus();
+            SpotSizeBox.SelectAll();
+            return;
+        }
+        if (!TryParseHex(SpotColorBox.Text, out int spotColor))
+        {
+            MessageBox.Show(this, "Enter the comment spot color as RRGGBB hex, for example 808080.",
+                "Invalid input", MessageBoxButton.OK, MessageBoxImage.Warning);
+            SpotColorBox.Focus();
+            SpotColorBox.SelectAll();
+            return;
+        }
+        if (!int.TryParse(SpotOpacityBox.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture,
+                out int opacity) || opacity < 1 || opacity > 100)
+        {
+            MessageBox.Show(this, "The comment spot opacity must be 1 to 100 percent.",
+                "Invalid input", MessageBoxButton.OK, MessageBoxImage.Warning);
+            SpotOpacityBox.Focus();
+            SpotOpacityBox.SelectAll();
+            return;
+        }
+        SpotDiameterPx = diameter;
+        SpotColorArgb = spotColor;
+        SpotOpacityPercent = opacity;
+        DialogResult = true;
+    }
 
     private void CancelBtn_Click(object sender, RoutedEventArgs e) => Close();
 

@@ -27,17 +27,19 @@ public sealed class DepthCollector
     private readonly Dictionary<string, PairState> _state = new(StringComparer.OrdinalIgnoreCase);
     private readonly Action<string> _log;
     private readonly Func<bool> _canWrite;
+    private readonly Func<string, string?> _liveContract;
     private readonly Func<string, string> _symbolDirectory;
     private readonly string _folder;
     private bool _firstPass = true;
 
     public string Folder => _folder;
 
-    public DepthCollector(string? sierraDataFolder, Func<string, string> symbolDirectory,
-        Func<bool> canWrite, Action<string> log)
+    public DepthCollector(string? sierraDataFolder, Func<string, string?> liveContract,
+        Func<string, string> symbolDirectory, Func<bool> canWrite, Action<string> log)
     {
         _log = log;
         _canWrite = canWrite;
+        _liveContract = liveContract;
         _symbolDirectory = symbolDirectory;
         _folder = Path.Combine(VolumeCollector.ResolveFolder(sierraDataFolder), DepthFolderName);
     }
@@ -55,7 +57,7 @@ public sealed class DepthCollector
 
         foreach (var (pair, root) in VolumeCollector.Futures)
         {
-            var contract = VolumeCollector.FrontContract(root, utcNow);
+            var contract = _liveContract(pair) ?? VolumeCollector.FrontContract(root, utcNow);
             var name = $"{contract}-CME.{utcNow:yyyy-MM-dd}.depth";
             var path = Path.Combine(_folder, name);
             if (!_state.TryGetValue(pair, out var st))

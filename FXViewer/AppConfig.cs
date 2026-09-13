@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text.Json;
 using FXViewer.Calendar;
 using FXViewer.Chart;
@@ -27,6 +27,11 @@ public sealed class AppConfig
     public Dictionary<string, long>? MirrorBases { get; set; }
     public bool HideWideSpread { get; set; }
     public bool ShowAsk { get; set; }
+    public int CommentSpotDiameterPx { get; set; } = CommentStyle.DefaultDiameterPx;
+    public int CommentSpotColorArgb { get; set; } = CommentStyle.DefaultColorArgb;
+    public int CommentSpotOpacityPercent { get; set; } = CommentStyle.DefaultOpacityPercent;
+    public double? GamePanelLeft { get; set; }
+    public double? GamePanelTop { get; set; }
     public string SierraDataFolder { get; set; } = "";
 
     public static string Dir => AppContext.BaseDirectory;
@@ -48,6 +53,7 @@ public sealed class AppConfig
             var cfg = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(path)) ?? new AppConfig();
             cfg.EnsureTabs();
             bool merged = cfg.MergeVolumeProfiles();
+            if (cfg.MigrateBandModes()) merged = true;
             if (cfg.RebaseShiftAnchors()) merged = true;
             if (cfg.EnsureZoomLevels()) merged = true;
             BackupDaily();
@@ -103,6 +109,19 @@ public sealed class AppConfig
         return changed;
     }
 
+    private bool MigrateBandModes()
+    {
+        bool changed = false;
+        foreach (var ind in Indicators)
+        {
+            if (!IndicatorTypes.IsAverageBand(ind.Type) || !ind.BandMin) continue;
+            ind.BandMode = BandModes.Min;
+            ind.BandMin = false;
+            changed = true;
+        }
+        return changed;
+    }
+
     private bool RebaseShiftAnchors()
     {
         long anchor = ShiftedSymbol.DefaultAnchorUnix();
@@ -128,6 +147,9 @@ public sealed class AppConfig
     }
 
     public const string DefaultTabName = "Chart";
+
+    public CommentStyle CommentSpotStyle() => CommentStyle.Of(
+        CommentSpotDiameterPx, CommentSpotColorArgb, CommentSpotOpacityPercent);
 
     public static string BackupDir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),

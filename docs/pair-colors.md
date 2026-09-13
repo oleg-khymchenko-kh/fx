@@ -61,7 +61,12 @@ No candles are re-read from disk.
 ## Other settings in the same dialog
 
 The colors are the main part, but the window is the app-wide Settings
-window, so global switches live here too. Right now there is one:
-**Hide wide spread minutes** (docs/wide-spread.md). Unlike a color it
-cannot be applied in place - the minutes have to be re-read from disk -
-so switching it reloads the chart.
+window, so global switches live here too:
+
+- **Hide wide spread minutes** (docs/wide-spread.md) and **Show ask
+  instead of bid** (docs/ask-view.md). Unlike a color they cannot be
+  applied in place - the minutes have to be re-read from disk - so
+  switching either one reloads the chart.
+- **Comment spot** - diameter, color and opacity of the comment spots
+  (docs/comments.md). Applied in place: OK pushes the new style into
+  `ChartView.SetCommentStyle` and the chart redraws.

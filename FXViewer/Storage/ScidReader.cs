@@ -19,23 +19,20 @@ public static class ScidReader
         public bool Ok => Error.Length == 0;
     }
 
+    public readonly record struct RecentResult(
+        bool Exists, long Volume, long WideVolume, long NewestUnix, string Error)
+    {
+        public bool Ok => Error.Length == 0;
+    }
+
     public static TailResult ReadMinuteVolumes(string path, long fromOffset, Dictionary<long, long> into,
         Dictionary<long, TickMinute>? ticksInto = null, bool reciprocal = false)
     {
         try
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            var head = new byte[MinHeaderSize];
-            if (fs.Length < head.Length)
-                return new TailResult(fromOffset, 0, 0, false, "file shorter than the header");
-            fs.ReadExactly(head);
-            if (head[0] != (byte)'S' || head[1] != (byte)'C' || head[2] != (byte)'I' || head[3] != (byte)'D')
-                return new TailResult(fromOffset, 0, 0, false, "not a .scid file (bad magic)");
-            int headerSize = BinaryPrimitives.ReadInt32LittleEndian(head.AsSpan(4));
-            int recordSize = BinaryPrimitives.ReadInt32LittleEndian(head.AsSpan(8));
-            if (headerSize < MinHeaderSize || recordSize < MinRecordSize)
-                return new TailResult(fromOffset, 0, 0, false,
-                    $"unexpected header {headerSize} / record {recordSize}");
+            if (!TryReadHeader(fs, out int headerSize, out int recordSize, out string error))
+                return new TailResult(fromOffset, 0, 0, false, error);
 
             bool restarted = false;
             long start = fromOffset;
@@ -95,6 +92,78 @@ public static class ScidReader
         {
             return new TailResult(fromOffset, 0, 0, false, ex.Message);
         }
+    }
+
+    public static RecentResult ReadRecent(string path, long sinceUnix, long wideSinceUnix)
+    {
+        if (!File.Exists(path)) return new RecentResult(false, 0, 0, 0, "");
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (!TryReadHeader(fs, out int headerSize, out int recordSize, out string error))
+                return new RecentResult(true, 0, 0, 0, error);
+
+            long records = (fs.Length - headerSize) / recordSize;
+            var buf = new byte[recordSize * ReadRecords];
+            long volume = 0;
+            long wide = 0;
+            long newest = 0;
+            long end = records;
+            while (end > 0)
+            {
+                long begin = Math.Max(0, end - ReadRecords);
+                int count = (int)(end - begin);
+                fs.Position = headerSize + begin * recordSize;
+                fs.ReadExactly(buf, 0, count * recordSize);
+                for (int i = count - 1; i >= 0; i--)
+                {
+                    int off = i * recordSize;
+                    long micros = BinaryPrimitives.ReadInt64LittleEndian(buf.AsSpan(off));
+                    if (micros <= 0) continue;
+                    long unix = micros / 1_000_000 - EpochOffset;
+                    if (unix > newest) newest = unix;
+                    if (unix < wideSinceUnix)
+                        return new RecentResult(true, volume, wide, newest, "");
+                    uint v = BinaryPrimitives.ReadUInt32LittleEndian(buf.AsSpan(off + VolumeFieldOffset));
+                    wide += v;
+                    if (unix >= sinceUnix) volume += v;
+                }
+                end = begin;
+            }
+            return new RecentResult(true, volume, wide, newest, "");
+        }
+        catch (Exception ex)
+        {
+            return new RecentResult(true, 0, 0, 0, ex.Message);
+        }
+    }
+
+    private static bool TryReadHeader(FileStream fs, out int headerSize, out int recordSize, out string error)
+    {
+        headerSize = 0;
+        recordSize = 0;
+        error = "";
+        if (fs.Length < MinHeaderSize)
+        {
+            error = "file shorter than the header";
+            return false;
+        }
+        Span<byte> head = stackalloc byte[MinHeaderSize];
+        fs.Position = 0;
+        fs.ReadExactly(head);
+        if (head[0] != (byte)'S' || head[1] != (byte)'C' || head[2] != (byte)'I' || head[3] != (byte)'D')
+        {
+            error = "not a .scid file (bad magic)";
+            return false;
+        }
+        headerSize = BinaryPrimitives.ReadInt32LittleEndian(head.Slice(4));
+        recordSize = BinaryPrimitives.ReadInt32LittleEndian(head.Slice(8));
+        if (headerSize < MinHeaderSize || recordSize < MinRecordSize)
+        {
+            error = $"unexpected header {headerSize} / record {recordSize}";
+            return false;
+        }
+        return true;
     }
 
     public static long Mod(long value, long m)

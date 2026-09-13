@@ -1,16 +1,20 @@
-namespace FXViewer.Chart;
+﻿namespace FXViewer.Chart;
 
 public enum ChartSession
 {
     None,
+    AsiaEurope,
     Europe,
     Overlap,
     America,
+    Closed,
 }
 
 public static class SessionClock
 {
     public const long HourSeconds = 3600;
+    public const int AsiaOpenHourUtc = 0;
+    public const int AsiaCloseHourUtc = 9;
     public const int EuropeOpenWinterHourUtc = 8;
     public const int EuropeCloseWinterHourUtc = 17;
     public const int AmericaOpenWinterHourUtc = 13;
@@ -29,9 +33,12 @@ public static class SessionClock
         long usClose = (AmericaCloseWinterHourUtc - (us ? 1 : 0)) * HourSeconds;
         bool inEurope = secondOfDay >= euOpen && secondOfDay < euClose;
         bool inAmerica = secondOfDay >= usOpen && secondOfDay < usClose;
+        bool inAsia = secondOfDay >= AsiaOpenHourUtc * HourSeconds && secondOfDay < AsiaCloseHourUtc * HourSeconds;
         if (inEurope && inAmerica) return ChartSession.Overlap;
         if (inAmerica) return ChartSession.America;
+        if (inEurope && inAsia) return ChartSession.AsiaEurope;
         if (inEurope) return ChartSession.Europe;
+        if (secondOfDay >= usClose) return ChartSession.Closed;
         return ChartSession.None;
     }
 

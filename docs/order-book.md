@@ -374,7 +374,9 @@ Sierra records CME depth to `MarketDepthData\<contract>.<date>.depth`, one file 
 per UTC day, and the app stores it as `data/SYMBOL/depth/<year>.dpt`.
 
 `DepthCollector` keeps the store current by itself: every 30 s it tails the current UTC day's
-file of the front contract from the byte offset it left off at, replays the add / modify /
+file of the front contract (the one `VolumeCollector` settled on from the `.scid` volumes, see
+docs/volume.md; the calendar month until it has decided) from the byte offset it left off at,
+replays the add / modify /
 delete commands into a book, and appends one record per minute that closed. Sierra sends a
 ClearBook roughly every 10 minutes and re-adds the whole book, so a reader that starts in the
 middle of a file has a complete book again within 10 minutes - that is what makes tailing

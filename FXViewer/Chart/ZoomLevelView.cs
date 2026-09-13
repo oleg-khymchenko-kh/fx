@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -37,6 +37,15 @@ public sealed class ZoomLevelView : Border
         FontSize = 11,
         Foreground = MutedBrush,
         Margin = new Thickness(4, 8, 4, 0),
+    };
+
+    private readonly TextBlock _customText = new()
+    {
+        FontSize = 11,
+        Foreground = MutedBrush,
+        TextWrapping = TextWrapping.Wrap,
+        MaxWidth = 260,
+        Margin = new Thickness(4, 2, 4, 0),
     };
 
     private readonly TextBlock _fitText = new()
@@ -81,6 +90,7 @@ public sealed class ZoomLevelView : Border
         body.Children.Add(BuildHeader());
         body.Children.Add(_rows);
         body.Children.Add(_currentText);
+        body.Children.Add(_customText);
         body.Children.Add(_fitText);
         _popup = new Popup
         {
@@ -110,14 +120,15 @@ public sealed class ZoomLevelView : Border
     }
 
     public void SetLevels(IReadOnlyList<ZoomLevel> levels, int index, bool dirty, ZoomLevel current,
-        double fitPerDay)
+        double fitPerDay, double customZoom)
     {
         _levels = levels;
         BuildRows();
-        SetCurrent(index, dirty, current, fitPerDay);
+        SetCurrent(index, dirty, current, fitPerDay, customZoom);
     }
 
-    public void SetCurrent(int index, bool dirty, ZoomLevel current, double fitPerDay)
+    public void SetCurrent(int index, bool dirty, ZoomLevel current, double fitPerDay,
+        double customZoom)
     {
         _index = index;
         _label.Text = index >= 0 && index < _levels.Count
@@ -130,6 +141,12 @@ public sealed class ZoomLevelView : Border
             ? $"Current: {Format(current.PixelsPerDay)} px/day, "
                 + $"{Format(current.PixelsPer100Pips)} px/100 pips"
             : "Current: -";
+        bool custom = customZoom > 0 && Math.Abs(customZoom - 1) > 1e-9;
+        _customText.Text = custom
+            ? $"Tab custom zoom {Format(customZoom)}× - px/100 pips of every level is "
+                + "multiplied by it in this tab"
+            : "";
+        _customText.Visibility = custom ? Visibility.Visible : Visibility.Collapsed;
         _fitText.Text = fitPerDay > 0
             ? $"All history fills the width at {Format(fitPerDay)} px/day - "
                 + "below that the chart leaves empty space"

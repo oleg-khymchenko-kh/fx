@@ -25,9 +25,11 @@ on at once.
 To change the slot count, edit the const and the `GridNBtn` buttons in
 `TiltedGridSettingsWindow` - the bar rows, state and rendering adapt.
 
-While any tilted family is visible, the main grid's 50-pip and 10-pip
-sub-lines are suppressed (only the 100-pip lines and the tilted lines
-show), so the chart is not overcrowded.
+While any tilted family is visible, the main grid's 50-pip sub-lines are
+suppressed, so the chart is not overcrowded. The 100-pip lines and the
+light 10-pip lines stay (the user asked to keep the 10-pip lines on
+2026-09-10). The 50-pip lines are hidden because they have the same color
+and dots as the tilted 50-pip sub-lines and would mix with them.
 
 ## Slope
 

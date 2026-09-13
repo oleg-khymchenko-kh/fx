@@ -49,6 +49,14 @@ public sealed class WeekendCompressor
         return unixSeconds - _removed[i];
     }
 
+    public long ToVirtual(long unixSeconds, ref int cursor)
+    {
+        while (cursor < _gapStart.Length && _gapStart[cursor] <= unixSeconds) cursor++;
+        while (cursor > 0 && _gapStart[cursor - 1] > unixSeconds) cursor--;
+        if (cursor > 0 && unixSeconds < _gapEnd[cursor - 1]) return _gapVirtual[cursor - 1];
+        return unixSeconds - _removed[cursor];
+    }
+
     public long ToReal(long virtualSeconds)
     {
         int i = CountAtOrBefore(_gapVirtual, virtualSeconds);

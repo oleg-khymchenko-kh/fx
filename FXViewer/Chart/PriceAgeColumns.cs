@@ -7,7 +7,7 @@ public readonly record struct AgeColumn(int Up, int Down);
 public static class PriceAgeColumns
 {
     public static AgeColumn[] Build(CandleHistory history, long columnSeconds, long firstBucket, int count,
-        WeekendCompressor? map, bool mirror)
+        WeekendCompressor? map, bool mirror, long maxUnix = long.MaxValue)
     {
         var columns = new AgeColumn[count];
         if (count <= 0) return columns;
@@ -16,10 +16,10 @@ public static class PriceAgeColumns
         {
             long minuteFirst = ChartColumns.MinuteBucket(firstBucket, run);
             var minutes = Build(history, ChartColumns.MinuteSeconds, minuteFirst,
-                ChartColumns.MinuteCount(count, run), map, mirror);
+                ChartColumns.MinuteCount(count, run), map, mirror, maxUnix);
             return ChartColumns.Expand(minutes, minuteFirst, run, firstBucket, count, default);
         }
-        var edges = ChartColumns.ColumnEdges(map, columnSeconds, firstBucket, count);
+        var edges = ChartColumns.ColumnEdges(map, columnSeconds, firstBucket, count, maxUnix);
         int level = ChartColumns.LevelFor(columnSeconds, map);
         if (level >= 0) Fill(history.Levels[level], edges, columns);
         else Fill(history.Minutes, edges, columns);

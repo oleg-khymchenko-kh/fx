@@ -61,9 +61,8 @@ public partial class MainWindow : Window, INotesHost
         public bool IsOrderBookPositions { get; init; }
         public bool IsMarketDepth { get; init; }
         public bool IsAverage { get; init; }
-        public int AverageWindowBars { get; init; }
-        public bool AverageFromFuture { get; init; }
-        public bool AverageVolumeWeighted { get; init; }
+        public bool IsLevels { get; init; }
+        public AverageSpec? Average { get; init; }
         public string? ShiftReadSymbol { get; init; }
         public int PriceDiv { get; init; } = 1;
         public bool IsBasePair { get; init; }
@@ -94,7 +93,9 @@ public partial class MainWindow : Window, INotesHost
         bool isSpread = IndicatorTypes.IsSpread(ind.Type);
         bool isVolume = IndicatorTypes.IsVolume(ind.Type);
         bool isOrderBook = IndicatorTypes.IsOrderBook(ind.Type);
-        bool isPanel = isEntry || isAge || isDensity || isSpread || isVolume || isOrderBook;
+        bool isLevels = IndicatorTypes.IsLevels(ind.Type);
+        bool isPanel = isEntry || isAge || isDensity || isSpread || isVolume || isOrderBook
+            || isLevels;
         string target = isShift ? ind.ShiftTarget() : "";
         var pair = isShift ? PairDisplay(target) : null;
         bool targetMirror = pair?.Mirror ?? sourceMirror;
@@ -117,16 +118,30 @@ public partial class MainWindow : Window, INotesHost
             IsOrderBookPositions = IndicatorTypes.IsOpenPositions(ind.Type),
             IsMarketDepth = IndicatorTypes.IsMarketDepth(ind.Type),
             IsAverage = IndicatorTypes.IsAverage(ind.Type),
-            AverageWindowBars = IndicatorTypes.IsAverage(ind.Type)
-                ? MovingAverageSymbol.WindowBars(ind.Period, ind.Unit)
-                : 0,
-            AverageFromFuture = ind.FromFuture,
-            AverageVolumeWeighted = ind.AverageWeighted,
+            IsLevels = isLevels,
+            Average = IndicatorTypes.IsAverage(ind.Type) ? AverageSpecOf(ind) : null,
             ShiftReadSymbol = isShift ? target : null,
             PriceDiv = isPanel ? 1 : isShift ? targetPriceDiv : sourcePriceDiv,
             HasRangeStats = IndicatorTypes.HasRangeStats(ind.Type),
         };
     }
+
+    private static AverageSpec AverageSpecOf(IndicatorSymbol ind)
+    {
+        bool band = IndicatorTypes.IsAverageBand(ind.Type);
+        return new AverageSpec(
+            MovingAverageSymbol.WindowBars(ind.Period, ind.Unit),
+            ind.FromFuture,
+            !band && ind.AverageWeighted,
+            band ? Math.Max(1, ind.BandCount) : 1,
+            BandPickOf(ind.BandMode),
+            ind.AverageTimeWindow);
+    }
+
+    private static BandPick BandPickOf(string mode) =>
+        BandModes.Same(mode, BandModes.Min) ? BandPick.Min
+        : BandModes.Same(mode, BandModes.Avg) ? BandPick.Avg
+        : BandPick.Max;
 
     private static (bool Mirror, int PipPoints, int PriceDiv)? PairDisplay(string symbol)
     {
@@ -141,6 +156,16 @@ public partial class MainWindow : Window, INotesHost
     private IEnumerable<DisplayConfig> DisplayConfigs(IReadOnlyList<IndicatorSymbol> indicators)
     {
         var emitted = new HashSet<string>();
+        IEnumerable<DisplayConfig> LevelsOf(string parent)
+        {
+            foreach (var ind in indicators)
+            {
+                if (!IndicatorTypes.IsLevels(ind.Type)) continue;
+                if (!SymbolNameEquals(ind.Source, parent)) continue;
+                emitted.Add(IndicatorSymbol.NameKey(ind.Name));
+                yield return IndicatorConfig(ind, parent, false, IndexPipPoints, 1);
+            }
+        }
         foreach (var c in SymbolConfigs)
         {
             yield return new DisplayConfig(c.Symbol, PairColorOf(c.Symbol, c.ColorArgb), c.Mirror,
@@ -156,6 +181,7 @@ public partial class MainWindow : Window, INotesHost
                 if (!SymbolNameEquals(ind.Source, c.Symbol)) continue;
                 emitted.Add(IndicatorSymbol.NameKey(ind.Name));
                 yield return IndicatorConfig(ind, c.Symbol, c.Mirror, c.PipPoints, c.PriceDiv);
+                foreach (var child in LevelsOf(ind.Name)) yield return child;
             }
         }
         foreach (var index in indicators)
@@ -173,6 +199,7 @@ public partial class MainWindow : Window, INotesHost
                 if (!SymbolNameEquals(ind.Source, index.Name)) continue;
                 emitted.Add(IndicatorSymbol.NameKey(ind.Name));
                 yield return IndicatorConfig(ind, index.Name, index.Flip, IndexPipPoints, 1);
+                foreach (var child in LevelsOf(ind.Name)) yield return child;
             }
         }
         foreach (var ind in indicators)
@@ -191,6 +218,7 @@ public partial class MainWindow : Window, INotesHost
                 IsOrderBook = IndicatorTypes.IsOrderBook(ind.Type),
                 IsOrderBookPositions = IndicatorTypes.IsOpenPositions(ind.Type),
                 IsMarketDepth = IndicatorTypes.IsMarketDepth(ind.Type),
+                IsLevels = IndicatorTypes.IsLevels(ind.Type),
                 HasRangeStats = IndicatorTypes.HasRangeStats(ind.Type),
             };
         }
@@ -377,12 +405,17 @@ public partial class MainWindow : Window, INotesHost
             () => !_dbBusy && _historyCts == null,
             message => Dispatcher.InvokeAsync(() => AppendLog(message)));
 
-    private DepthCollector GetDepthCollector() =>
-        _depthCollector ??= new DepthCollector(
+    private DepthCollector GetDepthCollector()
+    {
+        if (_depthCollector != null) return _depthCollector;
+        var volume = GetVolumeCollector();
+        return _depthCollector = new DepthCollector(
             _config.SierraDataFolder,
+            volume.ContractFor,
             symbol => GetDb().SymbolDirectory(symbol),
             () => !_dbBusy && _historyCts == null,
             message => Dispatcher.InvokeAsync(() => AppendLog(message)));
+    }
 
     private void PollDepth()
     {
@@ -425,10 +458,6 @@ public partial class MainWindow : Window, INotesHost
         if (writes.Count == 0) return;
         foreach (var group in writes.GroupBy(w => w.Symbol, StringComparer.Ordinal))
         {
-            var series = Chart.GetSeries(group.Key);
-            if (series == null) continue;
-            var minutes = series.History.Minutes;
-            if (minutes.Length == 0) continue;
             var byMinute = new Dictionary<long, int>();
             long lo = long.MaxValue;
             long hi = long.MinValue;
@@ -438,30 +467,55 @@ public partial class MainWindow : Window, INotesHost
                 if (w.MinuteUnix < lo) lo = w.MinuteUnix;
                 if (w.MinuteUnix > hi) hi = w.MinuteUnix;
             }
-            int from = LowerBoundMinute(minutes, lo);
-            int toExcl = LowerBoundMinute(minutes, hi + 1);
-            if (from >= toExcl) continue;
-            var replacement = new List<Candle>(toExcl - from);
-            bool changed = false;
-            for (int k = from; k < toExcl; k++)
-            {
-                var c = minutes[k];
-                if (byMinute.TryGetValue(c.MinuteUnixSeconds, out var v) && (!c.HasVolume || c.Volume != v))
-                {
-                    replacement.Add(c with { HasVolume = true, Volume = v });
-                    changed = true;
-                }
-                else
-                {
-                    replacement.Add(c);
-                }
-            }
-            if (!changed) continue;
-            var history = series.History.WithReplacedRange(from, toExcl - from, replacement);
-            history.SetLive(series.History.Live);
-            if (series.History.HasLastTick) history.SetLastTick(series.History.LastTick);
-            Chart.PatchSeriesHistory(group.Key, history);
+            PatchLoadedVolume(group.Key, byMinute, lo, hi);
+            PatchLiveVolume(group.Key, byMinute);
         }
+    }
+
+    private void PatchLoadedVolume(string symbol, Dictionary<long, int> byMinute, long lo, long hi)
+    {
+        var series = Chart.GetSeries(symbol);
+        if (series == null) return;
+        var minutes = series.History.Minutes;
+        if (minutes.Length == 0) return;
+        int from = LowerBoundMinute(minutes, lo);
+        int toExcl = LowerBoundMinute(minutes, hi + 1);
+        if (from >= toExcl) return;
+        var replacement = new List<Candle>(toExcl - from);
+        bool changed = false;
+        for (int k = from; k < toExcl; k++)
+        {
+            var c = minutes[k];
+            if (byMinute.TryGetValue(c.MinuteUnixSeconds, out var v) && (!c.HasVolume || c.Volume != v))
+            {
+                replacement.Add(c with { HasVolume = true, Volume = v });
+                changed = true;
+            }
+            else
+            {
+                replacement.Add(c);
+            }
+        }
+        if (!changed) return;
+        var history = series.History.WithReplacedRange(from, toExcl - from, replacement);
+        history.SetLive(series.History.Live);
+        if (series.History.HasLastTick) history.SetLastTick(series.History.LastTick);
+        Chart.PatchSeriesHistory(symbol, history);
+    }
+
+    private void PatchLiveVolume(string symbol, Dictionary<long, int> byMinute)
+    {
+        if (!_live.TryGetValue(symbol, out var s)) return;
+        bool changed = false;
+        for (int i = 0; i < s.Closed.Count; i++)
+        {
+            var c = s.Closed[i];
+            if (!byMinute.TryGetValue(c.MinuteUnixSeconds, out var v)) continue;
+            if (c.HasVolume && c.Volume == v) continue;
+            s.Closed[i] = c with { HasVolume = true, Volume = v };
+            changed = true;
+        }
+        if (changed) PushLiveTail(symbol, s);
     }
 
     private static int LowerBoundMinute(Candle[] minutes, long unixSeconds)
@@ -482,6 +536,7 @@ public partial class MainWindow : Window, INotesHost
         InitializeComponent();
         WideSpreadRule.Hide = _config.HideWideSpread;
         AskViewRule.SetPairs(SymbolConfigs.Select(c => (c.Symbol, c.PipPoints)));
+        WideSpreadRule.SetMeasuredPairs(SymbolConfigs.Select(c => c.Symbol));
         AskViewRule.Show = _config.ShowAsk;
         UpdateAskTitle();
         CrashLog.Reported += line => Dispatcher.BeginInvoke(() => AppendLog(line));
@@ -569,6 +624,7 @@ public partial class MainWindow : Window, INotesHost
         {
             bool enabled = Chart.ToggleSeries(symbol);
             SymbolBar.SetSymbolEnabled(symbol, enabled);
+            RefreshGameIfPlaying();
             if (!enabled || _loader == null) return;
             string loadSymbol = symbol;
             var avg = _config.Indicators.FirstOrDefault(x =>
@@ -669,6 +725,9 @@ public partial class MainWindow : Window, INotesHost
         {
             if (Chart.SetZoomLevelValues(index, perDay, per100Pips)) _config.Save();
         };
+        _tabProperties.CustomZoomChanged += ApplyTabCustomZoom;
+        InitGame();
+        InitComments();
         RefreshZoomLevels();
         SeedIndicators();
         _stateSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -839,7 +898,8 @@ public partial class MainWindow : Window, INotesHost
                         configs[i];
                     if (isDrawing || editable || configs[i].IsDeals || configs[i].IsDensity
                         || configs[i].IsSpread || configs[i].IsVolume
-                        || configs[i].IsOrderBook || configs[i].IsAverage) return;
+                        || configs[i].IsOrderBook || configs[i].IsAverage
+                        || configs[i].IsLevels) return;
                     bool entryPanel = configs[i].IsEntryPanel;
                     bool agePanel = configs[i].IsAgePanel;
                     var swSym = Stopwatch.StartNew();
@@ -935,7 +995,7 @@ public partial class MainWindow : Window, INotesHost
                         RefreshLoadIndicator();
                     });
                 });
-                for (int i = 0; i < configs.Length; i++)
+                Parallel.For(0, configs.Length, options, i =>
                 {
                     var (symbol, color, mirror, pipPoints, editable, source, isDrawing, _, _) = configs[i];
                     bool isDeals = configs[i].IsDeals;
@@ -944,9 +1004,10 @@ public partial class MainWindow : Window, INotesHost
                     bool isVolume = configs[i].IsVolume;
                     bool isOrderBook = configs[i].IsOrderBook;
                     bool isAverage = configs[i].IsAverage;
+                    bool isLevels = configs[i].IsLevels;
                     if (!isDrawing && !isDeals && !editable && !isDensity && !isSpread && !isVolume
-                        && !isOrderBook && !isAverage)
-                        continue;
+                        && !isOrderBook && !isAverage && !isLevels)
+                        return;
                     long mirrorBase = 0;
                     if (source != null)
                     {
@@ -974,9 +1035,8 @@ public partial class MainWindow : Window, INotesHost
                                     break;
                                 }
                         var swAvg = Stopwatch.StartNew();
-                        var avgCandles = AverageSeries.Compute(
-                            parentMinutes, configs[i].AverageWindowBars, configs[i].AverageFromFuture,
-                            configs[i].AverageVolumeWeighted);
+                        var avgSpec = configs[i].Average ?? default;
+                        var avgCandles = CachedAverage(symbol, parentMinutes, avgSpec);
                         if (avgCandles.Length > 0)
                         {
                             lastVal = transform.ToRaw(avgCandles[^1].Avg);
@@ -987,17 +1047,38 @@ public partial class MainWindow : Window, INotesHost
                                 pipPoints, false, null, transform, source)
                             {
                                 PriceMul = configs[i].PriceDiv,
-                                AverageWindowBars = configs[i].AverageWindowBars,
-                                AverageFromFuture = configs[i].AverageFromFuture,
-                                AverageVolumeWeighted = configs[i].AverageVolumeWeighted,
+                                Average = avgSpec,
                             },
                             mirrorBase, pipPoints, lastVal, false, lastUnix,
                             "", mirror, false, 0, 0, -1, null, null);
+                        string avgKind = avgSpec.Band
+                            ? $"{avgSpec.Steps} SMA {avgSpec.StepBars}-{avgSpec.LongestBars} bars, "
+                              + avgSpec.Pick.ToString().ToLowerInvariant()
+                            : $"SMA {avgSpec.StepBars} bars";
                         string avgLogLine =
-                            $"  {symbol}: SMA {configs[i].AverageWindowBars} bars over " +
+                            $"  {symbol}: {avgKind} over " +
                             $"{avgCandles.Length:N0} candles of {source} in {swAvg.ElapsedMilliseconds} ms";
                         Dispatcher.BeginInvoke(() => AppendLog(avgLogLine));
-                        continue;
+                        return;
+                    }
+                    if (isLevels)
+                    {
+                        var ind = indicators.FirstOrDefault(x => SymbolNameEquals(x.Name, symbol));
+                        slots[i] = new SeriesSlot(
+                            new SymbolSeries(symbol, CandleHistory.Build(Array.Empty<Candle>()), color,
+                                pipPoints, false, null, null, source)
+                            {
+                                PriceMul = configs[i].PriceDiv,
+                                LevelsPanel = true,
+                                LevelWindowMinutes = ind?.LevelWindowMinutes()
+                                    ?? IndicatorSymbol.DefaultLevelPeriod * 1440,
+                                LevelLengthPx = ind?.LevelLengthPx ?? IndicatorSymbol.DefaultLevelLengthPx,
+                                LevelStepPx = ind?.LevelStepPx ?? IndicatorSymbol.DefaultLevelStepPx,
+                                SellColorArgb = ind?.SellColorArgb ?? color,
+                            },
+                            0, pipPoints, 0, false, 0,
+                            "", mirror, false, 0, 0, -1, null, null);
+                        return;
                     }
                     if (isDensity)
                     {
@@ -1015,7 +1096,7 @@ public partial class MainWindow : Window, INotesHost
                             },
                             0, pipPoints, 0, false, 0,
                             "", mirror, false, 0, 0, -1, null, null);
-                        continue;
+                        return;
                     }
                     if (isOrderBook)
                     {
@@ -1049,7 +1130,7 @@ public partial class MainWindow : Window, INotesHost
                             },
                             0, pipPoints, 0, false, 0,
                             "", mirror, false, 0, 0, -1, null, null);
-                        continue;
+                        return;
                     }
                     if (isSpread)
                     {
@@ -1062,7 +1143,7 @@ public partial class MainWindow : Window, INotesHost
                             },
                             0, pipPoints, 0, false, 0,
                             "", mirror, false, 0, 0, -1, null, null);
-                        continue;
+                        return;
                     }
                     if (isVolume)
                     {
@@ -1093,7 +1174,7 @@ public partial class MainWindow : Window, INotesHost
                             },
                             0, pipPoints, 0, false, 0,
                             "", mirror, false, 0, 0, -1, null, null);
-                        continue;
+                        return;
                     }
                     if (isDeals)
                     {
@@ -1113,7 +1194,7 @@ public partial class MainWindow : Window, INotesHost
                             { PriceMul = configs[i].PriceDiv },
                             mirrorBase, pipPoints, lastVal, false, lastUnix,
                             "", mirror, false, 0, 0, -1, null, null);
-                        continue;
+                        return;
                     }
                     if (editable)
                     {
@@ -1134,7 +1215,7 @@ public partial class MainWindow : Window, INotesHost
                             },
                             mirrorBase, pipPoints, lastVal, false, lastUnix,
                             "", mirror, false, 0, 0, -1, null, null);
-                        continue;
+                        return;
                     }
                     var drawingLines = activeNote?.LinesOf(symbol)
                         ?? DrawingStore.Load(db.SymbolDirectory(symbol));
@@ -1149,7 +1230,7 @@ public partial class MainWindow : Window, INotesHost
                         { PriceMul = configs[i].PriceDiv },
                         mirrorBase, pipPoints, lastVal, false, lastUnix,
                         "", mirror, false, 0, 0, -1, null, null);
-                }
+                });
             }, token);
             if (token.IsCancellationRequested) return;
             if (!newBases.IsEmpty)
@@ -1192,7 +1273,8 @@ public partial class MainWindow : Window, INotesHost
                 .Where(x => IndicatorTypes.IsAverage(x.Type) || IndicatorTypes.IsEntryPoints(x.Type)
                     || IndicatorTypes.IsPriceAge(x.Type) || IndicatorTypes.IsDeals(x.Type)
                     || IndicatorTypes.IsDensity(x.Type) || IndicatorTypes.IsSpread(x.Type)
-                    || IndicatorTypes.IsVolume(x.Type) || IndicatorTypes.IsOrderBook(x.Type))
+                    || IndicatorTypes.IsVolume(x.Type) || IndicatorTypes.IsOrderBook(x.Type)
+                    || IndicatorTypes.IsLevels(x.Type))
                 .Select(x => IndicatorSymbol.NameKey(x.Name)));
             Chart.SetAlignExcluded(series
                 .Select(s => s.Symbol)
@@ -1222,7 +1304,7 @@ public partial class MainWindow : Window, INotesHost
                 .Select(s => IndicatorSymbol.NameKey(s.Symbol)), StringComparer.Ordinal);
             SymbolBar.SetDensitySymbols(series.Where(s => s.DensityPanel).Select(s => s.Symbol));
             SymbolBar.SetAverageSymbols(series
-                .Where(s => s.AverageWindowBars > 0)
+                .Where(s => s.Average is { Band: false })
                 .Select(s => (s.Symbol, s.AverageWindowBars)));
             SymbolBar.SetVolumeSymbols(series
                 .Where(s => s.VolumePanel)
@@ -1237,8 +1319,10 @@ public partial class MainWindow : Window, INotesHost
             ChartTools.SetForecastRow(Chart.HasForecasts, Chart.ForecastVisible);
             ChartTools.SetWeekendsRow(Chart.WeekendsHidden);
             ChartTools.SetSessionsRow(Chart.SessionsVisible);
+            ChartTools.SetCommentsRow(Chart.CommentsVisible);
             SymbolBar.SetTiltedGridRow(Chart.TiltedUpGridIndex, Chart.TiltedDownGridIndex);
             _baseInfo = baseInfo;
+            RefreshGame();
             ReconcileLive();
             var loader = new SeriesDataLoader(db, Chart, Dispatcher, loaderSeries,
                 AppendLog, OnMirrorBaseComputed);
@@ -1264,12 +1348,101 @@ public partial class MainWindow : Window, INotesHost
         }
     }
 
+    private readonly Dictionary<string, (string Stamp, object Value)> _storeCache =
+        new(StringComparer.Ordinal);
+
+    private object? CachedStore(string key, string stamp, Func<object?> read)
+    {
+        if (stamp.Length > 0)
+            lock (_storeCache)
+                if (_storeCache.TryGetValue(key, out var hit) && hit.Stamp == stamp) return hit.Value;
+        var value = read();
+        if (stamp.Length > 0 && value != null)
+            lock (_storeCache) _storeCache[key] = (stamp, value);
+        return value;
+    }
+
+    private static string FolderStamp(string directory, string pattern)
+    {
+        try
+        {
+            if (!Directory.Exists(directory)) return "";
+            var files = Directory.GetFiles(directory, pattern);
+            if (files.Length == 0) return "";
+            Array.Sort(files, StringComparer.Ordinal);
+            var parts = new string[files.Length];
+            for (int i = 0; i < files.Length; i++)
+            {
+                var info = new FileInfo(files[i]);
+                parts[i] = $"{info.Name}:{info.Length}:{info.LastWriteTimeUtc.Ticks}";
+            }
+            return string.Join(";", parts);
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private static string FileStamp(string path)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(path)) return "";
+            var info = new FileInfo(path);
+            return info.Exists ? $"{info.Length}:{info.LastWriteTimeUtc.Ticks}" : "";
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private readonly Dictionary<string, (string Key, Candle[] Value)> _averageCache =
+        new(StringComparer.Ordinal);
+
+    private Candle[] CachedAverage(string symbol, Candle[] parent, AverageSpec spec)
+    {
+        var key = AverageCacheKey(parent, spec);
+        lock (_averageCache)
+            if (_averageCache.TryGetValue(symbol, out var hit) && hit.Key == key) return hit.Value;
+        var value = AverageSeries.Compute(parent, spec);
+        lock (_averageCache) _averageCache[symbol] = (key, value);
+        return value;
+    }
+
+    private static string AverageCacheKey(Candle[] parent, AverageSpec spec)
+    {
+        long prices = 0;
+        long wide = 0;
+        long volumes = 0;
+        for (int i = 0; i < parent.Length; i++)
+        {
+            var c = parent[i];
+            prices += c.Avg;
+            if (c.WideSpread) wide += i + 1;
+            if (c.HasVolume) volumes += c.Volume;
+        }
+        long first = parent.Length == 0 ? 0 : parent[0].MinuteUnixSeconds;
+        long last = parent.Length == 0 ? 0 : parent[^1].MinuteUnixSeconds;
+        return $"{parent.Length}:{first}:{last}:{prices}:{wide}:{volumes}:{spec}";
+    }
+
     private ProfileSet? LoadVolumeProfiles(CandleDatabase db, string? source, int pipPoints)
     {
         if (string.IsNullOrEmpty(source)) return null;
+        var directory = db.SymbolDirectory(source);
+        return (ProfileSet?)CachedStore(
+            $"volume:{directory}:{pipPoints}",
+            FolderStamp(VolumeProfileStore.Directory(directory), "*.vap"),
+            () => ReadVolumeProfiles(directory, source, pipPoints));
+    }
+
+    private ProfileSet? ReadVolumeProfiles(string directory, string source, int pipPoints)
+    {
         try
         {
-            var records = VolumeProfileStore.ReadAll(db.SymbolDirectory(source),
+            var records = VolumeProfileStore.ReadAll(directory,
                 CandleDatabase.Sanitize(source), pipPoints, 100000, out int duplicates,
                 s => Dispatcher.BeginInvoke(() => AppendLog("  " + s)));
             if (records.Count == 0) return null;
@@ -1287,15 +1460,63 @@ public partial class MainWindow : Window, INotesHost
         }
     }
 
+    private sealed class DepthCache
+    {
+        public readonly Dictionary<int, (long Length, List<DepthSnapshot> Items)> Years = new();
+        public int PipPoints = 10;
+        public DepthSnapshot[] Flat = Array.Empty<DepthSnapshot>();
+        public string Stamp = "";
+    }
+
+    private readonly Dictionary<string, DepthCache> _depthCache = new(StringComparer.OrdinalIgnoreCase);
+
     private DepthSnapshot[] LoadDepth(CandleDatabase db, string? source, out int pipPoints)
     {
         pipPoints = 10;
         if (string.IsNullOrEmpty(source)) return Array.Empty<DepthSnapshot>();
+        var directory = db.SymbolDirectory(source);
         try
         {
-            var list = DepthStore.ReadAll(db.SymbolDirectory(source), out int pp);
-            if (pp > 0) pipPoints = pp;
-            return list.ToArray();
+            lock (_depthCache)
+            {
+                if (!_depthCache.TryGetValue(directory, out var cache))
+                {
+                    cache = new DepthCache();
+                    _depthCache[directory] = cache;
+                }
+                var stamp = FolderStamp(DepthStore.Directory(directory), "*.dpt");
+                if (stamp.Length > 0 && stamp == cache.Stamp)
+                {
+                    pipPoints = cache.PipPoints;
+                    return cache.Flat;
+                }
+                var years = DepthStore.ExistingYears(directory);
+                foreach (var gone in cache.Years.Keys.Where(y => !years.Contains(y)).ToList())
+                    cache.Years.Remove(gone);
+                int pp = cache.PipPoints;
+                int total = 0;
+                foreach (var year in years)
+                {
+                    if (!cache.Years.TryGetValue(year, out var part))
+                        part = (0, new List<DepthSnapshot>());
+                    long length = DepthStore.ReadYearFrom(directory, year, part.Length, part.Items, ref pp);
+                    cache.Years[year] = (length, part.Items);
+                    total += part.Items.Count;
+                }
+                var flat = new DepthSnapshot[total];
+                int at = 0;
+                foreach (var year in years)
+                {
+                    var items = cache.Years[year].Items;
+                    items.CopyTo(flat, at);
+                    at += items.Count;
+                }
+                cache.PipPoints = pp > 0 ? pp : 10;
+                cache.Flat = flat;
+                cache.Stamp = stamp;
+                pipPoints = cache.PipPoints;
+                return flat;
+            }
         }
         catch (Exception ex)
         {
@@ -1307,14 +1528,23 @@ public partial class MainWindow : Window, INotesHost
     private OrderBookSnapshot[] LoadOrderBook(CandleDatabase db, string? source)
     {
         if (string.IsNullOrEmpty(source)) return Array.Empty<OrderBookSnapshot>();
+        var directory = db.SymbolDirectory(source);
+        return (OrderBookSnapshot[]?)CachedStore(
+            $"orderbook:{directory}",
+            FolderStamp(OrderBookStore.Directory(directory), "*.obk"),
+            () => ReadOrderBook(directory, source)) ?? Array.Empty<OrderBookSnapshot>();
+    }
+
+    private OrderBookSnapshot[]? ReadOrderBook(string directory, string source)
+    {
         try
         {
-            return OrderBookStore.ReadAll(db.SymbolDirectory(source)).ToArray();
+            return OrderBookStore.ReadAll(directory).ToArray();
         }
         catch (Exception ex)
         {
             Dispatcher.BeginInvoke(() => AppendLog($"  {source}: cannot read the order book: {ex.Message}"));
-            return Array.Empty<OrderBookSnapshot>();
+            return null;
         }
     }
 
@@ -1337,9 +1567,17 @@ public partial class MainWindow : Window, INotesHost
         return marks.OrderBy(m => m.FromUnix).ToArray();
     }
 
-    private static DealMark[] LoadDealMarks(IndicatorSymbol? ind, string? source)
+    private DealMark[] LoadDealMarks(IndicatorSymbol? ind, string? source)
     {
         if (ind == null || source == null) return Array.Empty<DealMark>();
+        return (DealMark[]?)CachedStore(
+            $"deals:{ind.DealsFile}:{IndicatorSymbol.NameKey(source)}",
+            FileStamp(ind.DealsFile),
+            () => ReadDealMarks(ind, source)) ?? Array.Empty<DealMark>();
+    }
+
+    private static DealMark[] ReadDealMarks(IndicatorSymbol ind, string source)
+    {
         var sourceKey = IndicatorSymbol.NameKey(source);
         int priceDiv = SymbolPriceDiv(source);
         var marks = new List<DealMark>();
@@ -1443,7 +1681,7 @@ public partial class MainWindow : Window, INotesHost
     {
         if (wheelDelta == 0) return;
         var ind = _config.Indicators.FirstOrDefault(x =>
-            IndicatorTypes.IsAverage(x.Type) && SymbolNameEquals(x.Name, symbol));
+            IndicatorTypes.IsPlainAverage(x.Type) && SymbolNameEquals(x.Name, symbol));
         if (ind == null) return;
         int step = fine ? AverageWheelFineMinutes : AverageWheelMinutes;
         int current = _pendingAverageWindows.TryGetValue(symbol, out var pending)
@@ -2531,21 +2769,23 @@ public partial class MainWindow : Window, INotesHost
         var hidden = new List<SpreadMark>();
         foreach (var c in s.Closed)
         {
-            if (WideSpreadRule.Hidden(c.MinuteUnixSeconds, c.HasSpread, c.SpreadCode))
+            if (WideSpreadRule.Hidden(symbol, c.MinuteUnixSeconds, c.HasSpread, c.SpreadCode))
             {
-                hidden.Add(new SpreadMark(c.MinuteUnixSeconds, c.SpreadTenths));
+                if (c.HasSpread) hidden.Add(new SpreadMark(c.MinuteUnixSeconds, c.SpreadTenths));
                 continue;
             }
             if (!AskViewRule.TryShift(symbol, c.HasSpread, c.SpreadCode, out int ask)) continue;
             tail.Add(MakeLiveCandle(s, c.MinuteUnixSeconds, c.Min + ask, c.Max + ask, c.Avg + ask,
-                c.HasSpread, c.SpreadCode));
+                c.HasSpread, c.SpreadCode, c.HasVolume, c.Volume));
         }
         if (hasCurrent)
         {
             bool hasSpread = s.MaxSpreadTenths >= 0;
             int code = hasSpread ? SpreadCodes.FromTenths(s.MaxSpreadTenths) : 0;
-            if (WideSpreadRule.Hidden(s.MinuteUnix, hasSpread, code))
-                hidden.Add(new SpreadMark(s.MinuteUnix, SpreadCodes.ToTenths(code)));
+            if (WideSpreadRule.Hidden(symbol, s.MinuteUnix, hasSpread, code))
+            {
+                if (hasSpread) hidden.Add(new SpreadMark(s.MinuteUnix, SpreadCodes.ToTenths(code)));
+            }
             else if (AskViewRule.TryShift(symbol, hasSpread, code, out int ask))
                 tail.Add(MakeLiveCandle(s, s.MinuteUnix, s.Low + ask, s.High + ask, s.Close + ask,
                     hasSpread, code));
@@ -2602,12 +2842,13 @@ public partial class MainWindow : Window, INotesHost
     }
 
     private static Candle MakeLiveCandle(LiveState s, long minute, int rawLow, int rawHigh, int rawClose,
-        bool hasSpread = false, int spreadCode = 0)
+        bool hasSpread = false, int spreadCode = 0, bool hasVolume = false, int volume = 0)
     {
         int lo = TransformLivePoint(s, rawLow);
         int hi = TransformLivePoint(s, rawHigh);
         int close = TransformLivePoint(s, rawClose);
-        return new Candle(minute, Math.Min(lo, hi), Math.Max(lo, hi), close, true, hasSpread, spreadCode);
+        return new Candle(minute, Math.Min(lo, hi), Math.Max(lo, hi), close, true, hasSpread, spreadCode,
+            hasVolume, volume);
     }
 
     private static int TransformLivePoint(LiveState s, int raw)
@@ -2727,19 +2968,23 @@ public partial class MainWindow : Window, INotesHost
     private void SaveChartState()
     {
         var state = _pendingChartState;
-        if (state == null) return;
-        _pendingChartState = null;
-        _activeTab.State = state;
+        if (state == null && !_gameDirty) return;
+        if (state != null)
+        {
+            _pendingChartState = null;
+            _activeTab.State = state;
+        }
+        _gameDirty = false;
         _config.Save();
     }
 
     private void RefreshZoomLevels() =>
         ZoomLevels.SetLevels(_config.ZoomLevels, Chart.ZoomLevelIndex, Chart.ZoomLevelDirty,
-            Chart.CurrentZoom(), Chart.FitPixelsPerDay);
+            Chart.CurrentZoom(), Chart.FitPixelsPerDay, Chart.CustomZoom);
 
     private void RefreshZoomLevelState() =>
         ZoomLevels.SetCurrent(Chart.ZoomLevelIndex, Chart.ZoomLevelDirty, Chart.CurrentZoom(),
-            Chart.FitPixelsPerDay);
+            Chart.FitPixelsPerDay, Chart.CustomZoom);
 
     private void CommitZoomLevels(bool changed)
     {
@@ -2763,6 +3008,7 @@ public partial class MainWindow : Window, INotesHost
 
     private ChartTab _activeTab = null!;
     private bool _tabsReady;
+    private readonly TabPropertiesView _tabProperties = new();
 
     private ChartViewState? ActiveState => _activeTab.State;
 
@@ -2772,6 +3018,7 @@ public partial class MainWindow : Window, INotesHost
         for (int i = 0; i < _config.Tabs.Count; i++)
             Tabs.Items.Insert(i, MakeTabItem(_config.Tabs[i]));
         _activeTab = _config.Tabs[_config.ActiveTab];
+        Chart.SetCustomZoom(_activeTab.CustomZoom);
         ApplyShiftPlacements(_activeTab);
         var item = TabItemOf(_activeTab);
         item.Content = ChartPanel;
@@ -2787,12 +3034,24 @@ public partial class MainWindow : Window, INotesHost
         var menu = new ContextMenu();
         menu.Items.Add(TabMenuItem("Notes...", () => OpenNotes(tab)));
         menu.Items.Add(new Separator());
+        menu.Items.Add(TabMenuItem("Properties...", () => OpenTabProperties(tab, item)));
         menu.Items.Add(TabMenuItem("Rename...", () => RenameTab(tab)));
         menu.Items.Add(TabMenuItem("Duplicate", () => DuplicateTab(tab)));
         menu.Items.Add(new Separator());
         menu.Items.Add(TabMenuItem("Delete", () => DeleteTab(tab)));
         item.ContextMenu = menu;
         return item;
+    }
+
+    private void OpenTabProperties(ChartTab tab, TabItem item) =>
+        Dispatcher.BeginInvoke(DispatcherPriority.Background,
+            new Action(() => _tabProperties.Show(item, tab)));
+
+    private void ApplyTabCustomZoom(ChartTab tab, double value)
+    {
+        tab.CustomZoom = value;
+        if (ReferenceEquals(tab, _activeTab)) Chart.ChangeCustomZoom(value);
+        _config.Save();
     }
 
     private static MenuItem TabMenuItem(string header, Action action)
@@ -2829,20 +3088,24 @@ public partial class MainWindow : Window, INotesHost
         _activeTab = tab;
         _config.ActiveTab = _config.Tabs.IndexOf(tab);
         item.Content = ChartPanel;
-        bool shiftsChanged = ApplyShiftPlacements(tab);
+        Chart.SetCustomZoom(tab.CustomZoom);
+        var shiftChanges = new List<ShiftReapply>();
+        ApplyShiftPlacements(tab, shiftChanges);
         ApplyTabDrawings(tab);
         if (tab.State != null) Chart.RestoreState(tab.State);
         SymbolBar.SetFlattenRow(tab.State?.FlattenSymbol != null);
         SyncSymbolBar();
+        RefreshGame();
+        RefreshZoomLevelState();
         _config.Save();
         _notesWindow?.Refresh();
-        if (!shiftsChanged) return;
+        if (shiftChanges.Count == 0) return;
         if (_dbBusy || _historyCts != null)
         {
             AppendLog($"{tab.Name}: shift settings are applied after the running DB operation");
             return;
         }
-        _ = LoadChartAsync();
+        QueueShiftReapply(shiftChanges, tab.Name);
     }
 
     private void SyncSymbolBar()
@@ -2854,6 +3117,7 @@ public partial class MainWindow : Window, INotesHost
             ChartTools.SetForecastRow(Chart.HasForecasts, Chart.ForecastVisible);
         ChartTools.SetWeekendsRow(Chart.WeekendsHidden);
         ChartTools.SetSessionsRow(Chart.SessionsVisible);
+        ChartTools.SetCommentsRow(Chart.CommentsVisible);
         SymbolBar.SetTiltedGridRow(Chart.TiltedUpGridIndex, Chart.TiltedDownGridIndex);
     }
 
@@ -2900,6 +3164,7 @@ public partial class MainWindow : Window, INotesHost
         if (dlg.ShowDialog() != true) return;
         tab.Name = dlg.TabName;
         TabItemOf(tab).Header = tab.Name;
+        _tabProperties.Hide(tab);
         _config.Save();
     }
 
@@ -2914,6 +3179,7 @@ public partial class MainWindow : Window, INotesHost
                 MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         int index = _config.Tabs.IndexOf(tab);
         if (index < 0) return;
+        _tabProperties.Hide(tab);
         var item = TabItemOf(tab);
         if (ReferenceEquals(tab, _activeTab))
             Tabs.SelectedItem = Tabs.Items[index + 1 < _config.Tabs.Count ? index + 1 : index - 1];
@@ -2923,7 +3189,9 @@ public partial class MainWindow : Window, INotesHost
         _config.Save();
     }
 
-    private bool ApplyShiftPlacements(ChartTab tab)
+    private sealed record ShiftReapply(string Name, long OldDelta, long NewDelta, bool Retarget);
+
+    private bool ApplyShiftPlacements(ChartTab tab, List<ShiftReapply>? changes = null)
     {
         bool changed = false;
         var known = new HashSet<string>();
@@ -2938,12 +3206,166 @@ public partial class MainWindow : Window, INotesHost
                 continue;
             }
             if (placement.Matches(ind)) continue;
-            if (!SymbolNameEquals(placement.Target(), ind.ShiftTarget())) ClearMirrorBase(ind.Name);
+            bool newTarget = !SymbolNameEquals(placement.Target(), ind.ShiftTarget());
+            bool retarget = newTarget || placement.Flip != ind.Flip;
+            if (newTarget) ClearMirrorBase(ind.Name);
+            long oldDelta = ShiftedSymbol.VirtualDelta(ind.SourceTimeUnix, ind.ChartTimeUnix);
             placement.ApplyTo(ind);
+            changes?.Add(new ShiftReapply(ind.Name, oldDelta,
+                ShiftedSymbol.VirtualDelta(ind.SourceTimeUnix, ind.ChartTimeUnix), retarget));
             changed = true;
         }
         tab.Shifts.RemoveAll(x => !known.Contains(IndicatorSymbol.NameKey(x.Name)));
         return changed;
+    }
+
+    private Task _shiftReapply = Task.CompletedTask;
+
+    private void QueueShiftReapply(List<ShiftReapply> changes, string tabName)
+    {
+        var previous = _shiftReapply;
+        _shiftReapply = RunAsync();
+        return;
+
+        async Task RunAsync()
+        {
+            try { await previous; }
+            catch { }
+            await ReapplyShiftsAsync(changes, tabName);
+        }
+    }
+
+    private async Task ReapplyShiftsAsync(List<ShiftReapply> changes, string tabName)
+    {
+        var pendingLoad = _chartLoadTask;
+        if (pendingLoad != null)
+        {
+            try { await pendingLoad; }
+            catch { }
+        }
+        var sw = Stopwatch.StartNew();
+        var fallback = new List<string>();
+        foreach (var change in changes)
+        {
+            try
+            {
+                if (!await ReapplyShiftAsync(change)) fallback.Add(change.Name);
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"{change.Name}: shift not re-applied ({ex.Message})");
+                fallback.Add(change.Name);
+            }
+        }
+        if (fallback.Count == 0)
+        {
+            AppendLog($"{tabName}: {changes.Count} shift(s) re-applied in {sw.ElapsedMilliseconds} ms");
+            return;
+        }
+        AppendLog($"{tabName}: full chart reload for {string.Join(", ", fallback)}");
+        if (_dbBusy || _historyCts != null) return;
+        await LoadChartAsync();
+    }
+
+    private async Task<bool> ReapplyShiftAsync(ShiftReapply change)
+    {
+        var ind = _config.Indicators.FirstOrDefault(x => SymbolNameEquals(x.Name, change.Name));
+        if (ind == null || !IndicatorTypes.IsShift(ind.Type)) return true;
+        if (Chart.GetSeries(ind.Name) == null) return false;
+        var loader = _loader;
+        var target = ind.ShiftTarget();
+        bool pauseTarget = change.Retarget && !SymbolNameEquals(target, ind.Name);
+        if (loader != null)
+        {
+            await loader.PauseAsync(ind.Name);
+            if (pauseTarget) await loader.PauseAsync(target);
+        }
+        try
+        {
+            return change.Retarget
+                ? await RetargetShiftAsync(ind, change.NewDelta, loader)
+                : await RestampShiftAsync(ind, change.NewDelta - change.OldDelta, loader);
+        }
+        finally
+        {
+            loader?.Resume(ind.Name);
+            if (pauseTarget) loader?.Resume(target);
+        }
+    }
+
+    private async Task<bool> RestampShiftAsync(IndicatorSymbol ind, long step, SeriesDataLoader? loader)
+    {
+        var series = Chart.GetSeries(ind.Name);
+        if (series == null) return false;
+        var old = series.History;
+        if (step != 0 && old.Minutes.Length > 0)
+        {
+            var history = await Task.Run(() =>
+                CandleHistory.Build(ShiftedSymbol.Restamp(old.Minutes, step)));
+            if (!ReferenceEquals(Chart.GetSeries(ind.Name)?.History, old)) return false;
+            history.SetHiddenSpreads(RestampMarks(old.HiddenSpreads, step));
+            Chart.ReplaceSeries(ind.Name, history);
+        }
+        loader?.SetShiftDelta(ind.Name,
+            ShiftedSymbol.VirtualDelta(ind.SourceTimeUnix, ind.ChartTimeUnix));
+        RefreshShiftLiveTails(ind.ShiftTarget());
+        return true;
+    }
+
+    private async Task<bool> RetargetShiftAsync(IndicatorSymbol ind, long delta,
+        SeriesDataLoader? loader)
+    {
+        var target = ind.ShiftTarget();
+        var tgt = Chart.GetSeries(target);
+        if (tgt?.Transform == null) return false;
+        if (PairDisplay(target) is not { } pair) return false;
+        if (pair.PipPoints != tgt.Transform.PipPoints) return false;
+        bool mirror = pair.Mirror ^ ind.Flip;
+        long? fixedBase = mirror ? StoredMirrorBase(ind.Name) : null;
+        var minutes = tgt.History.Minutes;
+        var sourceTransform = tgt.Transform;
+        var sourceHidden = tgt.History.HiddenSpreads;
+        var (history, count, mirrorBase) = await Task.Run(() =>
+        {
+            var retargeted = ShiftedSymbol.Retarget(
+                minutes, sourceTransform, mirror, fixedBase, out long computed);
+            var moved = ShiftedSymbol.Shift(retargeted, delta).ToArray();
+            if (moved.Length == 0) return ((CandleHistory?)null, 0, computed);
+            var built = CandleHistory.Build(moved);
+            built.SetHiddenSpreads(RestampMarks(sourceHidden, delta));
+            return ((CandleHistory?)built, moved.Length, computed);
+        });
+        if (history == null)
+            return Chart.GetSeries(ind.Name)?.History.Minutes.Length == 0;
+        var transform = new SeriesTransform(mirror && mirrorBase != 0, mirrorBase, pair.PipPoints);
+        Chart.ReplaceSeries(ind.Name, history, transform);
+        UpdateSeriesTransform(ind.Name, transform.Mirror ? mirrorBase : 0, pair.PipPoints);
+        if (mirror && fixedBase == null && mirrorBase != 0) OnMirrorBaseComputed(ind.Name, mirrorBase);
+        loader?.MarkShiftRetargeted(ind.Name, target, delta, mirror, mirrorBase, pair.PipPoints);
+        RefreshShiftLiveTails(target);
+        AppendLog($"{ind.Name}: rebuilt from {target} in memory, {count:N0} candles");
+        return true;
+    }
+
+    private long? StoredMirrorBase(string symbol)
+    {
+        if (_config.MirrorBases == null) return null;
+        foreach (var (key, value) in _config.MirrorBases)
+            if (SymbolNameEquals(key, symbol)) return value;
+        return null;
+    }
+
+    private static SpreadMark[] RestampMarks(SpreadMark[] marks, long virtualDelta)
+    {
+        if (marks.Length == 0) return marks;
+        var w = WeekendCompressor.Instance;
+        var result = new SpreadMark[marks.Length];
+        for (int i = 0; i < marks.Length; i++)
+            result[i] = marks[i] with
+            {
+                UnixSeconds = w.ToReal(w.ToVirtual(marks[i].UnixSeconds) + virtualDelta),
+            };
+        return result;
     }
 
     private void RecordShiftPlacements()
@@ -3054,20 +3476,21 @@ public partial class MainWindow : Window, INotesHost
         _activeTab.NoteId = note.Id;
         _activeTab.State = note.State?.Clone();
         _activeTab.Shifts = note.Shifts.Select(x => x.Clone()).ToList();
-        bool shiftsChanged = ApplyShiftPlacements(_activeTab);
+        var shiftChanges = new List<ShiftReapply>();
+        ApplyShiftPlacements(_activeTab, shiftChanges);
         ApplyTabDrawings(_activeTab);
         if (_activeTab.State != null) Chart.RestoreState(_activeTab.State);
         SymbolBar.SetFlattenRow(_activeTab.State?.FlattenSymbol != null);
         SyncSymbolBar();
         _config.Save();
         AppendLog($"{_activeTab.Name}: note {note.Name} opened");
-        if (!shiftsChanged) return;
+        if (shiftChanges.Count == 0) return;
         if (_dbBusy || _historyCts != null)
         {
             AppendLog($"{_activeTab.Name}: shift settings are applied after the running DB operation");
             return;
         }
-        _ = LoadChartAsync();
+        QueueShiftReapply(shiftChanges, _activeTab.Name);
     }
 
     private void FillNote(Note note)
@@ -3370,7 +3793,12 @@ public partial class MainWindow : Window, INotesHost
         var pairs = SymbolConfigs
             .Select(c => (c.Symbol, c.ColorArgb, PairColorOf(c.Symbol, c.ColorArgb)))
             .ToArray();
-        var dlg = new AppSettingsWindow(pairs, _config.HideWideSpread, _config.ShowAsk) { Owner = this };
+        var dlg = new AppSettingsWindow(pairs, _config.HideWideSpread, _config.ShowAsk,
+            _config.CommentSpotDiameterPx, _config.CommentSpotColorArgb,
+            _config.CommentSpotOpacityPercent)
+        {
+            Owner = this,
+        };
         if (dlg.ShowDialog() != true) return;
         bool changed = false;
         foreach (var (symbol, defaultColor, currentColor) in pairs)
@@ -3388,6 +3816,16 @@ public partial class MainWindow : Window, INotesHost
         {
             _config.HideWideSpread = dlg.HideWideSpread;
             WideSpreadRule.Hide = _config.HideWideSpread;
+            changed = true;
+        }
+        if (dlg.SpotDiameterPx != _config.CommentSpotDiameterPx
+            || dlg.SpotColorArgb != _config.CommentSpotColorArgb
+            || dlg.SpotOpacityPercent != _config.CommentSpotOpacityPercent)
+        {
+            _config.CommentSpotDiameterPx = dlg.SpotDiameterPx;
+            _config.CommentSpotColorArgb = dlg.SpotColorArgb;
+            _config.CommentSpotOpacityPercent = dlg.SpotOpacityPercent;
+            Chart.SetCommentStyle(_config.CommentSpotStyle());
             changed = true;
         }
         bool askChanged = dlg.ShowAsk != _config.ShowAsk;
@@ -3766,6 +4204,7 @@ public partial class MainWindow : Window, INotesHost
 
     private void OnDrawingCommitted(string symbol, PivotPoint[] points)
     {
+        if (TryCommitGameLine(symbol, points)) return;
         if (_dbBusy)
         {
             AppendLog("DB operation already running, line discarded");
@@ -3814,6 +4253,7 @@ public partial class MainWindow : Window, INotesHost
 
     private void OnDrawingLinesChanged(string symbol, PivotPoint[][] lines)
     {
+        if (TrySaveGameLines(symbol, lines)) return;
         if (_dbBusy)
         {
             AppendLog("DB operation already running, line edit discarded");
@@ -3875,6 +4315,10 @@ public partial class MainWindow : Window, INotesHost
             .Where(x => IsStandaloneIndicator(x) && !SymbolNameEquals(x.Name, editName ?? ""))
             .Select(x => x.Name)
             .ToList();
+        var zigzagSources = _config.Indicators
+            .Where(x => IndicatorTypes.IsZigZag(x.Type) && !SymbolNameEquals(x.Name, editName ?? ""))
+            .Select(x => x.Name)
+            .ToList();
         var sources = SymbolConfigs.Select(c => c.Symbol).Concat(indexSources).ToList();
         var names = new List<string>();
         foreach (var c in SymbolConfigs) names.Add(c.Symbol);
@@ -3885,7 +4329,7 @@ public partial class MainWindow : Window, INotesHost
                 ? null
                 : (progress, ct) => RefreshIndicatorAsync(editing, progress, ct);
         var dlg = new SymbolEditorWindow(sources, names, editing?.Clone(), sourcePrefill, ApplyIndicatorAsync,
-            refresh, SymbolConfigs.Select(c => c.Symbol).ToList(), indexSources)
+            refresh, SymbolConfigs.Select(c => c.Symbol).ToList(), indexSources, zigzagSources)
         {
             Owner = this,
         };
@@ -4143,7 +4587,7 @@ public partial class MainWindow : Window, INotesHost
                     }
                     else if (IndicatorTypes.IsShift(def.Type) || IndicatorTypes.IsDeals(def.Type)
                         || IndicatorTypes.IsDensity(def.Type) || IndicatorTypes.IsSpread(def.Type)
-                        || IndicatorTypes.IsVolume(def.Type)
+                        || IndicatorTypes.IsVolume(def.Type) || IndicatorTypes.IsLevels(def.Type)
                         || IndicatorTypes.IsOrderBook(def.Type) || IndicatorTypes.IsAverage(def.Type))
                     {
                         db.DeleteSymbol(def.Name);
@@ -4205,7 +4649,7 @@ public partial class MainWindow : Window, INotesHost
             }
             if (idx >= 0) _config.Indicators[idx] = def;
             else _config.Indicators.Add(def);
-            if (nameChanged && IsStandaloneIndicator(def))
+            if (nameChanged)
                 foreach (var child in _config.Indicators)
                     if (SymbolNameEquals(child.Source, replacing!.Name)) child.Source = def.Name;
             if (nameChanged && IndicatorTypes.IsZigZag(def.Type))
@@ -4701,6 +5145,7 @@ public partial class MainWindow : Window, INotesHost
         string deletePrompt = IndicatorTypes.IsShift(ind.Type) || IndicatorTypes.IsDeals(ind.Type)
             || IndicatorTypes.IsDensity(ind.Type) || IndicatorTypes.IsSpread(ind.Type)
             || IndicatorTypes.IsVolume(ind.Type) || IndicatorTypes.IsOrderBook(ind.Type)
+            || IndicatorTypes.IsLevels(ind.Type)
             ? $"Delete indicator {ind.Name}?"
             : $"Delete indicator {ind.Name}? Its data files will be removed.";
         int children = _config.Indicators.Count(x => SymbolNameEquals(x.Source, ind.Name));
@@ -4771,7 +5216,7 @@ public partial class MainWindow : Window, INotesHost
                 {
                     var symbol = cfg.Symbol;
                     if (cfg.IsShift || cfg.IsDeals || cfg.IsDensity || cfg.IsSpread
-                        || cfg.IsVolume || cfg.IsOrderBook || cfg.IsAverage) continue;
+                        || cfg.IsVolume || cfg.IsOrderBook || cfg.IsAverage || cfg.IsLevels) continue;
                     var years = db.ExistingYears(symbol);
                     if (years.Count == 0)
                     {
@@ -4832,6 +5277,8 @@ public partial class MainWindow : Window, INotesHost
     {
         base.OnClosed(e);
         _autoReconnect = false;
+        _gameWindow?.Panel.FlushComment();
+        EndTimeSession();
         _stateSaveTimer.Stop();
         SaveChartState();
         _authCts?.Cancel();

@@ -126,38 +126,43 @@ public static class ChartColumns
         return result;
     }
 
-    public static long[] ColumnEdges(WeekendCompressor? map, long columnSeconds, long firstBucket, int count)
+    public static long[] ColumnEdges(WeekendCompressor? map, long columnSeconds, long firstBucket, int count,
+        long maxUnix = long.MaxValue)
     {
         var edges = new long[count + 1];
         for (int i = 0; i <= count; i++)
         {
             long v = (firstBucket + i) * columnSeconds;
-            edges[i] = map == null ? v : map.ToReal(v);
+            long real = map == null ? v : map.ToReal(v);
+            edges[i] = real > maxUnix ? maxUnix : real;
         }
         return edges;
     }
 
     public static ChartSeries BuildView(CandleHistory history, long columnSeconds, long firstBucket, int count,
-        WeekendCompressor? map = null)
+        WeekendCompressor? map = null, long maxUnix = long.MaxValue)
     {
         int run = MinuteRun(columnSeconds);
         if (run > 1)
         {
             long minuteFirst = MinuteBucket(firstBucket, run);
-            var minuteView = BuildView(history, MinuteSeconds, minuteFirst, MinuteCount(count, run), map);
+            var minuteView = BuildView(
+                history, MinuteSeconds, minuteFirst, MinuteCount(count, run), map, maxUnix);
             return new ChartSeries(
                 Expand(minuteView.Columns, minuteFirst, run, firstBucket, count, default),
                 columnSeconds, firstBucket);
         }
         ChartSeries series;
         int level = LevelFor(columnSeconds, map);
-        if (map != null)
+        bool cut = maxUnix != long.MaxValue;
+        if (map != null || cut)
         {
             var columns = new ColumnAggregate[count];
-            var edges = ColumnEdges(map, columnSeconds, firstBucket, count);
+            var edges = ColumnEdges(map, columnSeconds, firstBucket, count, maxUnix);
             if (level >= 0) FillEdges(history.Levels[level], edges, columns);
             else FillEdges(history.Minutes, edges, columns);
             series = new ChartSeries(columns, columnSeconds, firstBucket);
+            if (cut && level >= 0) FixCutColumn(history, columns, edges, maxUnix);
         }
         else if (level >= 0)
         {
@@ -169,22 +174,35 @@ public static class ChartColumns
         {
             series = BuildView(history.Minutes, columnSeconds, firstBucket, count);
         }
-        MergeLive(history, series.Columns, columnSeconds, firstBucket, map);
+        MergeLive(history, series.Columns, columnSeconds, firstBucket, map, maxUnix);
         return series;
     }
 
+    private static void FixCutColumn(CandleHistory history, ColumnAggregate[] columns, long[] edges,
+        long maxUnix)
+    {
+        for (int col = 0; col < columns.Length; col++)
+        {
+            if (edges[col] >= maxUnix) return;
+            if (edges[col + 1] < maxUnix) continue;
+            columns[col] = RecomputeColumn(history.Minutes, history.Live, edges[col], maxUnix);
+            return;
+        }
+    }
+
     public static (ChartSeries View, int[] Chosen, bool[] FullRange) BuildLine(CandleHistory history,
-        long columnSeconds, long firstBucket, int count, WeekendCompressor? map, int lookback, int noiseThreshold)
+        long columnSeconds, long firstBucket, int count, WeekendCompressor? map, int lookback,
+        int noiseThreshold, long maxUnix = long.MaxValue)
     {
         int run = MinuteRun(columnSeconds);
         if (run == 1)
         {
-            var view = BuildView(history, columnSeconds, firstBucket, count, map);
+            var view = BuildView(history, columnSeconds, firstBucket, count, map, maxUnix);
             var (values, fullRange) = LineDecimator.ChooseValues(view.Columns, lookback, noiseThreshold);
             return (view, values, fullRange);
         }
         long minuteFirst = MinuteBucket(firstBucket, run);
-        var minutes = BuildView(history, MinuteSeconds, minuteFirst, MinuteCount(count, run), map);
+        var minutes = BuildView(history, MinuteSeconds, minuteFirst, MinuteCount(count, run), map, maxUnix);
         var (minuteChosen, minuteFullRange) = LineDecimator.ChooseValues(minutes.Columns, lookback, noiseThreshold);
         return (
             new ChartSeries(
@@ -253,7 +271,7 @@ public static class ChartColumns
     }
 
     private static void MergeLive(CandleHistory history, ColumnAggregate[] columns, long columnSeconds,
-        long firstBucket, WeekendCompressor? map)
+        long firstBucket, WeekendCompressor? map, long maxUnix = long.MaxValue)
     {
         var live = history.Live;
         if (live.Length == 0) return;
@@ -261,6 +279,7 @@ public static class ChartColumns
         long recomputed = long.MinValue;
         foreach (var c in live)
         {
+            if (c.MinuteUnixSeconds >= maxUnix) break;
             long t = map == null ? c.MinuteUnixSeconds : map.ToVirtual(c.MinuteUnixSeconds);
             long bucket = t / columnSeconds;
             if (bucket < firstBucket || bucket >= lastBucketExcl) continue;
@@ -268,7 +287,7 @@ public static class ChartColumns
             recomputed = bucket;
             long lo = map == null ? bucket * columnSeconds : map.ToReal(bucket * columnSeconds);
             long hi = map == null ? lo + columnSeconds : map.ToReal((bucket + 1) * columnSeconds);
-            columns[bucket - firstBucket] = RecomputeColumn(history.Minutes, live, lo, hi);
+            columns[bucket - firstBucket] = RecomputeColumn(history.Minutes, live, lo, Math.Min(hi, maxUnix));
         }
     }
 

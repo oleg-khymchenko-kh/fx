@@ -1,3 +1,4 @@
+﻿using System.Text.Json.Serialization;
 using FXViewer.Compute;
 using FXViewer.Storage;
 
@@ -15,6 +16,12 @@ public sealed class IndicatorSymbol
     public string Unit { get; set; } = IndicatorUnits.Minutes;
     public bool FromFuture { get; set; }
     public bool AverageWeighted { get; set; }
+    public bool AverageTimeWindow { get; set; } = DefaultAverageTimeWindow;
+    public int BandCount { get; set; } = DefaultBandCount;
+    public string BandMode { get; set; } = BandModes.Max;
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool BandMin { get; set; }
     public long SourceTimeUnix { get; set; }
     public long ChartTimeUnix { get; set; }
     public bool Flip { get; set; }
@@ -39,6 +46,8 @@ public sealed class IndicatorSymbol
     public List<int> DensityScalePercents { get; set; } = new();
     public double DensityScalePerPixel { get; set; }
     public int DensitySelected { get; set; }
+    public int LevelLengthPx { get; set; } = DefaultLevelLengthPx;
+    public int LevelStepPx { get; set; } = DefaultLevelStepPx;
     public int VolumeGroupMinutes { get; set; } = 1;
     public double VolumeBarScale { get; set; } = 1;
     public double VolumeBarUnit { get; set; }
@@ -57,6 +66,14 @@ public sealed class IndicatorSymbol
     public const int DefaultFindStepMinutes = 60;
     public const int DensityOptionCount = 9;
     public const int DensityAllOption = DensityOptionCount;
+    public const int DefaultLevelLengthPx = 4;
+    public const int DefaultLevelStepPx = 2;
+    public const int DefaultLevelPeriod = 5;
+    public const string DefaultLevelUnit = IndicatorUnits.Days;
+    public const bool DefaultAverageTimeWindow = true;
+    public const int DefaultBandCount = 40;
+    public const int DefaultBandPeriod = 1;
+    public const string DefaultBandUnit = IndicatorUnits.Days;
 
     public static readonly int[] VolumeGroupSteps =
         { 1, 2, 3, 5, 10, 15, 30, 60, 120, 240, 480, 720, 1440 };
@@ -130,6 +147,9 @@ public sealed class IndicatorSymbol
         return bars;
     }
 
+    public int LevelWindowMinutes() =>
+        Math.Max(1, Period) * IndicatorUnits.BarsPerUnit(Unit);
+
     public string ShiftTarget() => TargetSymbol.Length > 0 ? TargetSymbol : Source;
 
     public List<string> EffectiveFindTargets() =>
@@ -147,6 +167,9 @@ public sealed class IndicatorSymbol
         Unit = Unit,
         FromFuture = FromFuture,
         AverageWeighted = AverageWeighted,
+        AverageTimeWindow = AverageTimeWindow,
+        BandCount = BandCount,
+        BandMode = BandMode,
         SourceTimeUnix = SourceTimeUnix,
         ChartTimeUnix = ChartTimeUnix,
         Flip = Flip,
@@ -171,6 +194,8 @@ public sealed class IndicatorSymbol
         DensityScalePercents = new List<int>(DensityScalePercents),
         DensityScalePerPixel = DensityScalePerPixel,
         DensitySelected = DensitySelected,
+        LevelLengthPx = LevelLengthPx,
+        LevelStepPx = LevelStepPx,
         VolumeGroupMinutes = VolumeGroupMinutes,
         VolumeBarScale = VolumeBarScale,
         VolumeBarUnit = VolumeBarUnit,
@@ -196,14 +221,17 @@ public sealed class IndicatorSymbol
             return Period == other.Period
                 && string.Equals(Unit, other.Unit, StringComparison.OrdinalIgnoreCase)
                 && FromFuture == other.FromFuture
-                && AverageWeighted == other.AverageWeighted;
+                && AverageWeighted == other.AverageWeighted
+                && AverageTimeWindow == other.AverageTimeWindow
+                && BandCount == other.BandCount
+                && BandModes.Same(BandMode, other.BandMode);
         if (IndicatorTypes.IsEntryPoints(Type))
             return StopLossPips == other.StopLossPips && TakeProfitPips == other.TakeProfitPips;
         if (IndicatorTypes.IsPriceAge(Type)) return true;
         if (IndicatorTypes.IsDrawing(Type) || IndicatorTypes.IsShift(Type)
             || IndicatorTypes.IsDeals(Type) || IndicatorTypes.IsDensity(Type)
             || IndicatorTypes.IsSpread(Type) || IndicatorTypes.IsVolume(Type)
-            || IndicatorTypes.IsOrderBook(Type)) return true;
+            || IndicatorTypes.IsOrderBook(Type) || IndicatorTypes.IsLevels(Type)) return true;
         return Limit1Pips == other.Limit1Pips
             && Limit2Pips == other.Limit2Pips
             && Limit2DelayMinutes == other.Limit2DelayMinutes;
@@ -236,6 +264,7 @@ public static class IndicatorTypes
 {
     public const string ZigZag = "ZigZag";
     public const string Average = "Average";
+    public const string AverageBand = "AverageBand";
     public const string Shift = "Shift";
     public const string Drawing = "Drawing";
     public const string Index = "Index";
@@ -250,11 +279,12 @@ public static class IndicatorTypes
     public const string PendingOrders = "PendingOrders";
     public const string OpenPositions = "OpenPositions";
     public const string MarketDepth = "MarketDepth";
+    public const string Levels = "Levels";
 
     public static readonly string[] All =
     {
-        ZigZag, Average, Shift, Drawing, Index, Currency, EntryPoints, PriceAge, Deals, Density,
-        Spread, Volume, PendingOrders, OpenPositions, MarketDepth,
+        ZigZag, Average, AverageBand, Shift, Drawing, Index, Currency, EntryPoints, PriceAge, Deals, Density,
+        Spread, Volume, PendingOrders, OpenPositions, MarketDepth, Levels,
     };
 
     public static bool IsDrawing(string type) =>
@@ -263,8 +293,13 @@ public static class IndicatorTypes
     public static bool IsDeals(string type) =>
         string.Equals(type, Deals, StringComparison.OrdinalIgnoreCase);
 
-    public static bool IsAverage(string type) =>
+    public static bool IsPlainAverage(string type) =>
         string.Equals(type, Average, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsAverageBand(string type) =>
+        string.Equals(type, AverageBand, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsAverage(string type) => IsPlainAverage(type) || IsAverageBand(type);
 
     public static bool IsShift(string type) =>
         string.Equals(type, Shift, StringComparison.OrdinalIgnoreCase);
@@ -293,9 +328,12 @@ public static class IndicatorTypes
     public static bool IsOrderBook(string type) =>
         IsPendingOrders(type) || IsOpenPositions(type) || IsMarketDepth(type);
 
+    public static bool IsLevels(string type) =>
+        string.Equals(type, Levels, StringComparison.OrdinalIgnoreCase);
+
     public static bool HasStorage(string type) =>
         !IsDrawing(type) && !IsShift(type) && !IsDeals(type) && !IsDensity(type) && !IsSpread(type)
-        && !IsVolume(type) && !IsOrderBook(type) && !IsAverage(type);
+        && !IsVolume(type) && !IsOrderBook(type) && !IsAverage(type) && !IsLevels(type);
 
     public static bool IsZigZag(string type) =>
         string.Equals(type, ZigZag, StringComparison.OrdinalIgnoreCase);
@@ -319,6 +357,8 @@ public static class IndicatorTypes
 
     public static bool SourceIsIndex(string type) => IsCurrency(type);
 
+    public static bool SourceIsZigZag(string type) => IsLevels(type);
+
     public static string Label(string type) =>
         IsIndex(type) ? "USD Index"
         : IsCurrency(type) ? "Currency Index"
@@ -327,6 +367,8 @@ public static class IndicatorTypes
         : IsPendingOrders(type) ? "Pending orders"
         : IsOpenPositions(type) ? "Open positions"
         : IsMarketDepth(type) ? "Market depth"
+        : IsLevels(type) ? "ZigZag levels"
+        : IsAverageBand(type) ? "Average max/min/avg"
         : type;
 
     public static string FromLabel(string label) =>
@@ -353,6 +395,21 @@ public static class IndexAlgorithms
 
     public static bool IsPips(string algorithm) =>
         string.Equals(algorithm, Pips, StringComparison.OrdinalIgnoreCase);
+}
+
+public static class BandModes
+{
+    public const string Max = "Max";
+    public const string Min = "Min";
+    public const string Avg = "Avg";
+
+    public static readonly string[] All = { Max, Min, Avg };
+
+    public static bool Same(string a, string b) =>
+        string.Equals(Effective(a), Effective(b), StringComparison.OrdinalIgnoreCase);
+
+    public static string Effective(string mode) =>
+        All.FirstOrDefault(m => string.Equals(m, mode, StringComparison.OrdinalIgnoreCase)) ?? Max;
 }
 
 public static class IndicatorUnits

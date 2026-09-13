@@ -68,6 +68,44 @@ public static class ShiftedSymbol
         }
     }
 
+    public static Candle[] Retarget(IReadOnlyList<Candle> display, SeriesTransform from,
+        bool mirror, long? fixedBase, out long mirrorBase)
+    {
+        mirrorBase = 0;
+        var result = new Candle[display.Count];
+        for (int i = 0; i < result.Length; i++) result[i] = display[i];
+        if (!mirror)
+        {
+            if (from.Mirror) FlipAround(result, from.MirrorBase);
+            return result;
+        }
+        if (result.Length == 0)
+        {
+            mirrorBase = fixedBase ?? 0;
+            return result;
+        }
+        long span = FlipBase(result);
+        mirrorBase = fixedBase ?? (from.Mirror ? 2 * from.MirrorBase - span : span);
+        if (!from.Mirror)
+        {
+            FlipAround(result, mirrorBase);
+            return result;
+        }
+        long shift = mirrorBase - from.MirrorBase;
+        if (shift == 0) return result;
+        for (int i = 0; i < result.Length; i++)
+        {
+            var c = result[i];
+            result[i] = c with
+            {
+                Min = (int)(c.Min + shift),
+                Max = (int)(c.Max + shift),
+                Avg = (int)(c.Avg + shift),
+            };
+        }
+        return result;
+    }
+
     public static Candle[] Restamp(IReadOnlyList<Candle> candles, long virtualDelta)
     {
         var w = WeekendCompressor.Instance;

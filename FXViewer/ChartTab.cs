@@ -1,5 +1,6 @@
-using FXViewer.Chart;
+﻿using FXViewer.Chart;
 using FXViewer.Compute;
+using FXViewer.Game;
 
 namespace FXViewer;
 
@@ -8,14 +9,18 @@ public sealed class ChartTab
     public string Name { get; set; } = "";
     public string NoteId { get; set; } = "";
     public ChartViewState? State { get; set; }
+    public double CustomZoom { get; set; } = 1;
     public List<ShiftPlacement> Shifts { get; set; } = new();
+    public GameState? Game { get; set; }
 
     public ChartTab Clone() => new()
     {
         Name = Name,
         NoteId = NoteId,
         State = State?.Clone(),
+        CustomZoom = CustomZoom,
         Shifts = Shifts.Select(x => x.Clone()).ToList(),
+        Game = Game?.Clone(),
     };
 }
 

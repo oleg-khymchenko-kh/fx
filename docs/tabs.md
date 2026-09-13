@@ -105,16 +105,48 @@ A Shift series **is** its data: the candles of the target pair with moved
 timestamps. So when the new tab wants a different Source / Target / times /
 Flip, the series has to be built again.
 
-`ApplyShiftPlacements(tab)` writes the tab's placements into the live
-`IndicatorSymbol` objects and reports whether anything changed. If it did,
-`ActivateTab` runs a normal `LoadChartAsync()` - the same path used after
-editing an indicator, so the loader, the mirror bases and the live tails
-end up consistent. Tabs whose Shift settings are equal (the usual case)
-switch without any reload.
+`ApplyShiftPlacements(tab, changes)` writes the tab's placements into the
+live `IndicatorSymbol` objects and collects one `ShiftReapply` per
+indicator that really moved. Tabs whose Shift settings are equal (the
+usual case) switch without any work at all.
 
-If a DB operation or a history download is running, the reload is skipped
-with a log line; the placements are already in the config and show up on
-the next load.
+When something did move, the series are rebuilt **in memory** -
+`QueueShiftReapply` runs the changes one after another (a queue, so fast
+clicking through tabs cannot reorder them). Two cases:
+
+- **Only the times changed** (same target, same Flip): the candles are
+  the same, only their timestamps move, so the series is re-stamped with
+  `ShiftedSymbol.Restamp` by the difference of the two virtual deltas.
+  This is the same one-array pass the Alt+wheel nudge already used, a few
+  ms for 250k candles. The loader is told the new delta
+  (`SetShiftDelta`).
+- **Target or Flip changed**: the series is rebuilt from the target
+  series that is already in memory. `ShiftedSymbol.Retarget` converts the
+  target's display candles into the shift's own display space (pip
+  scaling is the same, so it is a mirror flip and/or a constant offset),
+  then `ShiftedSymbol.Shift` moves them in time. A new mirror base is
+  stored in `AppConfig.MirrorBases`, and the loader copies the target's
+  read symbol, year range and loaded span (`MarkShiftRetargeted`).
+
+Nothing is read from disk in either case. A background load of that
+symbol is paused for the duration (`PauseAsync` / `Resume`), the live
+tail is re-pushed afterwards (`RefreshShiftLiveTails`), and the log line
+says how long it took:
+
+    GBP: 2 shift(s) re-applied in 12 ms
+
+`LoadChartAsync()` is still the fallback. It runs when a series cannot be
+rebuilt in memory - the target is not a known pair, its pip points do not
+match, or the chart series is gone. The log says which indicator forced
+it.
+
+If a DB operation or a history download is running, the whole re-apply is
+skipped with a log line; the placements are already in the config and show
+up on the next load.
+
+Before this the switch always ran a full `LoadChartAsync()`, which re-read
+the DB, the depth store and the volume profiles and recomputed every
+moving average - 2 to 3 seconds on a chart with 70 series.
 
 The other direction: every place that changes a Shift - the Add/Edit
 dialog (`ApplyIndicatorAsync`), a find result (`ApplyFindResultAsync`) and
@@ -142,15 +174,59 @@ Renaming an **indicator** rewrites its name in every tab - in
 `SymbolOffsetPoints`, `HiddenSymbols`, `FlattenSymbol` and in the shift
 placements (`RenameChartStateKeys`).
 
+## Tab properties
+
+The tab context menu has **Properties...**. It opens a small popup under
+the tab header (`TabPropertiesView`) with the settings of that tab. Right
+now there is one:
+
+**Custom zoom** - an extra vertical zoom, applied on top of the vertical
+zoom of every zoom level, in this tab only. `1` means off. The value is
+stored in `ChartTab.CustomZoom` and clamped to `0.01 .. 100`.
+
+So with custom zoom `2` a level that says 190 px/100 pips draws 380
+px/100 pips while you are on that tab. Every level in the list is scaled
+the same way, switching levels with the wheel keeps the factor, and the
+other tabs are untouched. `Ctrl + wheel` still zooms freely - custom zoom
+does not lock the vertical.
+
+The level list itself keeps the base numbers. Saving the current zoom
+into a level (the floppy icon) divides by the custom zoom first, so
+saving from a tab with custom zoom `2` writes 190, not 380, and the
+picture does not jump. `Insert level` does the same. The dirty check
+compares against the scaled target, so a clean level stays clean.
+
+Typing a new value applies it right away: the chart scales the current
+vertical zoom by `old / new` around the middle of the window, so the
+price under the middle stays there. When the zoom was clean before the
+change it stays clean after it.
+
+The popup edits whatever tab it was opened on. Changing the custom zoom
+of a tab that is not active only stores the number - it is applied when
+that tab is activated (`Chart.SetCustomZoom` runs before `RestoreState`).
+The saved `ChartViewState` holds the zoom the chart really shows, so
+nothing is converted on restore.
+
+The zoom level popup prints a line about it while the factor is not `1`:
+
+    Tab custom zoom 2× - px/100 pips of every level is multiplied by it
+    in this tab
+
 ## Notes
 
 A tab can also show a **note** - a saved screen with a frozen copy of the
 view state and its own drawing snapshot, see docs/notes.md. `ChartTab.NoteId`
 says which note the tab shows; empty means the tab uses the live drawings.
 
+## Play
+
+A tab can be put into **play** mode - it then sits at a minute in the
+past, hides everything after it and lets you trade the history by hand,
+see docs/game-mode.md. `ChartTab.Game` holds that game: the pair, the
+current minute and every order the user placed. Another tab keeps
+showing the live chart, and a duplicated tab gets a copy of the game.
+
 ## Not in v1 (next steps)
 
 - Reordering tabs by dragging.
-- Per tab Shift without a chart reload (re-shift the series in memory from
-  the target that is already loaded, as `ApplyFindResultAsync` does).
 - Per tab indicator set.

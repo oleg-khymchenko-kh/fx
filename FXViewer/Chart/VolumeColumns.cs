@@ -7,7 +7,8 @@ public readonly record struct VolumeColumnSet(long[] Total, long[] Bid, long[] A
 public static class VolumeColumns
 {
     public static VolumeColumnSet Build(CandleHistory history, ProfileSet? profiles,
-        long columnSeconds, long firstBucket, int count, WeekendCompressor? map, int groupMinutes = 1)
+        long columnSeconds, long firstBucket, int count, WeekendCompressor? map, int groupMinutes = 1,
+        long maxUnix = long.MaxValue)
     {
         var columns = new long[count];
         var bid = new long[count];
@@ -20,14 +21,14 @@ public static class VolumeColumns
             long minuteFirst = ChartColumns.MinuteBucket(firstBucket, run);
             int minuteCount = ChartColumns.MinuteCount(count, run);
             var inner = Build(history, profiles, ChartColumns.MinuteSeconds, minuteFirst,
-                minuteCount, map, groupMinutes);
+                minuteCount, map, groupMinutes, maxUnix);
             return new VolumeColumnSet(
                 ChartColumns.Expand(inner.Total, minuteFirst, run, firstBucket, count, -1L),
                 ChartColumns.Expand(inner.Bid, minuteFirst, run, firstBucket, count, 0L),
                 ChartColumns.Expand(inner.Ask, minuteFirst, run, firstBucket, count, 0L));
         }
         long groupSec = Math.Max(1, groupMinutes) * ChartColumns.MinuteSeconds;
-        var edges = ChartColumns.ColumnEdges(map, columnSeconds, firstBucket, count);
+        var edges = ChartColumns.ColumnEdges(map, columnSeconds, firstBucket, count, maxUnix);
         int columnLevel = ChartColumns.LevelFor(columnSeconds, map);
         if (groupSec <= ChartColumns.MinuteSeconds && columnLevel >= 0)
         {
@@ -39,6 +40,13 @@ public static class VolumeColumns
             MaxGroups(history, map, groupSec, edges, columns);
         }
         FillSides(profiles, edges, bid, ask);
+        for (int c = 0; c < count && maxUnix != long.MaxValue; c++)
+        {
+            if (edges[c] < maxUnix) continue;
+            columns[c] = -1L;
+            bid[c] = 0L;
+            ask[c] = 0L;
+        }
         return new VolumeColumnSet(columns, bid, ask);
     }
 

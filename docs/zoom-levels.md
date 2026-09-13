@@ -171,6 +171,15 @@ which keeps the grid loop bounded while letting a level zoom out well
 past the data range. `Ctrl + wheel` keeps its own old limit -
 `ApplyVerticalZoom` is untouched.
 
+## Custom zoom per tab
+
+A tab can multiply the vertical part of every level by its own factor -
+see the **Tab properties** section of [tabs.md](tabs.md).
+`ApplyZoomLevel` divides the level's points per row by it,
+`SaveCurrentZoomToLevel` and `InsertZoomLevel` divide the current
+px/100 pips by it before storing, and the dirty check uses the scaled
+target. With the factor at `1` (the default) nothing changes.
+
 ## Storage
 
 The list is global, not per tab - `AppConfig.ZoomLevels`:
@@ -198,5 +207,7 @@ default `-1` (no level yet, the label shows `Zoom -`).
 | `Chart/ZoomLevelView.cs` | the corner label, save icon and the popup |
 | `Chart/ChartView.cs` | `OnZoom` split, `ApplyZoomLevel`, dirty check, list edits |
 | `Chart/ChartViewState.cs` | `ZoomLevelIndex` |
+| `ChartTab.cs` | `CustomZoom` |
+| `TabPropertiesView.cs` | the tab properties popup |
 | `AppConfig.cs` | `ZoomLevels` + `EnsureZoomLevels` |
 | `MainWindow.xaml(.cs)` | places the widget, wires save / insert / delete |

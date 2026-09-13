@@ -15,6 +15,7 @@ public sealed class ChartViewState
     public List<string>? CollapsedSymbols { get; set; }
     public bool CalendarVisible { get; set; }
     public bool ForecastHidden { get; set; }
+    public bool CommentsHidden { get; set; }
     public bool WeekendsHidden { get; set; }
     public bool SessionsVisible { get; set; }
     public string? FlattenSymbol { get; set; }

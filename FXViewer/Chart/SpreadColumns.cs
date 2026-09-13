@@ -5,7 +5,7 @@ namespace FXViewer.Chart;
 public static class SpreadColumns
 {
     public static int[] Build(CandleHistory history, long columnSeconds, long firstBucket, int count,
-        WeekendCompressor? map)
+        WeekendCompressor? map, long maxUnix = long.MaxValue)
     {
         var columns = new int[count];
         Array.Fill(columns, -1);
@@ -15,10 +15,10 @@ public static class SpreadColumns
         {
             long minuteFirst = ChartColumns.MinuteBucket(firstBucket, run);
             var minutes = Build(history, ChartColumns.MinuteSeconds, minuteFirst,
-                ChartColumns.MinuteCount(count, run), map);
+                ChartColumns.MinuteCount(count, run), map, maxUnix);
             return ChartColumns.Expand(minutes, minuteFirst, run, firstBucket, count, -1);
         }
-        var edges = ChartColumns.ColumnEdges(map, columnSeconds, firstBucket, count);
+        var edges = ChartColumns.ColumnEdges(map, columnSeconds, firstBucket, count, maxUnix);
         int level = ChartColumns.LevelFor(columnSeconds, map);
         if (level >= 0) Fill(history.Levels[level], edges, columns);
         else Fill(history.Minutes, edges, columns);

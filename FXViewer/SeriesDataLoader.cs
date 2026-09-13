@@ -134,16 +134,21 @@ public sealed class SeriesDataLoader : IDisposable
         }
     }
 
-    public Task EnsureFullAsync(string symbol, string reason)
+    public Task EnsureFullAsync(string symbol, string reason) =>
+        EnsureYearsAsync(symbol, int.MinValue, int.MaxValue, reason);
+
+    public Task EnsureYearsAsync(string symbol, int fromYear, int toYear, string reason)
     {
         Task result;
         lock (_sync)
         {
             if (!_series.TryGetValue(symbol, out var st)) return Task.CompletedTask;
-            if (st.HasLoaded && st.LoadedLo <= st.MinYear && st.LoadedHi >= st.MaxYear)
+            int lo = Math.Max(st.MinYear, fromYear);
+            int hi = Math.Min(st.MaxYear, toYear);
+            if (lo > hi || (st.HasLoaded && st.LoadedLo <= lo && st.LoadedHi >= hi))
                 return Task.CompletedTask;
             var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var job = new Job { Symbol = symbol, Reason = reason, FromYear = st.MinYear, ToYear = st.MaxYear };
+            var job = new Job { Symbol = symbol, Reason = reason, FromYear = lo, ToYear = hi };
             job.Waiters.Add(tcs);
             _jobs.Add(job);
             result = tcs.Task;
@@ -216,6 +221,28 @@ public sealed class SeriesDataLoader : IDisposable
             st.HasLoaded = true;
             st.LoadedLo = st.MinYear;
             st.LoadedHi = st.MaxYear;
+        }
+    }
+
+    public void MarkShiftRetargeted(string symbol, string targetSymbol, long newDelta, bool mirror,
+        long mirrorBase, int pipPoints)
+    {
+        lock (_sync)
+        {
+            if (!_series.TryGetValue(symbol, out var st)) return;
+            if (_series.TryGetValue(targetSymbol, out var tgt))
+            {
+                st.ReadSymbol = tgt.ReadSymbol;
+                st.MinYear = tgt.MinYear;
+                st.MaxYear = tgt.MaxYear;
+                st.HasLoaded = tgt.HasLoaded;
+                st.LoadedLo = tgt.LoadedLo;
+                st.LoadedHi = tgt.LoadedHi;
+            }
+            st.Mirror = mirror;
+            st.MirrorBase = mirrorBase;
+            st.PipPoints = pipPoints;
+            st.ShiftDelta = newDelta;
         }
     }
 
@@ -381,7 +408,7 @@ public sealed class SeriesDataLoader : IDisposable
             var snap = await _dispatcher.InvokeAsync(() =>
             {
                 var s = _chart.GetSeries(st.Symbol);
-                return s == null ? null : new { s.History };
+                return s == null ? null : new { s.History, Averages = _chart.AverageJobsOf(st.Symbol) };
             });
             if (snap == null) return;
             List<Candle> chunk;
@@ -422,6 +449,11 @@ public sealed class SeriesDataLoader : IDisposable
                 ? CandleHistory.MergeMarks(hiddenChunk, snap.History.HiddenSpreads)
                 : CandleHistory.MergeMarks(snap.History.HiddenSpreads, hiddenChunk));
             var newTransform = newBase ? new SeriesTransform(true, mb, st.PipPoints) : null;
+            ct.ThrowIfCancellationRequested();
+            SetProgress(job, "averages");
+            var avgWatch = Stopwatch.StartNew();
+            var averages = AverageSeries.Rebuild(snap.Averages, newHistory.Minutes);
+            long avgMs = avgWatch.ElapsedMilliseconds;
             bool committed = await _dispatcher.InvokeAsync(() =>
             {
                 if (_cts.IsCancellationRequested) return false;
@@ -429,7 +461,7 @@ public sealed class SeriesDataLoader : IDisposable
                 if (s == null || !ReferenceEquals(s.History, snap.History)) return false;
                 newHistory.SetLive(s.History.Live);
                 if (s.History.HasLastTick) newHistory.SetLastTick(s.History.LastTick);
-                _chart.ReplaceSeries(st.Symbol, newHistory, newTransform);
+                _chart.ReplaceSeries(st.Symbol, newHistory, newTransform, averages);
                 if (newBase) _mirrorBaseComputed(st.Symbol, mb);
                 return true;
             });
@@ -437,8 +469,11 @@ public sealed class SeriesDataLoader : IDisposable
             {
                 if (newBase) st.MirrorBase = mb;
                 CommitSpan(st, yearLo, yearHi);
+                string averagesText = averages.Length > 0
+                    ? $", {averages.Length} average(s) in {avgMs} ms"
+                    : "";
                 string message = $"Loaded {st.Symbol} {YearSpanText(yearLo, yearHi)}: " +
-                    $"{chunk.Count:N0} candles in {sw.ElapsedMilliseconds} ms ({job.Reason})";
+                    $"{chunk.Count:N0} candles in {sw.ElapsedMilliseconds} ms{averagesText} ({job.Reason})";
                 Post(() => _log(message));
                 return;
             }
