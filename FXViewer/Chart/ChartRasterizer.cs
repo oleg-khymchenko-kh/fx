@@ -262,7 +262,7 @@ public static class ChartRasterizer
     public const int VolumePanelHeightPx = VolumeBarMaxPx;
 
     public static double DrawVolumePanel(int[] buffer, int width, int height, VolumeColumnSet columns,
-        int bottomRow, int colorArgb, double scale, int bidColorArgb, double unit)
+        int bottomRow, int neutralArgb, double scale, int buyArgb, int sellArgb, double unit)
     {
         int top = bottomRow - VolumePanelHeightPx + 1;
         if (top < 0 || bottomRow >= height) return 0;
@@ -275,22 +275,24 @@ public static class ChartRasterizer
             if (max <= 0) return 0;
             unit = max;
         }
+        double pxPerContract = VolumeBarMaxPx * scale / unit;
         for (int x = 0; x < width; x++)
         {
             long v = x < total.Length ? total[x] : -1;
             if (v < 0) continue;
-            double px = v * VolumeBarMaxPx * scale / unit;
+            double px = v * pxPerContract;
             int h = px >= bottomRow ? bottomRow : px < 1 ? 1 : (int)Math.Round(px);
-            long bid = bidColorArgb != 0 && x < columns.Bid.Length ? columns.Bid[x] : 0;
-            long sides = bid + (x < columns.Ask.Length ? columns.Ask[x] : 0);
-            int bidRows = bid <= 0 || sides <= 0
-                ? 0
-                : Math.Min(h, (int)Math.Round((double)bid * h / sides));
+            long delta = buyArgb != 0 && x < columns.Ask.Length && x < columns.Bid.Length
+                ? columns.Ask[x] - columns.Bid[x]
+                : 0;
+            int deltaRows = (int)Math.Min(h, Math.Round(Math.Abs(delta) * pxPerContract));
+            int deltaArgb = delta > 0 ? buyArgb : sellArgb;
             int barTop = bottomRow - h + 1;
-            for (int row = barTop + bidRows; row <= bottomRow; row++)
-                buffer[row * width + x] = colorArgb;
-            for (int row = barTop; row < barTop + bidRows; row++)
-                buffer[row * width + x] = bidColorArgb;
+            int deltaTop = bottomRow - deltaRows + 1;
+            for (int row = barTop; row < deltaTop; row++)
+                buffer[row * width + x] = neutralArgb;
+            for (int row = deltaTop; row <= bottomRow; row++)
+                buffer[row * width + x] = deltaArgb;
         }
         return unit;
     }

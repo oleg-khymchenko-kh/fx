@@ -13,7 +13,7 @@ public enum BandPick
 
 public readonly record struct AverageSpec(
     int WindowBars, bool FromFuture = false, bool VolumeWeighted = false, int BandCount = 1,
-    BandPick Pick = BandPick.Max, bool TimeWindow = false)
+    BandPick Pick = BandPick.Max, bool TimeWindow = false, int WideSign = 1)
 {
     public int StepBars => Math.Max(1, WindowBars);
 
@@ -34,6 +34,7 @@ public sealed record AverageResult(AverageJob Job, CandleHistory? History);
 public static class AverageSeries
 {
     private const int BlockBars = 16384;
+    private const int TenthsPerPip = 10;
 
     private static readonly Candle[] NoCandles = Array.Empty<Candle>();
 
@@ -59,10 +60,10 @@ public static class AverageSeries
         int n1 = newParent.Length;
         int limit = Math.Min(n0, n1);
         int prefix = 0;
-        while (prefix < limit && Same(oldParent[prefix], newParent[prefix], spec.VolumeWeighted)) prefix++;
+        while (prefix < limit && Same(oldParent[prefix], newParent[prefix], spec)) prefix++;
         int suffix = 0;
         while (suffix < limit - prefix
-               && Same(oldParent[n0 - 1 - suffix], newParent[n1 - 1 - suffix], spec.VolumeWeighted))
+               && Same(oldParent[n0 - 1 - suffix], newParent[n1 - 1 - suffix], spec))
             suffix++;
         if (n0 == n1 && prefix == n1) return null;
         var bars = new Bars(newParent, NoCandles);
@@ -110,6 +111,85 @@ public static class AverageSeries
         for (int i = 0; i < tailLen; i++)
             result[i] = Flat(live[i].MinuteUnixSeconds, Finish(values[i], spec));
         return result;
+    }
+
+    public static Candle[] Projection(Candle[] minutes, Candle[] live, long cutUnix, in AverageSpec spec)
+    {
+        var real = new Bars(minutes, live);
+        int lastIdx = LastBefore(minutes, live, cutUnix);
+        if (lastIdx < 0) return Array.Empty<Candle>();
+        long lastUnix = real[lastIdx].MinuteUnixSeconds;
+        bool counted = !spec.VolumeWeighted;
+        int w = spec.LongestBars;
+        var future = FutureMinutes(lastUnix, DayEndUnix(lastUnix), spec.FromFuture && counted ? w - 1 : 0,
+            out int shown);
+        if (shown == 0 && cutUnix == long.MaxValue) return Array.Empty<Candle>();
+        int s0 = WindowStart(real, spec, w, lastIdx);
+        int firstPhantom = lastIdx - s0 + 1;
+        int from = spec.FromFuture ? 0 : firstPhantom;
+        int toExcl = firstPhantom + shown;
+        if (from >= toExcl) return Array.Empty<Candle>();
+        int value = LastNotWide(real, lastIdx).Avg;
+        var bars = new Candle[firstPhantom + future.Count];
+        for (int i = 0; i < firstPhantom; i++) bars[i] = real[s0 + i];
+        for (int i = 0; i < future.Count; i++)
+            bars[firstPhantom + i] = new Candle(future[i], value, value, value, true, WideSpread: !counted);
+        var values = Run(new Bars(bars, NoCandles), spec, from, toExcl);
+        var result = new Candle[values.Length];
+        for (int i = 0; i < result.Length; i++)
+            result[i] = Flat(bars[from + i].MinuteUnixSeconds, Finish(values[i], spec));
+        return result;
+    }
+
+    private static List<long> FutureMinutes(long lastUnix, long endUnix, int atLeast, out int shown)
+    {
+        var weekend = WeekendCompressor.Instance;
+        var minutes = new List<long>();
+        shown = 0;
+        for (long t = lastUnix + ChartColumns.MinuteSeconds; t <= endUnix || minutes.Count < atLeast;
+             t += ChartColumns.MinuteSeconds)
+        {
+            if (weekend.InGap(t)) continue;
+            minutes.Add(t);
+            if (t <= endUnix) shown = minutes.Count;
+        }
+        return minutes;
+    }
+
+    private static Candle LastNotWide(in Bars bars, int index)
+    {
+        for (int i = index; i >= 0; i--)
+            if (!bars[i].WideSpread) return bars[i];
+        return bars[index];
+    }
+
+    public static long DayEndUnix(long unixSeconds)
+    {
+        var day = DateTimeOffset.FromUnixTimeSeconds(unixSeconds).UtcDateTime.Date;
+        for (int i = 0; i < 8; i++, day = day.AddDays(1))
+        {
+            if (day.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday) continue;
+            long dayUnix = new DateTimeOffset(day, TimeSpan.Zero).ToUnixTimeSeconds();
+            long end = dayUnix + SessionClock.AmericaCloseHourUtc(day.AddHours(12)) * SessionClock.HourSeconds
+                - ChartColumns.MinuteSeconds;
+            if (end > unixSeconds) return end;
+        }
+        return unixSeconds;
+    }
+
+    private static int LastBefore(Candle[] minutes, Candle[] live, long cutUnix)
+    {
+        for (int i = live.Length - 1; i >= 0; i--)
+            if (live[i].MinuteUnixSeconds < cutUnix) return minutes.Length + i;
+        int lo = 0;
+        int hi = minutes.Length;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) / 2;
+            if (minutes[mid].MinuteUnixSeconds < cutUnix) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo - 1;
     }
 
     private static long[] Run(in Bars bars, in AverageSpec spec, int from, int toExcl)
@@ -241,9 +321,9 @@ public static class AverageSeries
                     if (k == 0) firstMinute = minute;
                     VirtualMinutes[k] = (int)(minute - firstMinute);
                 }
-                if (!c.WideSpread)
+                if (Usable(c, spec))
                 {
-                    sum += c.Avg;
+                    sum += DoubledValue(c, spec);
                     count++;
                     if (_weighted && c.HasVolume)
                     {
@@ -269,7 +349,7 @@ public static class AverageSeries
                 if (volume > 0)
                     return Rounded(_priceVolume[toExcl] - _priceVolume[from], volume);
             }
-            return Rounded(_sum[toExcl] - _sum[from], count);
+            return Rounded(_sum[toExcl] - _sum[from], 2L * count);
         }
 
         private static int Rounded(long sum, long count) =>
@@ -281,7 +361,7 @@ public static class AverageSeries
     private static int WindowStart(in Bars bars, in AverageSpec spec, int w, int anchor)
     {
         int left = anchor;
-        bool usable = !bars[anchor].WideSpread;
+        bool usable = Usable(bars[anchor], spec);
         if (spec.TimeWindow)
         {
             int cursor = 0;
@@ -289,7 +369,7 @@ public static class AverageSeries
             while (left > 0 && VirtualMinute(bars, left - 1, ref cursor) >= limit)
             {
                 left--;
-                usable |= !bars[left].WideSpread;
+                usable |= Usable(bars[left], spec);
             }
         }
         else
@@ -298,7 +378,7 @@ public static class AverageSeries
             while (left > 0 && need > 0)
             {
                 left--;
-                if (bars[left].WideSpread) continue;
+                if (!Usable(bars[left], spec)) continue;
                 usable = true;
                 need--;
             }
@@ -306,7 +386,7 @@ public static class AverageSeries
         while (!usable && left > 0)
         {
             left--;
-            usable = !bars[left].WideSpread;
+            usable = Usable(bars[left], spec);
         }
         return left;
     }
@@ -315,14 +395,14 @@ public static class AverageSeries
     {
         int n = bars.Length;
         int right = anchorExcl;
-        bool usable = !bars[anchorExcl - 1].WideSpread;
+        bool usable = Usable(bars[anchorExcl - 1], spec);
         if (spec.TimeWindow)
         {
             int cursor = 0;
             long limit = VirtualMinute(bars, anchorExcl - 1, ref cursor) + (w - 1);
             while (right < n && VirtualMinute(bars, right, ref cursor) <= limit)
             {
-                usable |= !bars[right].WideSpread;
+                usable |= Usable(bars[right], spec);
                 right++;
             }
         }
@@ -331,17 +411,25 @@ public static class AverageSeries
             int need = usable ? w - 1 : w;
             while (right < n && need > 0)
             {
-                if (!bars[right].WideSpread) { usable = true; need--; }
+                if (Usable(bars[right], spec)) { usable = true; need--; }
                 right++;
             }
         }
         while (!usable && right < n)
         {
-            usable = !bars[right].WideSpread;
+            usable = Usable(bars[right], spec);
             right++;
         }
         return right;
     }
+
+    private static bool Usable(in Candle c, in AverageSpec spec) =>
+        !c.WideSpread || (!spec.VolumeWeighted && c.HasSpread);
+
+    private static long DoubledValue(in Candle c, in AverageSpec spec) =>
+        c.WideSpread
+            ? 2L * c.Avg + spec.WideSign * (c.SpreadTenths - TenthsPerPip)
+            : 2L * c.Avg;
 
     private static long VirtualMinute(in Bars bars, int index, ref int cursor) =>
         WeekendCompressor.Instance.ToVirtual(bars[index].MinuteUnixSeconds, ref cursor) / 60;
@@ -379,10 +467,12 @@ public static class AverageSeries
             index < _head.Length ? _head[index] : _tail[index - _head.Length];
     }
 
-    private static bool Same(Candle a, Candle b, bool volumeWeighted) =>
+    private static bool Same(Candle a, Candle b, in AverageSpec spec) =>
         a.MinuteUnixSeconds == b.MinuteUnixSeconds && a.Avg == b.Avg
         && a.WideSpread == b.WideSpread
-        && (!volumeWeighted || (a.HasVolume == b.HasVolume && a.Volume == b.Volume));
+        && (!spec.VolumeWeighted || (a.HasVolume == b.HasVolume && a.Volume == b.Volume))
+        && (spec.VolumeWeighted || !a.WideSpread
+            || (a.HasSpread == b.HasSpread && a.SpreadCode == b.SpreadCode));
 
     private static Candle Flat(long minuteUnix, int value) =>
         new(minuteUnix, value, value, value, true);

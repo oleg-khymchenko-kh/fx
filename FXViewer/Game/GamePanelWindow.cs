@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -14,6 +14,7 @@ public sealed class GamePanelWindow : Window
 
     public event Action<double, double>? Moved;
     public event Action<int>? StepRequested;
+    public event Action? FinishDayRequested;
 
     public GamePanelWindow(Window owner)
     {
@@ -31,6 +32,12 @@ public sealed class GamePanelWindow : Window
         {
             if (e.Key is not (Key.P or Key.O)) return;
             if (Keyboard.FocusedElement is TextBoxBase) return;
+            if (e.Key == Key.P && Keyboard.Modifiers == ModifierKeys.Control)
+            {
+                FinishDayRequested?.Invoke();
+                e.Handled = true;
+                return;
+            }
             StepRequested?.Invoke(e.Key == Key.P ? 1 : -1);
             e.Handled = true;
         };

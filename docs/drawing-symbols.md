@@ -32,7 +32,7 @@ belongs to the line, not to the point: `DrawingStore.FromRaw` treats the
 line as a level if any of its points carries the 1 and then sets
 `PivotPoint.Level` on all of them. Old files have pairs only, so they
 load as normal lines, and a file with no levels is written exactly as
-before. Notes keep the same raw format, so a level survives a note too.
+before.
 
 ## Creation
 
@@ -124,8 +124,36 @@ price range, so the view can scroll to lines drawn in the future.
   gaps. Shift can be pressed or released mid-drag. A Shift-click that
   starts on a vertex of the selected line begins this drag instead of
   a range selection.
+- Holding Ctrl (and no other modifier) with the cursor within 2 px of a
+  committed line shows a circle on the line: the place of a possible
+  break. A left press there adds a new vertex at the circle, selects the
+  line and starts dragging the new vertex right away, so the line bends
+  where the mouse goes. Release saves the line.
+  - The line does not have to be selected first.
+  - A release without a move keeps the new vertex on the line. Escape
+    during the drag cancels the break, nothing is saved.
+  - The new vertex gets the minute of the column under the circle (the
+    nearest whole minute when a column is shorter than a minute). The
+    value is read from the line at that minute, so the vertex sits
+    exactly on the old line and the line keeps its shape until the
+    vertex is moved.
+  - On a very steep segment that exact point can be more than 4 px away
+    from the cursor. Then the vertex is put next to the cursor instead:
+    the column minute and the price of the line at the cursor height,
+    less than one pixel off the line.
+  - No circle within the pick radius of an existing vertex: a press
+    there drags that vertex as before.
+  - No circle on a level, in draw mode, while measuring and during any
+    drag.
+  - With `Flatten by line` on, the circle follows the bent line as it is
+    drawn.
+  - The distance is measured from the center of the cursor pixel, so a
+    horizontal or vertical line is hit exactly 2 px on each side.
 - Dragging the line body (within 2 px, not on a circle) moves the whole
   polyline; all points shift by the same time/price delta.
+- A polyline with more than 3 segments (5+ points) cannot be moved by
+  its body: a press on the body of the selected line does nothing, only
+  its circles can be dragged. A click on the body still selects it.
 - During a drag the raster line is hidden and a WPF preview polyline
   follows the mouse; release commits (saves drawing.json, re-renders),
   a release without movement keeps the selection and changes nothing.
@@ -151,7 +179,8 @@ price range, so the view can scroll to lines drawn in the future.
     end segment. Drag the new vertex afterwards to place it.
   - `Clone 20 pips up` appends an exact copy of the whole line, moved
     20 pips higher, and selects the copy so it can be dragged right
-    away. Levels have no clone item - the line body carries the price,
+    away (by the body only up to 3 segments, see above). Levels have no
+    clone item - the line body carries the price,
     so a copy of a level is just another level to draw.
   - Edits go through the same drawing.json save + re-render path as a
     vertex drag, and are refused while a DB op / download / load runs.

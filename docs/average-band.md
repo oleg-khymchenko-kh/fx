@@ -51,8 +51,10 @@ The same window rules as the plain average (see docs/moving-average.md):
   off, the window is a count of candles instead: one day = 1440 M1
   candles, and gaps in the data are ignored. No weekly reset either
   way.
-- Minutes flagged as wide spread never go into any of the averages,
-  whatever the global hide setting says.
+- Minutes flagged as wide spread go into every average with a corrected
+  bid, `real bid + (spread - 1 pip) / 2`, whatever the global hide
+  setting says; a flagged minute without a known spread is skipped (see
+  docs/moving-average.md, "Wide spread minutes").
 - At the very start of the data the window is shorter (expanding), so
   every source minute gets a value and the line is continuous. At the
   first candle all the averages are equal, so max and min start from

@@ -2,7 +2,10 @@
 
 Status: implemented, v1 plus random day (2026-09-10), next day
 (2026-09-11), game stats (2026-09-11), replay, your own time and the
-Future button (2026-09-12).
+Future button (2026-09-12), the 14:00 game and Ctrl+P (2026-09-18),
+title buttons as icons plus the play-to-the-end button (2026-09-19),
+games and own time today and in the last hour in the popup, day and
+14:00 apart (2026-09-22).
 
 ## Goal
 
@@ -42,18 +45,47 @@ on, **Play next day** under it starts the trading day after the played
 one, see "Next day" below, and **Replay day** plays the same day again
 without counting it anywhere, see "Replay" below.
 
-Right click -> **Game stats** opens a summary of all finished days, see
-"Game stats" below.
+Right click -> **Play random 14:00** is the same game on a shorter
+window: it starts at 14:00 UTC (15:00 in winter) of a random day and
+ends 5 minutes before the American session closes, see "Random 14:00"
+below. It has its own files and its own statistics.
+
+Right click -> **Game stats** opens a summary of all finished days, and
+**Game stats 14:00** the same summary of the 14:00 games, see "Game
+stats" below.
 
 ## Moving in time
 
-    P - one minute forward
-    O - one minute back
+    P      - one minute forward
+    O      - one minute back
+    Ctrl+P - play the rest of the day at once (day game only)
 
 The keys work while the chart has the keyboard focus (move the mouse
 over it) and also while the popup itself is the active window, so a click
 on **Buy** never takes the keys away. The popup has `◀` and `▶`
-buttons that do the same.
+buttons that do the same, and a `▶▶` button in the title that
+does `Ctrl+P`.
+
+**Ctrl+P** ends a day game right there: the day is finished as if you
+had stepped to its last minute (every open position is closed at the end
+of the day, every order is cancelled, the game is written to the log and
+locked, the notes open), and the **future** is switched on at once, so
+the rest of the day - and everything after it - is on the screen
+straight away. It is the quick way out of a day you do not want to play
+minute by minute.
+
+- The day counts as played, like any finished day. A **Replay** is still
+  not logged.
+- Ctrl+P and `▶▶` do not move the chart: scroll and zoom stay as they
+  were, the hidden candles just appear. Stepping past the last minute
+  with `P` still keeps the play time in view, as any step does.
+- On an already finished day Ctrl+P only shows the future.
+- In a normal **Play** game (no day) Ctrl+P is one step forward, like
+  `P`: there is no end of the day to jump to.
+- The app log says where the jump started:
+
+      Play: day 18-Aug-26 Tue played to the end from 18-Aug-26 14:35,
+      the rest of the day is shown
 
 A step goes to the **next candle that exists**, not to `+60` seconds, so
 a Friday evening jumps straight to the Sunday opening and any gap in the
@@ -94,16 +126,24 @@ What is **not** hidden, on purpose:
   life; the detail popup of a future event does show the released
   numbers, so do not hover it while playing,
 - the last price of each pair in the right hand symbol bar - it is the
-  price of the last loaded candle, taken at load time,
-- a moving average built with "from future" - its value at the play
-  minute uses candles after it.
+  price of the last loaded candle, taken at load time.
+
+Moving averages (Average and Average max/min) never use a hidden
+candle, a "from future" one included. For a plain average (no volume)
+every hidden minute counts as a candle at the **last visible price**:
+the `Avg` of the last visible candle that is not flagged as wide
+spread. For a volume weighted average the hidden minutes are missing
+candles (no volume, no weight). The line itself is **not** cut at the
+play minute: it goes on to the end of the day (the last minute of the
+American session), built only from the candles up to the play minute.
+See docs/moving-average.md, "The line goes on into the future".
 
 ### Look into the future
 
 The **Future** button in the popup title switches the whole cut off and
 back on. It is there in every game, a day game or a normal **Play**.
 
-    Day 18-Aug-26 Tue  1:02:10   [Replay] [Future] [Notes] [✕]
+    Day 18-Aug-26 Tue  1:02:10   [↺] [▶▶] [»] [✎] [✕]
     ◀ ▶  18-Aug-26 14:35  future
 
 - With the future shown the chart is drawn as if no game was on: every
@@ -129,6 +169,20 @@ back on. It is there in every game, a day game or a normal **Play**.
 ## Trading
 
 ### The popup
+
+The title row holds the buttons of the game, all of them icons with the
+full text in the tooltip:
+
+    Day 18-Aug-26 Tue  1:02:10   [↺] [▶▶] [»] [✎] [✕]
+
+- `↺` **Replay** - play this day again, see "Replay". Day game only.
+- `▶▶` **play to the end of the day** - the same as `Ctrl+P`, see
+  "Moving in time". Day game only, greyed out on a finished day.
+- `»` **Future** - show or hide everything after the play minute, see
+  "Look into the future". Bold while the future is shown.
+- `✎` **Notes** - show or hide the comment and the day drawing, see
+  "Comment of the day". Day game only, bold while they are open.
+- `✕` stops the game.
 
 One row per visible pair, the pair name in its own colour (the pair
 colour from Settings), then two market buttons:
@@ -384,6 +438,12 @@ app closing):
     Games          finished day games of this session (a replay is not one)
     Pauses         how many times "Still here?" opened
     Days           the days played in this session
+    Spans          your own time as stretches of real time: Mode (day,
+                   1400, or empty for a plain Play game), From, To. A new
+                   stretch starts after every stop of the clock and when
+                   the game on the tab changes its mode. Together they
+                   are ActiveSeconds, give or take a second per stretch.
+                   Written since 2026-09-22.
 
 Every finished day also gets an `ActiveSeconds` in `game-log.jsonl`, next
 to the wall clock `Seconds`: your own time of that day alone. A replay
@@ -392,6 +452,8 @@ day ends, so the time you spend on the comment afterwards is in the
 session total but not in that day's line.
 
 A crash loses the running session - the line is only written at the end.
+Its own time then also drops out of today and the last hour in the
+popup.
 
 The older clocks still count sleep: the real time next to the title of
 the popup and `Seconds` of a day in `game-log.jsonl` are wall clock from
@@ -406,6 +468,49 @@ pauses, and per finished game the average and median of your own time.
 The **Real time** table gets a `Your min` column: your own time of the
 sessions that started on that date, next to the wall clock minutes of the
 games of that date.
+
+## Today and the last hour
+
+Under the time row of a day game the popup shows how much you played
+today and in the last hour, for the mode of that game:
+
+    ◀ ▶  18-Aug-26 14:35   own 1:23:45
+    14:00 games     today      23   last hour    12
+    14:00 own time  today 1:03:45   last hour 26:23
+
+- **games** - finished games. **today** = ended today (local date),
+  **last hour** = ended in the last 60 minutes.
+- **own time** - your own time (see "Your own time") spent while a game
+  of this mode was on the tab, since midnight and in the last 60
+  minutes. Like the `own` clock it covers the games, the time between
+  them, replays and the comment, and it stops while you are away.
+
+The day and the 14:00 games are counted **separately**, like the rest of
+the two modes. A day game shows `day games` and `day own time`, a 14:00
+game `14:00 games` and `14:00 own time`. A plain Play game has no mode,
+so it has no such lines, and its time counts for neither mode.
+
+A game counts once its day ends and its line goes into its game log
+(`game-log.jsonl` or `game-log-1400.jsonl`). A stopped game and a replay
+write no line, so they are not in the games, but the time spent on them
+is in the own time. Both lines follow the clock: a game leaves the last
+hour 60 minutes after it ended, a second of own time 60 minutes after it
+was spent, and today starts again at midnight. A stretch of own time
+that runs over midnight is cut there.
+
+The own time comes from the `Spans` of the sessions in `game-time.jsonl`
+plus the running session (see "Where it is kept"). A session written
+before 2026-09-22 has no spans. It counts as one stretch that is
+`ActiveSeconds` long and ends at `EndedAt`, split between day and 14:00
+by how many games of each mode ended in it. A session with no logged
+game counts for neither.
+
+The game logs and the finished sessions are read once and kept in
+memory, so a line added to a file by hand shows after a restart.
+
+Game stats puts a game or a session on the date it **started** (the
+**Real time** table and its `Your min` column), so one that ran over
+midnight is on the day before there and in today here.
 
 ## Random day
 
@@ -461,10 +566,11 @@ closes it:
 
 - The game starts at **23:59 UTC of the day before**: the day itself is
   hidden, the days before it are visible.
-- The day ends at the **last minute of the American session**: 20:59
-  UTC in US summer time, 21:59 UTC in winter (docs/sessions.md). The
-  step that reaches or passes this minute ends the day. The step stops
-  exactly at the last minute even when the next candle is later.
+- The day ends **5 minutes before the close of the American session**
+  (17:00 New York, docs/sessions.md): at 20:55 UTC in US summer time,
+  21:55 UTC in winter. The step that reaches or passes this minute ends
+  the day. The step stops exactly at this minute even when the next
+  candle is later.
 - At the end every open position of every pair is closed at that minute
   with the normal close rule (a long at the low, a short at the high +
   spread), and every pending order is cancelled. The close reason of
@@ -517,7 +623,7 @@ A day can be played again as if that run never happened: the **Replay**
 button in the popup title, or right click -> **Replay day**. Both are
 there for a day game only, running or already finished.
 
-    Day 18-Aug-26 Tue  1:02:10   [Replay] [Future] [Notes] [✕]
+    Day 18-Aug-26 Tue  1:02:10   [↺] [▶▶] [»] [✎] [✕]
     ◀ ▶  18-Aug-26 14:35  replay
 
 - The day starts over from 23:59 UTC of the day before with the same
@@ -528,7 +634,7 @@ there for a day game only, running or already finished.
   not in **Game stats**, and its real time is counted nowhere. The end
   of the day says so in the app log:
 
-      Replay: day 18-Aug-26 Tue finished at 18-Aug-26 20:59, +12.0 pips
+      Replay: day 18-Aug-26 Tue finished at 18-Aug-26 20:55, +12.0 pips
       in 3 trade(s), real time 41:12, not in the game log
 
 - The **draft** drawing of the day is kept, unlike a fresh start of the
@@ -542,10 +648,56 @@ there for a day game only, running or already finished.
 - The time of a replay is in **your own time** of the session (see "Your
   own time" above); only the game log ignores a replay.
 
+### Random 14:00
+
+Right click the chart -> **Play random 14:00**, right under **Play
+random day**. Everything works like a random day - the same period, the
+same pick rule, the same end of the day, the same popup, notes,
+drawings, **Play next day** and **Replay day** - with two differences:
+the game starts in the afternoon, and it is counted apart from the day
+game.
+
+- The game starts at **14:00 UTC** in US summer time and at **15:00
+  UTC** in winter, that is 10:00 in New York the whole year. The switch
+  is the same one the American session uses (`SessionClock.UsSummer`,
+  docs/sessions.md).
+- Like a day game it starts one minute earlier, at 13:59 (14:59 in
+  winter), so nothing of the traded window is visible yet and the first
+  `P` step lands exactly on 14:00. The morning of the same day is
+  visible, unlike in a day game where the whole day is hidden.
+- The day ends where a day game ends: 5 minutes before the American
+  session closes, 20:55 UTC in summer, 21:55 in winter. So the window
+  is about 7 hours.
+- A day is a candidate when it has at least 60 candles of one visible
+  pair **between 14:00 and the end of the day** (a day game counts from
+  00:00).
+- The popup title says `14:00 18-Aug-26 Tue` instead of `Day 18-Aug-26
+  Tue`.
+- **Play next day** and **Replay day** keep the mode of the running
+  game: started from a 14:00 game they give the next (or the same) day
+  at 14:00 again.
+
+Own files, so the two games never mix:
+
+    day game                14:00 game
+    game-log.jsonl          game-log-1400.jsonl
+    game-days.json          game-days-1400.json
+
+So the play counts of the random pick, the statistics, the comment of
+the day and the two drawings of a day are separate per mode. The same
+date can be played as a day game and as a 14:00 game, each with its own
+comment, lines and count. **Your own time** (`game-time.jsonl`) is
+shared: it is one clock for the whole session, whatever is played.
+
+The mode is in the game state (`GameState.Mode`, `day` or `1400`), so it
+is per tab and survives a restart. A game saved before 2026-09-18 has no
+`Mode` and is read as a day game.
+
 ### Game log
 
-`game-log.jsonl` next to `config.json` (`AppConfig.Dir`), one JSON
-object per line, one line per finished day. A line is appended when the
+`game-log.jsonl` (`game-log-1400.jsonl` for the 14:00 game) next to
+`config.json` (`AppConfig.Dir`), one JSON object per line, one line per
+finished day. A line is appended when the
 day ends; a broken line (a crash in the middle of a write) is skipped on
 read and the next write starts on a new line. A replay writes no line at
 all.
@@ -555,7 +707,7 @@ all.
     EndedAt    real time the day ended
     Seconds    EndedAt - StartedAt
     FromUtc    game start, "2026-08-17 23:59"
-    ToUtc      game end, "2026-08-18 20:59"
+    ToUtc      game end, "2026-08-18 20:55"
     Pairs      the pairs of the game (visible and traded)
     Pips       sum of the closed trades
     Wins, Losses
@@ -605,7 +757,8 @@ items, so the menu stays short. Select, move, delete, clone and flatten
 work as for any line. Draft lines have the pair colour, day lines a
 darker shade of it. A hidden pair hides its game lines too.
 
-Storage: `game-days.json` next to `config.json`:
+Storage: `game-days.json` next to `config.json` (the 14:00 game uses
+`game-days-1400.json`, same format):
 
     { "2026-08-18": { "Comment": "...",
                       "Drawing": { "GBPUSD": [[[unix, value, 1], ...]] },
@@ -625,7 +778,8 @@ of `drawing.json`.
 
 ### Model
 
-`GameState` got `Day` (empty for a normal game), `EndUnix`, `StartedAt`,
+`GameState` got `Day` (empty for a normal game), `Mode` (`day` or
+`1400`), `EndUnix`, `StartedAt`,
 `EndedAt`, `Finished`, `NotesOpen`, `FutureOpen`, `Replay` and
 `ActiveSeconds` (your own time of this game). They are saved with the tab,
 so a random day survives a restart, finished or not, and a replay stays a
@@ -643,6 +797,12 @@ is enabled when a base pair is visible, like **Play random day**. The
 window shows a summary of `game-log.jsonl`. It is not modal, so it can
 stay open while you play, and it is refreshed when a day game ends.
 `Esc` closes it.
+
+**Game stats 14:00** right under it is the same window for the 14:00
+game: same blocks, same numbers, built from `game-log-1400.jsonl` and
+from the trading days that have candles after 14:00. Both windows can be
+open at once. Only the **Your time** block is common to them, it counts
+every game of the session.
 
 **Days** - the same period and the same trading days as the random pick
 (the history of the visible pairs is loaded first, loader reason
@@ -690,7 +850,8 @@ its trades nor its time are counted.
 `GameStats.Build` (`Game/GameStats.cs`) computes everything from the log
 entries and the list of trading days, `GameStatsWindow` only draws it.
 `MainWindow.ShowGameStatsAsync` builds the day list with
-`GameDayPicker.Candidates`, the same call the random pick uses.
+`GameDayPicker.Candidates`, the same call the random pick uses, and both
+take the mode, so the same code serves the day game and the 14:00 game.
 
 ## Model
 

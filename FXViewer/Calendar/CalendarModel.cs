@@ -51,5 +51,22 @@ public sealed class CalendarSettings
         return mask;
     }
 
+    public CalendarImpact? ShownLevel()
+    {
+        if (!ShowHighest || !ShowHigh) return null;
+        if (!ShowMedium) return ShowLow ? null : CalendarImpact.High;
+        return ShowLow ? CalendarImpact.Low : CalendarImpact.Medium;
+    }
+
+    public CalendarSettings WithLevel(CalendarImpact level)
+    {
+        var copy = Clone();
+        copy.ShowHighest = true;
+        copy.ShowHigh = true;
+        copy.ShowMedium = level is CalendarImpact.Medium or CalendarImpact.Low;
+        copy.ShowLow = level == CalendarImpact.Low;
+        return copy;
+    }
+
     public CalendarSettings Clone() => (CalendarSettings)MemberwiseClone();
 }

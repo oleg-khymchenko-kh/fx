@@ -15,10 +15,84 @@ public sealed class CandleHistory
     public AggBlock[][] Levels { get; }
 
     private volatile Candle[] _live = Array.Empty<Candle>();
+    private volatile Candle[] _liveHidden = Array.Empty<Candle>();
+    private volatile Candle[] _averageLive = Array.Empty<Candle>();
+    private volatile Candle[] _hiddenMinutes = Array.Empty<Candle>();
+    private Candle[]? _averageMinutes;
 
     public Candle[] Live => _live;
 
-    public void SetLive(Candle[] live) => _live = live ?? Array.Empty<Candle>();
+    public Candle[] LiveHidden => _liveHidden;
+
+    public Candle[] HiddenMinutes => _hiddenMinutes;
+
+    public Candle[] AverageLive => _averageLive;
+
+    public Candle[] AverageMinutes
+    {
+        get
+        {
+            var cached = Volatile.Read(ref _averageMinutes);
+            if (cached != null) return cached;
+            var hidden = _hiddenMinutes;
+            var merged = hidden.Length == 0 ? Minutes : MergeByTime(Minutes, hidden);
+            return Interlocked.CompareExchange(ref _averageMinutes, merged, null) ?? merged;
+        }
+    }
+
+    public void SetLive(Candle[] live, Candle[]? hidden = null)
+    {
+        live ??= Array.Empty<Candle>();
+        hidden ??= Array.Empty<Candle>();
+        _liveHidden = hidden;
+        _averageLive = AverageLiveOf(live, hidden);
+        _live = live;
+    }
+
+    public void SetHiddenMinutes(Candle[] hidden)
+    {
+        _hiddenMinutes = hidden ?? Array.Empty<Candle>();
+        Volatile.Write(ref _averageMinutes, null);
+        _averageLive = AverageLiveOf(_live, _liveHidden);
+    }
+
+    private Candle[] AverageLiveOf(Candle[] live, Candle[] hidden)
+    {
+        var merged = hidden.Length == 0 ? live : MergeByTime(live, hidden);
+        long loadedEnd = long.MinValue;
+        if (Minutes.Length > 0) loadedEnd = Minutes[^1].MinuteUnixSeconds;
+        var hiddenMinutes = _hiddenMinutes;
+        if (hiddenMinutes.Length > 0)
+            loadedEnd = Math.Max(loadedEnd, hiddenMinutes[^1].MinuteUnixSeconds);
+        int from = 0;
+        while (from < merged.Length && merged[from].MinuteUnixSeconds <= loadedEnd) from++;
+        return from == 0 ? merged : merged[from..];
+    }
+
+    public static Candle[] MergeByTime(Candle[] a, Candle[] b)
+    {
+        if (b.Length == 0) return a;
+        if (a.Length == 0) return b;
+        var result = new Candle[a.Length + b.Length];
+        int i = 0;
+        int j = 0;
+        int k = 0;
+        while (i < a.Length && j < b.Length)
+        {
+            long ta = a[i].MinuteUnixSeconds;
+            long tb = b[j].MinuteUnixSeconds;
+            if (ta < tb) result[k++] = a[i++];
+            else if (tb < ta) result[k++] = b[j++];
+            else
+            {
+                result[k++] = a[i++];
+                j++;
+            }
+        }
+        while (i < a.Length) result[k++] = a[i++];
+        while (j < b.Length) result[k++] = b[j++];
+        return k == result.Length ? result : result[..k];
+    }
 
     private volatile SpreadMark[] _hiddenSpreads = Array.Empty<SpreadMark>();
     private volatile SpreadMark[] _liveHiddenSpreads = Array.Empty<SpreadMark>();
@@ -126,6 +200,7 @@ public sealed class CandleHistory
     {
         next._hiddenSpreads = _hiddenSpreads;
         next._liveHiddenSpreads = _liveHiddenSpreads;
+        next._hiddenMinutes = _hiddenMinutes;
         return next;
     }
 

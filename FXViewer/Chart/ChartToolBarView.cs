@@ -2,6 +2,7 @@
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using FXViewer.Calendar;
 
 namespace FXViewer.Chart;
 
@@ -66,6 +67,8 @@ public sealed class ChartToolBarView : FrameworkElement
     public event Action? SettingsClick;
     public event Action? CalendarSettingsRequested;
     public event Action? CalendarFindRequested;
+    public event Action<CalendarImpact>? CalendarLevelSelected;
+    public Func<CalendarImpact?>? CalendarLevelChecked { get; set; }
     public event Action? ForecastReloadRequested;
 
     public ChartToolBarView()
@@ -98,6 +101,19 @@ public sealed class ChartToolBarView : FrameworkElement
             {
                 e.Handled = true;
                 var calMenu = new ContextMenu { PlacementTarget = this };
+                var checkedLevel = _calendarEnabled ? CalendarLevelChecked?.Invoke() : null;
+                foreach (var (header, level) in new[]
+                {
+                    ("High", CalendarImpact.High),
+                    ("Medium", CalendarImpact.Medium),
+                    ("Low", CalendarImpact.Low),
+                })
+                {
+                    var item = new MenuItem { Header = header, IsChecked = checkedLevel == level };
+                    item.Click += (_, _) => CalendarLevelSelected?.Invoke(level);
+                    calMenu.Items.Add(item);
+                }
+                calMenu.Items.Add(new Separator());
                 var settings = new MenuItem { Header = "Settings..." };
                 settings.Click += (_, _) => CalendarSettingsRequested?.Invoke();
                 calMenu.Items.Add(settings);

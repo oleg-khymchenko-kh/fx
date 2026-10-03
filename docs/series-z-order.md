@@ -107,6 +107,14 @@ A double click (`ClickCount > 1` on button down):
 - on empty space - `ClearSeriesHighlight` drops both the press and the
   latch, and every line goes back to normal.
 
+A single click on a dimmed pair raises it on top only for as long as it is
+not dimmed. `BeginSeriesPress` saves its old place in the order
+(`_orderRestoreSymbol`, `_orderRestoreIndex`). When the pair gets dimmed
+again (the press ends while another line is latched, or another line is
+pressed), `RestoreSeriesOrder` puts it back to that place and saves the
+order. If the highlight is gone instead (double click on empty space,
+Escape), or the pair itself gets latched, it stays on top.
+
 Escape does the same as a double click on empty space. It sits at the end
 of the Escape chain, after measure, popups, draw mode, the selected line
 and the range, so it only fires when nothing else is open.

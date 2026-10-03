@@ -215,8 +215,9 @@ The zoom level popup prints a line about it while the factor is not `1`:
 ## Notes
 
 A tab can also show a **note** - a saved screen with a frozen copy of the
-view state and its own drawing snapshot, see docs/notes.md. `ChartTab.NoteId`
-says which note the tab shows; empty means the tab uses the live drawings.
+view state, see docs/notes.md. `ChartTab.NoteId` says which note was opened
+in the tab last; empty means none. A note has no drawing data of its own:
+every tab shows the lines from `data/<SYMBOL>/drawing.json`.
 
 ## Play
 

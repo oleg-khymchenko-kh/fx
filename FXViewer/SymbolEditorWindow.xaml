@@ -199,7 +199,7 @@
                 <TextBox x:Name="VolumeGroupBox" Width="60" Height="26" VerticalContentAlignment="Center" />
                 <CheckBox x:Name="VolumeLockBox" Content="Lock (Alt+wheel does not change it)"
                           VerticalAlignment="Center" Margin="14,0,0,0" />
-                <CheckBox x:Name="VolumeSplitBox" Content="Split ask / bid by color"
+                <CheckBox x:Name="VolumeSplitBox" Content="Show buy / sell colors"
                           VerticalAlignment="Center" Margin="14,0,0,0" />
             </StackPanel>
             <StackPanel Orientation="Horizontal">
@@ -310,11 +310,19 @@
             <Border BorderBrush="#E0E0E0" BorderThickness="1" Padding="3">
                 <UniformGrid x:Name="ColorPanel" Rows="4" HorizontalAlignment="Left" />
             </Border>
-            <StackPanel x:Name="SellColorBlock" Visibility="Collapsed" Margin="0,8,0,0">
-                <TextBlock x:Name="SellColorLabel" Text="Sell color" Margin="0,0,0,4" />
-                <Border BorderBrush="#E0E0E0" BorderThickness="1" Padding="3">
-                    <UniformGrid x:Name="SellColorPanel" Rows="4" HorizontalAlignment="Left" />
-                </Border>
+            <StackPanel Orientation="Horizontal">
+                <StackPanel x:Name="SellColorBlock" Visibility="Collapsed" Margin="0,8,0,0">
+                    <TextBlock x:Name="SellColorLabel" Text="Sell color" Margin="0,0,0,4" />
+                    <Border BorderBrush="#E0E0E0" BorderThickness="1" Padding="3">
+                        <UniformGrid x:Name="SellColorPanel" Rows="4" HorizontalAlignment="Left" />
+                    </Border>
+                </StackPanel>
+                <StackPanel x:Name="NeutralColorBlock" Visibility="Collapsed" Margin="16,8,0,0">
+                    <TextBlock Text="Neutral color" Margin="0,0,0,4" />
+                    <Border BorderBrush="#E0E0E0" BorderThickness="1" Padding="3">
+                        <UniformGrid x:Name="NeutralColorPanel" Rows="4" HorizontalAlignment="Left" />
+                    </Border>
+                </StackPanel>
             </StackPanel>
         </StackPanel>
 

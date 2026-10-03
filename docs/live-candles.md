@@ -107,6 +107,9 @@ and the range closes.
   download.
 - **Reconnect after a drop.** The watermarks live on `LiveDbWriter`, not on `LiveState`, so
   `StopLive` clearing `_live` does not lose them.
+- **Spread of the bar-written range.** Bars carry no spread. Once the tail is merged, the connect
+  path fetches bid/ask ticks for the range the repair and the tail download just wrote and fills the
+  spread in the DB and in memory, see docs/spread.md "Automatic backfill after a reconnect".
 - **Range crossing a year boundary.** Nothing special. Both values are plain unix seconds, and every
   read and write path already picks the year file from the timestamp.
 - **Offline for weeks.** The open range is clamped to 14 days and catches up at one day per pass.

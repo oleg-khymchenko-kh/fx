@@ -1,5 +1,15 @@
 ﻿namespace FXViewer.Game;
 
+public static class GameModes
+{
+    public const string Day = "day";
+    public const string Afternoon = "1400";
+
+    public static bool IsAfternoon(string mode) => mode == Afternoon;
+
+    public static string Title(string mode) => IsAfternoon(mode) ? "14:00" : "day";
+}
+
 public static class GameActions
 {
     public const string Market = "market";
@@ -37,6 +47,7 @@ public sealed class GameState
     public int NextId { get; set; } = 1;
     public List<GameAction> Actions { get; set; } = new();
     public string Day { get; set; } = "";
+    public string Mode { get; set; } = GameModes.Day;
     public long EndUnix { get; set; }
     public DateTimeOffset? StartedAt { get; set; }
     public DateTimeOffset? EndedAt { get; set; }
@@ -58,6 +69,7 @@ public sealed class GameState
         NextId = NextId,
         Actions = Actions.Select(a => a.Clone()).ToList(),
         Day = Day,
+        Mode = Mode,
         EndUnix = EndUnix,
         StartedAt = StartedAt,
         EndedAt = EndedAt,

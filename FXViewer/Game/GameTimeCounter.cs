@@ -21,6 +21,7 @@ public sealed class GameTimeCounter
     public bool Held { get; set; }
     public double AwayAt { get; private set; }
     public GameAwayReason Reason { get; private set; }
+    public double Mark => _mark;
 
     public void Start(double now)
     {

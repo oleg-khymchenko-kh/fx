@@ -56,9 +56,11 @@ public partial class MainWindow
     {
         if (_timeSession == null) return;
         double now = UserPresence.Seconds();
+        var wallNow = DateTimeOffset.Now;
         bool wasAway = _timeCounter.Away;
         double delta = _timeCounter.Step(now, UserPresence.IdleSeconds(), UserPresence.AppInFront());
         if (_timeCounter.Held) return;
+        if (delta > 0) AddTimeSpan(_timeSession, now, wallNow, delta);
         if (delta > 0 && _activeTab.Game is { Playing: true } game)
         {
             game.ActiveSeconds += delta;
@@ -75,6 +77,13 @@ public partial class MainWindow
         var since = GameClockNow().AddSeconds(_timeCounter.AwayAt - now);
         AppendLog($"Play: your time stopped at {since:HH:mm:ss} because {AwayText(_timeCounter.Reason)}");
         AskStillHere(_timeCounter.Reason, since);
+    }
+
+    private void AddTimeSpan(GameTimeSession session, double now, DateTimeOffset wallNow, double delta)
+    {
+        var to = wallNow.AddSeconds(_timeCounter.Mark - now);
+        string mode = _activeTab.Game is { Playing: true } game && game.IsDayGame() ? game.Mode : "";
+        GameTimeSpans.Add(session.Spans, mode, to.AddSeconds(-delta), to);
     }
 
     private void AskStillHere(GameAwayReason reason, DateTimeOffset since)
@@ -120,6 +129,20 @@ public partial class MainWindow
         foreach (Window window in Application.Current.Windows)
             if (window.IsActive && window.IsVisible) return window;
         return this;
+    }
+
+    private string PlayedText(GameState game)
+    {
+        if (!game.IsDayGame()) return "";
+        var logs = new Dictionary<string, List<GameLogEntry>>(StringComparer.Ordinal)
+        {
+            [GameModes.Day] = GameLogOf(GameModes.Day),
+            [GameModes.Afternoon] = GameLogOf(GameModes.Afternoon),
+        };
+        var running = _timeSession?.Spans ?? new List<GameTimeSpan>();
+        return GamePlayedCounter
+            .Count(game.Mode, logs, GameTimes, running, DateTimeOffset.Now, new DateTimeOffset(DateTime.Today))
+            .Text(game.Mode, ClockText);
     }
 
     private string OwnTimeText() => _timeSession == null

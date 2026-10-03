@@ -100,6 +100,70 @@ moves on to the next pair. Rules per window:
 - the run is cancellable and shares `_historyCts` with the other
   downloads, so it cannot run next to a history download.
 
+The window read passes `includeWide: true`, so with "Hide wide spread
+minutes" on the backfill still reaches the minutes the flag hides. It
+did not until 2026-09-17: a night the live writer missed was flagged
+wide for having no spread, and the reader-level filter then kept those
+minutes away from the very job meant to fill them.
+
+## Automatic backfill after a reconnect
+
+Every connect - the startup one and every reconnect after a drop -
+writes some minutes from trendbars: the repair of the provisional range
+and the tail download in `ConnectAndStreamAsync`. Those minutes have no
+spread. Until 2026-09-17 they stayed that way until somebody pressed
+"Backfill spread"; a PC that slept through the night left a hole of
+hours in every pair (GBPUSD 2026-09-15 20:01..00:30 UTC was the case
+that triggered this).
+
+Both bar writers now report the earliest minute they wrote
+(`NoteGapSpread`, called from `RepairProvisionalAsync` and from the
+tail branch of `DownloadHistoryAsync`; the notes are cleared at the
+start of every connect, so the per-minute repairs between two connects
+never count). Once the live stream is up and the tail is merged,
+`ConnectAndStreamAsync` starts `BackfillGapSpreadAsync` without
+awaiting it. The run walks the base pairs in `SymbolConfigs` order:
+
+- the range is `[earliest bar minute, now]`, floored at
+  `SpreadBackfillDays` days like the button;
+- a range whose minutes all have a spread already is skipped without a
+  request and without a log line - a short drop repairs only live
+  minutes, and those carry their own spread;
+- otherwise it logs `GBPUSD: 258 minutes without spread in the reconnect
+  gap 2026-09-15 20:01..2026-09-16 00:31 UTC, fetching ticks` and runs
+  the same `SpreadBackfill.RunAsync` as the button, so the per window
+  lines and the stop after three empty windows are the same;
+- it does not take `_historyCts`: the live writer keeps writing while
+  the ticks download, so a minute that closes during the download is not
+  handed to the repair path without its spread. The run is skipped with
+  one log line when a history download or a `_dbBusy` job is running at
+  that moment;
+- a drop cancels it (`_gapSpreadCts`), and `DisconnectAsync` waits for
+  it the way it waits for the repair task, so a new connect never runs
+  next to the old run.
+
+After each pair the minutes of the range are read back
+(`includeWide: true`) and patched into memory without a chart reload,
+the way the volume collector does it (`PatchSpread`):
+
+- the loaded base series is spliced through `PatchLoadedMinutes`
+  (`WithReplacedRange` + `PatchSeriesHistory`, shared with the volume
+  patch now);
+- the live tail (`LiveState.Closed`) is patched in place through
+  `LiveTailPatch.Apply` and pushed again. Minutes of the range that are
+  in the DB but not in the tail - the wide-hidden ones the tail merge
+  skipped - are inserted by `LiveTailPatch.InsertMissing`, restricted
+  to minutes after the base series end and before the open minute, so
+  `PushLiveTail` decides anew which of them stay hidden.
+
+Limits: the loaded series is not patched in "Show ask" mode, because
+there the prices themselves depend on the spread; a loaded minute whose
+new spread crosses the wide threshold keeps its current visibility; and
+a minute the per-minute repair fills from a bar in the middle of a
+session (a post-close minute the live path never opened) still gets no
+spread until "Backfill spread" is pressed. The next chart load settles
+all three.
+
 ## Checking the result
 
 "Verify DB" prints one line per pair:

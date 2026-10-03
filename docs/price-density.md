@@ -47,8 +47,9 @@ and the color.
   At zoomed-out levels one screen column holds several minutes; the
   profile is recomputed per column, anchored at the column's last
   minute.
-- Live provisional candles are not in the dense array, so they are not
-  counted.
+- Live candles count too: the profile walks `MinuteSequence.Of(history)`,
+  the dense array followed by the live tail newer than its last minute
+  (since 2026-09-16; before that only the dense array was counted).
 - Only loaded history counts: if lazy loading has not brought the whole
   window into memory, the profile uses what is loaded. Picking the
   all-history option (key 0) asks the loader for the full history of

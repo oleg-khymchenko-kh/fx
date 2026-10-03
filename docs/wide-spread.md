@@ -119,12 +119,22 @@ minute that was never downloaded:
   else that reads the loaded series follow automatically, because the
   minute simply is not there.
 
-## The moving averages always skip them
+## The moving averages use a corrected price
 
-The `Average` and `AverageBand` indicators drop a flagged minute from
-their window whatever this setting says, so their lines never carry a
-post-close spike and look the same with the setting on or off. See
-docs/moving-average.md.
+The `Average` and `AverageBand` indicators never take the raw price of a
+flagged minute, whatever this setting says, so their lines never carry a
+post-close spike and look the same with the setting on or off:
+
+- a plain average (no volume) uses the minute with a corrected bid,
+  `real bid + (spread - 1 pip) / 2` (with the ask shown: that bid +
+  1 pip). A flagged minute without a known spread is skipped;
+- a volume weighted average skips the minute.
+
+With the setting on, the hidden minutes still reach the averages: the
+load paths keep them in `CandleHistory.HiddenMinutes` and the live tail
+in `CandleHistory.LiveHidden`, and an average reads the merged
+`AverageMinutes` / `AverageLive`. See docs/moving-average.md, "Wide
+spread minutes".
 
 ## The Spread panel is the exception
 
@@ -138,8 +148,11 @@ spread survives, as a `SpreadMark` (unix second + tenths of a pip):
 - the chart load paths read with `includeWide: true`
   (`CandleDatabase.ReadRange`) and split the result in
   `SeriesDataLoader.SplitHidden`: the visible minutes go into the series,
-  the hidden ones become marks in `CandleHistory.HiddenSpreads`;
-- the live tail does the same into `LiveHiddenSpreads`;
+  the hidden ones become marks in `CandleHistory.HiddenSpreads` (and,
+  for the moving averages only, full candles in
+  `CandleHistory.HiddenMinutes`, see above);
+- the live tail does the same into `LiveHiddenSpreads` (and
+  `LiveHidden`);
 - `SpreadColumns.Build` folds both arrays over the columns it already
   built from the minutes or the rollup blocks, taking the maximum like
   everywhere else. So a column that has nothing but hidden minutes still
@@ -150,8 +163,9 @@ is nothing to draw - so the panel simply has a hole there, the same hole
 it had before.
 
 The marks carry no prices, so they cannot leak into a high, a low or a
-mirror base by accident. `WithReplacedRange` carries them over, which is
-what keeps them alive through a volume patch or an average rebuild.
+mirror base by accident. `HiddenMinutes` do carry prices, but only the
+moving averages read them. `WithReplacedRange` carries both over, which
+is what keeps them alive through a volume patch or an average rebuild.
 
 When the setting is off nothing is split: the minutes stay in the series
 and the panel reads them the old way.
@@ -174,8 +188,10 @@ used by the download bookkeeping, and the volume at price store
   be flagged.
 - A whole night that the live writer missed is hidden completely once
   the trendbar download fills it, because every one of its minutes lands
-  inside the window without a spread. Running "Backfill spread" over
-  those days brings the narrow minutes back.
+  inside the window without a spread. The tick backfill that runs after
+  a reconnect (docs/spread.md) brings the narrow minutes back, and so
+  does "Backfill spread" for older days; both read the hidden minutes
+  through `includeWide: true`.
 - An ask pair (docs/ask-symbol.md) is not in the measured set, so its
   own file only gets the flag from a stored spread.
 - No visual marker for a wide minute while the setting is off.

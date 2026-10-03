@@ -412,7 +412,7 @@ public sealed class SeriesDataLoader : IDisposable
             });
             if (snap == null) return;
             List<Candle> chunk;
-            SpreadMark[] hiddenChunk;
+            List<Candle> hiddenChunk;
             if (snap.History.Minutes.Length == 0)
             {
                 chunk = raw;
@@ -422,13 +422,13 @@ public sealed class SeriesDataLoader : IDisposable
             {
                 long first = snap.History.Minutes[0].MinuteUnixSeconds;
                 chunk = raw.Where(c => c.MinuteUnixSeconds < first).ToList();
-                hiddenChunk = rawHidden.Where(m => m.UnixSeconds < first).ToArray();
+                hiddenChunk = rawHidden.Where(c => c.MinuteUnixSeconds < first).ToList();
             }
             else
             {
                 long last = snap.History.Minutes[^1].MinuteUnixSeconds;
                 chunk = raw.Where(c => c.MinuteUnixSeconds > last).ToList();
-                hiddenChunk = rawHidden.Where(m => m.UnixSeconds > last).ToArray();
+                hiddenChunk = rawHidden.Where(c => c.MinuteUnixSeconds > last).ToList();
             }
             if (chunk.Count == 0)
             {
@@ -445,21 +445,24 @@ public sealed class SeriesDataLoader : IDisposable
             var newHistory = prepend
                 ? snap.History.WithReplacedRange(0, 0, transformed)
                 : snap.History.WithReplacedRange(snap.History.Minutes.Length, 0, transformed);
+            var hiddenMarks = CandleHistory.MarksOf(hiddenChunk);
             newHistory.SetHiddenSpreads(prepend
-                ? CandleHistory.MergeMarks(hiddenChunk, snap.History.HiddenSpreads)
-                : CandleHistory.MergeMarks(snap.History.HiddenSpreads, hiddenChunk));
+                ? CandleHistory.MergeMarks(hiddenMarks, snap.History.HiddenSpreads)
+                : CandleHistory.MergeMarks(snap.History.HiddenSpreads, hiddenMarks));
+            newHistory.SetHiddenMinutes(CandleHistory.MergeByTime(snap.History.HiddenMinutes,
+                CandleTransforms.TransformWith(hiddenChunk, st.PipPoints, st.Mirror, mb)));
             var newTransform = newBase ? new SeriesTransform(true, mb, st.PipPoints) : null;
             ct.ThrowIfCancellationRequested();
             SetProgress(job, "averages");
             var avgWatch = Stopwatch.StartNew();
-            var averages = AverageSeries.Rebuild(snap.Averages, newHistory.Minutes);
+            var averages = AverageSeries.Rebuild(snap.Averages, newHistory.AverageMinutes);
             long avgMs = avgWatch.ElapsedMilliseconds;
             bool committed = await _dispatcher.InvokeAsync(() =>
             {
                 if (_cts.IsCancellationRequested) return false;
                 var s = _chart.GetSeries(st.Symbol);
                 if (s == null || !ReferenceEquals(s.History, snap.History)) return false;
-                newHistory.SetLive(s.History.Live);
+                newHistory.SetLive(s.History.Live, s.History.LiveHidden);
                 if (s.History.HasLastTick) newHistory.SetLastTick(s.History.LastTick);
                 _chart.ReplaceSeries(st.Symbol, newHistory, newTransform, averages);
                 if (newBase) _mirrorBaseComputed(st.Symbol, mb);
@@ -520,9 +523,9 @@ public sealed class SeriesDataLoader : IDisposable
     internal static List<Candle> ReadYears(CandleDatabase db, string symbol, int yearLo, int yearHi) =>
         db.ReadRange(symbol, YearStart(yearLo), YearEnd(yearHi), includeWide: true);
 
-    internal static (List<Candle> Minutes, SpreadMark[] Hidden) SplitHidden(List<Candle> candles)
+    internal static (List<Candle> Minutes, List<Candle> Hidden) SplitHidden(List<Candle> candles)
     {
-        if (!WideSpreadRule.Hide) return (candles, Array.Empty<SpreadMark>());
+        if (!WideSpreadRule.Hide) return (candles, new List<Candle>());
         var minutes = new List<Candle>(candles.Count);
         var hidden = new List<Candle>();
         foreach (var c in candles)
@@ -530,7 +533,7 @@ public sealed class SeriesDataLoader : IDisposable
             if (c.WideSpread) hidden.Add(c);
             else minutes.Add(c);
         }
-        return (minutes, CandleHistory.MarksOf(hidden));
+        return (minutes, hidden);
     }
 
     internal static long ChartToSource(long chartUnix, long shiftDelta)

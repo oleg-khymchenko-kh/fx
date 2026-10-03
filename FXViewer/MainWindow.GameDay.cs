@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Security.Cryptography;
 using System.Windows.Threading;
 using FXViewer.Chart;
@@ -13,16 +13,35 @@ public partial class MainWindow
     private const string GameDrawingSeparator = " · ";
     private const double DayDrawingShade = 0.55;
 
-    private GameDayStore? _gameDays;
-    private List<GameLogEntry>? _gameLog;
+    private readonly Dictionary<string, GameDayStore> _gameDayStores = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<GameLogEntry>> _gameLogs = new(StringComparer.Ordinal);
     private DispatcherTimer? _gameClock;
     private bool _dayStartBusy;
 
-    private GameDayStore GameDays => _gameDays ??= GameDayStore.Load();
+    private GameDayStore DayStore(string mode)
+    {
+        if (!_gameDayStores.TryGetValue(mode, out var store))
+        {
+            store = GameDayStore.Load(mode);
+            _gameDayStores[mode] = store;
+        }
+        return store;
+    }
 
-    private List<GameLogEntry> GameLog => _gameLog ??= GameLogStore.Load();
+    private List<GameLogEntry> GameLogOf(string mode)
+    {
+        if (!_gameLogs.TryGetValue(mode, out var log))
+        {
+            log = GameLogStore.Load(mode);
+            _gameLogs[mode] = log;
+        }
+        return log;
+    }
 
-    private Task PlayRandomDayAsync() => RunDayStartAsync("Play random day", StartRandomDayAsync);
+    private static string RandomMenuName(string mode) => "Play random " + GameModes.Title(mode);
+
+    private Task PlayRandomDayAsync(string mode) =>
+        RunDayStartAsync(RandomMenuName(mode), () => StartRandomDayAsync(mode));
 
     private Task PlayNextDayAsync() => RunDayStartAsync("Play next day", StartNextDayAsync);
 
@@ -79,6 +98,7 @@ public partial class MainWindow
             AppendLog("Play next day: no day game in this tab");
             return;
         }
+        string mode = game.Mode;
         var today = GameToday();
         var last = GameDayPicker.LastDay(today);
         if (!GameDayPicker.HasNextDay(played, today))
@@ -89,37 +109,40 @@ public partial class MainWindow
         var first = played.AddDays(1);
         var pairs = await DayGamePairsAsync("Play next day", first, last, "next day");
         if (pairs == null) return;
-        var next = GameDayPicker.NextDay(played, last, pairs.Select(GameMinutes).ToList());
+        var next = GameDayPicker.NextDay(played, last, pairs.Select(GameMinutes).ToList(), mode);
         if (next == null)
         {
             AppendLog($"Play next day: no day with candles from {GameDayPicker.Key(first)} " +
                 $"to {GameDayPicker.Key(last)} for {string.Join(", ", pairs)}");
             return;
         }
-        StartDayGame(next.Value);
-        AppendLog($"Play next day {DayTitle(next.Value)} after {DayTitle(played)}: {string.Join(", ", pairs)}");
+        StartDayGame(next.Value, mode);
+        AppendLog($"Play next day {DayTitle(next.Value)} after {DayTitle(played)}, " +
+            $"{GameModes.Title(mode)} game: {string.Join(", ", pairs)}");
     }
 
-    private async Task StartRandomDayAsync()
+    private async Task StartRandomDayAsync(string mode)
     {
+        string name = RandomMenuName(mode);
         var first = GameDayPicker.FirstDay;
         var last = GameDayPicker.LastDay(GameToday());
-        var pairs = await DayGamePairsAsync("Play random day", first, last, "random day");
+        var pairs = await DayGamePairsAsync(name, first, last, "random day");
         if (pairs == null) return;
-        var days = GameDayPicker.Candidates(first, last, pairs.Select(GameMinutes).ToList());
-        var pick = GameDayPicker.Pick(days, GameLogStore.PlayCounts(GameLog), RandomNumberGenerator.GetInt32);
+        var days = GameDayPicker.Candidates(first, last, pairs.Select(GameMinutes).ToList(), mode);
+        var pick = GameDayPicker.Pick(days, GameLogStore.PlayCounts(GameLogOf(mode)),
+            RandomNumberGenerator.GetInt32);
         if (pick == null)
         {
-            AppendLog($"Play random day: no day with candles from {GameDayPicker.Key(first)} " +
+            AppendLog($"{name}: no day with candles from {GameDayPicker.Key(first)} " +
                 $"to {GameDayPicker.Key(last)} for {string.Join(", ", pairs)}");
             return;
         }
-        StartDayGame(pick.Day);
-        AppendLog($"Play random day {DayTitle(pick.Day)}: {string.Join(", ", pairs)}; " +
+        StartDayGame(pick.Day, mode);
+        AppendLog($"{name} {DayTitle(pick.Day)}: {string.Join(", ", pairs)}; " +
             $"period {GameDayPicker.Key(first)} .. {GameDayPicker.Key(last)}, {days.Count} trading days " +
             $"({GameDayPicker.Key(days[0])} .. {GameDayPicker.Key(days[^1])}), " +
             $"drawn #{pick.Index} of 0..{pick.Pool - 1} among the days played {pick.Plays} time(s)");
-        new GameDayPickWindow(first, last, days.Count, pick) { Owner = this }.ShowDialog();
+        new GameDayPickWindow(name, first, last, days.Count, pick) { Owner = this }.ShowDialog();
     }
 
     private async Task StartReplayDayAsync()
@@ -136,21 +159,22 @@ public partial class MainWindow
             AppendLog("Replay day: the game changed while the history was loading, nothing started");
             return;
         }
-        StartDayGame(day, true);
-        AppendLog($"Replay day {DayTitle(day)}: {string.Join(", ", pairs)}; " +
+        StartDayGame(day, game.Mode, true);
+        AppendLog($"Replay {GameModes.Title(game.Mode)} {DayTitle(day)}: {string.Join(", ", pairs)}; " +
             "not written to the game log, the draft drawing is kept");
     }
 
-    private void StartDayGame(DateOnly date, bool replay = false)
+    private void StartDayGame(DateOnly date, string mode, bool replay = false)
     {
         string day = GameDayPicker.Key(date);
-        long start = GameDayPicker.StartUnix(date) - ChartColumns.MinuteSeconds;
+        long start = GameDayPicker.StartUnix(date, mode) - ChartColumns.MinuteSeconds;
         var old = _activeTab.Game;
         _gameWindow?.Panel.FlushComment();
         _activeTab.Game = new GameState
         {
             Playing = true,
             Day = day,
+            Mode = mode,
             Replay = replay,
             StartUnix = start,
             TimeUnix = start,
@@ -161,14 +185,34 @@ public partial class MainWindow
         };
         if (!replay)
         {
-            GameDays.ClearDraft(day);
-            SaveGameDays();
+            DayStore(mode).ClearDraft(day);
+            SaveGameDays(mode);
         }
         _gameDirty = true;
         RefreshGame(true);
     }
 
-    private void FinishDay(GameState game)
+    private void FinishDayNow()
+    {
+        var game = ActiveGame;
+        if (game == null) return;
+        if (!game.IsDayGame())
+        {
+            StepPlay(1);
+            return;
+        }
+        if (game.Finished)
+        {
+            if (!game.FutureOpen) ToggleFuture();
+            return;
+        }
+        AppendLog($"Play: {GameModes.Title(game.Mode)} {DayTitle(game.Day)} played to the end from " +
+            $"{GameTimeText(game.TimeUnix)}, the rest of the day is shown");
+        game.FutureOpen = true;
+        FinishDay(game, false);
+    }
+
+    private void FinishDay(GameState game, bool follow = true)
     {
         game.TimeUnix = game.EndUnix;
         foreach (var book in GameBooks(game))
@@ -184,8 +228,8 @@ public partial class MainWindow
             if (_timeSession != null) _timeSession.Games++;
             try
             {
-                var log = GameLog;
-                GameLogStore.Append(entry);
+                var log = GameLogOf(game.Mode);
+                GameLogStore.Append(game.Mode, entry);
                 log.Add(entry);
             }
             catch (Exception ex)
@@ -194,9 +238,10 @@ public partial class MainWindow
             }
         }
         _gameDirty = true;
-        RefreshGame(true);
-        if (!game.Replay) RefreshGameStats();
-        AppendLog($"{(game.Replay ? "Replay" : "Play")}: day {DayTitle(game.Day)} finished at " +
+        RefreshGame(follow);
+        if (!game.Replay) RefreshGameStats(game.Mode);
+        AppendLog($"{(game.Replay ? "Replay" : "Play")}: {GameModes.Title(game.Mode)} " +
+            $"{DayTitle(game.Day)} finished at " +
             $"{GameTimeText(game.EndUnix)}, {PipsText(books.Sum(b => b.Result.ClosedPips))} pips " +
             $"in {entry.Trades.Count} trade(s), real time {ElapsedText(game)}" +
             (game.Replay ? ", not in the game log" : ""));
@@ -213,14 +258,16 @@ public partial class MainWindow
 
     private void SaveDayComment(string day, string text)
     {
-        if (GameDays.Comment(day) == text) return;
-        GameDays.SetComment(day, text);
-        SaveGameDays();
+        string mode = ActiveGame?.Mode ?? GameModes.Day;
+        var store = DayStore(mode);
+        if (store.Comment(day) == text) return;
+        store.SetComment(day, text);
+        SaveGameDays(mode);
     }
 
-    private void SaveGameDays()
+    private void SaveGameDays(string mode)
     {
-        try { GameDays.Save(); }
+        try { DayStore(mode).Save(); }
         catch (Exception ex) { AppendLog("Game days save failed: " + ex.Message); }
     }
 
@@ -232,18 +279,18 @@ public partial class MainWindow
         {
             var source = Chart.GetSeries(pair);
             if (source?.Transform == null) continue;
-            list.Add(GameDrawingOf(game.Day, GameDrawingLayers.Draft, source, source.ColorArgb));
+            list.Add(GameDrawingOf(game, GameDrawingLayers.Draft, source, source.ColorArgb));
             if (game.NotesOpen)
-                list.Add(GameDrawingOf(game.Day, GameDrawingLayers.Day, source,
+                list.Add(GameDrawingOf(game, GameDrawingLayers.Day, source,
                     Shade(source.ColorArgb, DayDrawingShade)));
         }
         return list;
     }
 
-    private SymbolSeries GameDrawingOf(string day, string layer, SymbolSeries source, int color) =>
+    private SymbolSeries GameDrawingOf(GameState game, string layer, SymbolSeries source, int color) =>
         new(source.Symbol + GameDrawingSeparator + layer, CandleHistory.Build(Array.Empty<Candle>()), color,
             source.PipPoints, false, null, source.Transform, source.Symbol,
-            GameDays.Lines(day, layer, source.Symbol))
+            DayStore(game.Mode).Lines(game.Day, layer, source.Symbol))
         {
             PriceMul = source.PriceMul,
             GameDrawing = layer,
@@ -285,8 +332,8 @@ public partial class MainWindow
             AppendLog($"{series.Symbol}: no random day game in this tab, line discarded");
             return;
         }
-        GameDays.SetLines(game.Day, series.GameDrawing, series.SourceSymbol, lines);
-        SaveGameDays();
+        DayStore(game.Mode).SetLines(game.Day, series.GameDrawing, series.SourceSymbol, lines);
+        SaveGameDays(game.Mode);
         Chart.ReplaceDrawing(series.Symbol, lines);
     }
 
@@ -318,6 +365,7 @@ public partial class MainWindow
         if (panel == null) return;
         if (game is { Finished: false, StartedAt: not null }) panel.SetElapsed(ElapsedText(game));
         panel.SetOwnTime(OwnTimeText());
+        panel.SetPlayed(PlayedText(game));
     }
 
     private static DateTimeOffset GameClockNow()
@@ -334,6 +382,9 @@ public partial class MainWindow
         GameDayPicker.Parse(game.Day) is { } day && GameDayPicker.HasNextDay(day, GameToday());
 
     private static DateOnly GameToday() => DateOnly.FromDateTime(DateTime.Today);
+
+    private static string GamePanelTitle(GameState game) =>
+        (GameModes.IsAfternoon(game.Mode) ? GameModes.Title(game.Mode) : "Day") + " " + DayTitle(game.Day);
 
     private static string DayTitle(string day) =>
         GameDayPicker.Parse(day) is { } date ? DayTitle(date) : day;

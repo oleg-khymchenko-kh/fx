@@ -202,6 +202,17 @@ flag these live in `AppConfig.Calendar` - one setting for all tabs.
 Hidden levels are skipped by hover and by the popup too, not only by the
 renderer.
 
+The same menu starts with three levels, one of them checked:
+
+- `High` - highest and high.
+- `Medium` - highest, high and medium.
+- `Low` - all levels.
+
+A level writes the same flags as `Settings...` (holidays and zoom stay as
+they are) and turns the calendar on. Clicking the checked level turns the
+calendar off. The check shows only while the calendar is on and the
+flags match one of the three levels.
+
 Every checkbox applies at once: each click raises `SettingsChanged`, and
 `MainWindow` saves the config and pushes the new settings into the chart
 right away, so the lines change behind the still-open window. The window

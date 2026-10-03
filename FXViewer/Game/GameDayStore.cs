@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text.Json;
 using FXViewer.Compute;
 using FXViewer.Storage;
@@ -25,30 +25,38 @@ public sealed class GameDayRecord
 
 public sealed class GameDayStore
 {
-    private const string FileName = "game-days.json";
+    private const string DayFileName = "game-days.json";
+    private const string AfternoonFileName = "game-days-1400.json";
 
     private readonly Dictionary<string, GameDayRecord> _days;
     private readonly Dictionary<(string Day, string Layer, string Pair), PivotPoint[][]> _lines = new();
+    private readonly string _path;
 
-    private GameDayStore(Dictionary<string, GameDayRecord> days) => _days = days;
-
-    private static string FilePath => Path.Combine(AppConfig.Dir, FileName);
-
-    public static GameDayStore Load()
+    private GameDayStore(string path, Dictionary<string, GameDayRecord> days)
     {
+        _path = path;
+        _days = days;
+    }
+
+    private static string PathOf(string mode) =>
+        Path.Combine(AppConfig.Dir, GameModes.IsAfternoon(mode) ? AfternoonFileName : DayFileName);
+
+    public static GameDayStore Load(string mode)
+    {
+        string path = PathOf(mode);
         var empty = new Dictionary<string, GameDayRecord>(StringComparer.Ordinal);
-        if (!File.Exists(FilePath)) return new GameDayStore(empty);
+        if (!File.Exists(path)) return new GameDayStore(path, empty);
         try
         {
-            var days = JsonSerializer.Deserialize<Dictionary<string, GameDayRecord>>(File.ReadAllText(FilePath));
-            return new GameDayStore(days == null
+            var days = JsonSerializer.Deserialize<Dictionary<string, GameDayRecord>>(File.ReadAllText(path));
+            return new GameDayStore(path, days == null
                 ? empty
                 : new Dictionary<string, GameDayRecord>(days, StringComparer.Ordinal));
         }
         catch
         {
-            try { File.Move(FilePath, FilePath + ".bad", true); } catch { }
-            return new GameDayStore(empty);
+            try { File.Move(path, path + ".bad", true); } catch { }
+            return new GameDayStore(path, empty);
         }
     }
 
@@ -89,9 +97,9 @@ public sealed class GameDayStore
             .OrderBy(x => x.Key, StringComparer.Ordinal)
             .ToDictionary(x => x.Key, x => x.Value);
         Directory.CreateDirectory(AppConfig.Dir);
-        var tmp = FilePath + ".tmp";
+        var tmp = _path + ".tmp";
         File.WriteAllText(tmp, JsonSerializer.Serialize(days, new JsonSerializerOptions { WriteIndented = true }));
-        File.Move(tmp, FilePath, true);
+        File.Move(tmp, _path, true);
     }
 
     private GameDayRecord Record(string day)

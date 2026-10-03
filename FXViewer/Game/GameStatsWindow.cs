@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -20,9 +20,9 @@ public sealed class GameStatsWindow : Window
 
     private readonly StackPanel _body = new() { Margin = new Thickness(18, 4, 18, 14) };
 
-    public GameStatsWindow()
+    public GameStatsWindow(string title)
     {
-        Title = "Game stats";
+        Title = title;
         SizeToContent = SizeToContent.WidthAndHeight;
         MaxHeight = Math.Max(320, SystemParameters.WorkArea.Height - 40);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;

@@ -1,9 +1,10 @@
 # Real volume in the candle record
 
-Status: implemented, v5 (v1 read an external CSV; v2 moved the volume
+Status: implemented, v6 (v1 read an external CSV; v2 moved the volume
 into the pair's candles; v3 fills it live from Sierra Chart; v4 merged
 the Volume profile indicator into Volume; v5 pinned the bar height so
-zoom never changes it).
+zoom never changes it; v6 draws the volume in a neutral gray and the
+buy / sell delta in color).
 
 ## Goal
 
@@ -196,14 +197,58 @@ Spread panel. 40 px band; columns with no known volume draw nothing.
 The bottom panel stack starts at the last chart row, so the lowest
 panel's bars sit flush with the bottom edge with no gap.
 
-When the source has per-pip profiles (docs/volume-at-price.md) and
-`Split ask / bid by color` is on, each bar keeps its full height but
-carries the bid share on top in the indicator's second color. The
-option is in the Add / Edit dialog; turning it off paints every bar in
-one color. The rollup levels carry `VolumeSum` (-1 = none), so
-zoomed-out views fold blocks instead of rescanning minutes. The
-cursor readout shows the hovered column's contracts in the symbol
-bar.
+A bar is gray (the neutral color) for its full height, and its bottom
+part shows the delta in color, see "Colors (v6)". The rollup levels
+carry `VolumeSum` (-1 = none), so zoomed-out views fold blocks instead
+of rescanning minutes. The cursor readout shows the hovered column's
+contracts in the symbol bar.
+
+## Colors (v6)
+
+The indicator has three colors, all set in the Add / Edit dialog:
+
+| Dialog label | Config field | Meaning |
+|---|---|---|
+| Buy color | `ColorArgb` | aggressive buys (ask side) |
+| Sell color | `SellColorArgb` | aggressive sells (bid side) |
+| Neutral color | `NeutralColorArgb` | total volume, default gray `#BDBDBD` |
+
+The neutral color is picked from eight shades of gray. A config
+written before v6 has no `NeutralColorArgb` and gets the default gray.
+
+The delta is buy volume minus sell volume, taken from the
+volume-at-price store (docs/volume-at-price.md), in contracts:
+
+- bottom bar: the whole bar is gray, as tall as the total volume. The
+  bottom part of the bar, `|delta|` tall in the same scale, is painted
+  in the buy color when buys are bigger and in the sell color when
+  sells are bigger;
+- right-edge lookback profile (and the selection profile): each level
+  is a gray bar as long as the total volume at that level. The part at
+  the right edge, `|delta|` of that level long in the same scale, is
+  painted in the buy or sell color. Both parts stay translucent, and
+  each has a solid edge at its outer end, so the delta reads as its
+  own small profile inside the gray one;
+- the candle profile under the cursor (the small opaque one) is not
+  changed: it still splits each level into the buy part at the edge
+  and the sell part outside.
+
+The delta always belongs to the same group the bar shows: the group
+under the column when zoomed in, or the tallest group of the column
+when zoomed out (see "Bar height"). Before v6 the bid share was taken
+from the whole column, so a zoomed-out bar mixed the peak group's
+height with the column's split, and a 15-minute bar at 1-minute zoom
+showed a different split in every column. The cursor readout prints
+the same group's delta.
+
+Volume without a profile record has no known delta and stays gray,
+so history older than the tick data is all gray. A group where only
+part of the minutes have a profile shows only their delta.
+
+`Show buy / sell colors` in the dialog (the old `Split ask / bid by
+color`, config field `VolumeSplitSides`) turns the delta off: the bars
+and the lookback profile are then only gray, and the candle profile is
+drawn in the buy color alone, as before.
 
 ## Bar height (v5)
 
@@ -256,9 +301,9 @@ per column" profile. The rollup levels carry that per-minute maximum
 (`AggBlock.VolumeMax`), so the zoomed-out view folds blocks instead of
 rescanning minutes.
 
-The cursor readout and the ask/bid split follow the same rule: the
-number in the symbol bar is the group the bar shows, and the split
-uses the ask/bid share of the column.
+The cursor readout and the delta follow the same rule: the number in
+the symbol bar is the group the bar shows, and the delta is the delta
+of that group (see "Colors (v6)").
 
 ## Grouping
 
@@ -294,8 +339,9 @@ over the chart's own wheel meaning, including the `Alt` rotation of
 the tilted grid; `Ctrl` and `Shift` there keep their chart meaning.
 
 The row shows the current group and a `*` when locked, e.g.
-`EU Volume 15m*: 12,345`, followed by the column's aggressor delta
-(ask minus bid) when the profile covers it, e.g. `12,345  +1,230`.
+`EU Volume 15m*: 12,345`, followed by the aggressor delta (ask minus
+bid) of the group the bar shows when the profile covers it, e.g.
+`12,345  +1,230`.
 
 The bar measures its width from a fixed-width placeholder value, not
 from the number currently under the cursor, so the panel never
@@ -314,13 +360,26 @@ pip level. Two profiles sit on top of each other:
 
 - the lookback profile, translucent with a solid edge, over the
   window picked by keys 1-9 (0 = all history) - this is what the old
-  "Volume profile" indicator drew;
+  "Volume profile" indicator drew. Since v6 it is gray with the delta
+  of each level in color at the right edge (see "Colors (v6)");
 - the candle profile, opaque, over the group under the cursor only.
+  It keeps the buy / sell split of v2.
 
 Both use the same scale, so the candle profile is nested inside the
 lookback one - a mini profile inside the profile. A level with volume
 is at least 1 px wide, so a 15-minute group against a 5-day window
 still shows as a thin sliver marking where that candle traded.
+
+Both profiles read the source pair's loaded minutes followed by its
+live tail (`MinuteSequence.Of(history)`: `History.Minutes`, then the
+`History.Live` candles newer than the last loaded minute). The tail
+holds every minute closed since the last chart load, so the candle
+under the cursor keeps its per-pip profile as the day goes on and the
+lookback window keeps growing. Until 2026-09-16 the overlay saw only
+`History.Minutes`: from the last chart load on, the cursor candle came
+back empty and the lookback froze, and only a restart (a fresh load)
+brought them back, while the `.vap` store and the in-memory
+`ProfileSet` were complete all along.
 
 That scale starts as "the lookback maximum fills 120 px" and keeps
 following the data until the first `Ctrl` + wheel over the indicator's

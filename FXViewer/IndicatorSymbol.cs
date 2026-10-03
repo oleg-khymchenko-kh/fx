@@ -55,7 +55,9 @@ public sealed class IndicatorSymbol
     public bool VolumeSplitSides { get; set; } = true;
     public int ColorArgb { get; set; } = unchecked((int)0xFFFF8C00);
     public int SellColorArgb { get; set; } = unchecked((int)0xFF00ACC1);
+    public int NeutralColorArgb { get; set; } = DefaultNeutralColorArgb;
 
+    public const int DefaultNeutralColorArgb = unchecked((int)0xFFBDBDBD);
     public const int DefaultLimit1Pips = 50;
     public const int DefaultLimit2Pips = 20;
     public const int DefaultLimit2DelayMinutes = 90;
@@ -203,6 +205,7 @@ public sealed class IndicatorSymbol
         VolumeSplitSides = VolumeSplitSides,
         ColorArgb = ColorArgb,
         SellColorArgb = SellColorArgb,
+        NeutralColorArgb = NeutralColorArgb,
     };
 
     public bool SameData(IndicatorSymbol other)
@@ -231,7 +234,8 @@ public sealed class IndicatorSymbol
         if (IndicatorTypes.IsDrawing(Type) || IndicatorTypes.IsShift(Type)
             || IndicatorTypes.IsDeals(Type) || IndicatorTypes.IsDensity(Type)
             || IndicatorTypes.IsSpread(Type) || IndicatorTypes.IsVolume(Type)
-            || IndicatorTypes.IsOrderBook(Type) || IndicatorTypes.IsLevels(Type)) return true;
+            || IndicatorTypes.IsOrderBook(Type) || IndicatorTypes.IsLevels(Type)
+            || IndicatorTypes.IsTradingCentral(Type)) return true;
         return Limit1Pips == other.Limit1Pips
             && Limit2Pips == other.Limit2Pips
             && Limit2DelayMinutes == other.Limit2DelayMinutes;
@@ -280,11 +284,12 @@ public static class IndicatorTypes
     public const string OpenPositions = "OpenPositions";
     public const string MarketDepth = "MarketDepth";
     public const string Levels = "Levels";
+    public const string TradingCentral = "TradingCentral";
 
     public static readonly string[] All =
     {
         ZigZag, Average, AverageBand, Shift, Drawing, Index, Currency, EntryPoints, PriceAge, Deals, Density,
-        Spread, Volume, PendingOrders, OpenPositions, MarketDepth, Levels,
+        Spread, Volume, PendingOrders, OpenPositions, MarketDepth, Levels, TradingCentral,
     };
 
     public static bool IsDrawing(string type) =>
@@ -331,9 +336,13 @@ public static class IndicatorTypes
     public static bool IsLevels(string type) =>
         string.Equals(type, Levels, StringComparison.OrdinalIgnoreCase);
 
+    public static bool IsTradingCentral(string type) =>
+        string.Equals(type, TradingCentral, StringComparison.OrdinalIgnoreCase);
+
     public static bool HasStorage(string type) =>
         !IsDrawing(type) && !IsShift(type) && !IsDeals(type) && !IsDensity(type) && !IsSpread(type)
-        && !IsVolume(type) && !IsOrderBook(type) && !IsAverage(type) && !IsLevels(type);
+        && !IsVolume(type) && !IsOrderBook(type) && !IsAverage(type) && !IsLevels(type)
+        && !IsTradingCentral(type);
 
     public static bool IsZigZag(string type) =>
         string.Equals(type, ZigZag, StringComparison.OrdinalIgnoreCase);
@@ -369,6 +378,7 @@ public static class IndicatorTypes
         : IsMarketDepth(type) ? "Market depth"
         : IsLevels(type) ? "ZigZag levels"
         : IsAverageBand(type) ? "Average max/min/avg"
+        : IsTradingCentral(type) ? "Trading Central"
         : type;
 
     public static string FromLabel(string label) =>
@@ -446,5 +456,13 @@ public static class IndicatorPalette
         unchecked((int)0xFF9E9D24), unchecked((int)0xFFF9A825),
         unchecked((int)0xFFEF6C00), unchecked((int)0xFFD84315),
         unchecked((int)0xFF4E342E), unchecked((int)0xFF37474F),
+    };
+
+    public static readonly int[] Grays =
+    {
+        unchecked((int)0xFFEEEEEE), unchecked((int)0xFFE0E0E0),
+        unchecked((int)0xFFBDBDBD), unchecked((int)0xFF9E9E9E),
+        unchecked((int)0xFF757575), unchecked((int)0xFF616161),
+        unchecked((int)0xFF424242), unchecked((int)0xFF212121),
     };
 }

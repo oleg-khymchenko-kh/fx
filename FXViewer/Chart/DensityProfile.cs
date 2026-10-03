@@ -20,7 +20,7 @@ public static class DensityProfile
 
     private const double WeightEpsilon = 1e-9;
 
-    public static DensityHistogram Build(Candle[] minutes, long anchorUnix, int windowBars)
+    public static DensityHistogram Build(MinuteSequence minutes, long anchorUnix, int windowBars)
     {
         int anchor = UpperBound(minutes, anchorUnix) - 1;
         if (anchor < 0 || windowBars <= 0)
@@ -30,21 +30,23 @@ public static class DensityProfile
         int hi = int.MinValue;
         for (int i = start; i <= anchor; i++)
         {
-            int a = PipLevel(minutes[i].Min);
-            int b = PipLevel(minutes[i].Max);
+            var candle = minutes[i];
+            int a = PipLevel(candle.Min);
+            int b = PipLevel(candle.Max);
             if (a < lo) lo = a;
             if (b > hi) hi = b;
         }
         var diff = new double[hi - lo + 2];
         for (int i = start; i <= anchor; i++)
         {
-            diff[PipLevel(minutes[i].Min) - lo]++;
-            diff[PipLevel(minutes[i].Max) - lo + 1]--;
+            var candle = minutes[i];
+            diff[PipLevel(candle.Min) - lo]++;
+            diff[PipLevel(candle.Max) - lo + 1]--;
         }
         return FromDiff(diff, lo, anchor);
     }
 
-    public static DensityHistogram BuildWeighted(Candle[] minutes, long anchorUnix, int windowBars)
+    public static DensityHistogram BuildWeighted(MinuteSequence minutes, long anchorUnix, int windowBars)
     {
         int anchor = UpperBound(minutes, anchorUnix) - 1;
         if (anchor < 0 || windowBars <= 0)
@@ -52,7 +54,7 @@ public static class DensityProfile
         return Weighted(minutes, Math.Max(0, anchor - windowBars + 1), anchor);
     }
 
-    public static DensityHistogram BuildWeightedRange(Candle[] minutes, long fromUnix, long toUnix)
+    public static DensityHistogram BuildWeightedRange(MinuteSequence minutes, long fromUnix, long toUnix)
     {
         int last = UpperBound(minutes, toUnix) - 1;
         int start = UpperBound(minutes, fromUnix - 1);
@@ -61,7 +63,7 @@ public static class DensityProfile
         return Weighted(minutes, start, last);
     }
 
-    public static DensityHistogram BuildProfiled(Candle[] minutes, ProfileSet profiles,
+    public static DensityHistogram BuildProfiled(MinuteSequence minutes, ProfileSet profiles,
         long anchorUnix, int windowBars, SeriesTransform? transform = null)
     {
         int anchor = UpperBound(minutes, anchorUnix) - 1;
@@ -70,7 +72,7 @@ public static class DensityProfile
         return Profiled(minutes, profiles, Math.Max(0, anchor - windowBars + 1), anchor, transform);
     }
 
-    public static DensityHistogram BuildProfiledRange(Candle[] minutes, ProfileSet profiles,
+    public static DensityHistogram BuildProfiledRange(MinuteSequence minutes, ProfileSet profiles,
         long fromUnix, long toUnix, SeriesTransform? transform = null)
     {
         int last = UpperBound(minutes, toUnix) - 1;
@@ -83,7 +85,7 @@ public static class DensityProfile
     public static int StoredPipToDisplay(SeriesTransform? transform, int storedPip) =>
         transform == null ? storedPip : PipLevel(transform.ToDisplay(storedPip * PipPoints));
 
-    private static DensityHistogram Profiled(Candle[] minutes, ProfileSet profiles, int start, int end,
+    private static DensityHistogram Profiled(MinuteSequence minutes, ProfileSet profiles, int start, int end,
         SeriesTransform? transform)
     {
         int lo = int.MaxValue;
@@ -92,7 +94,8 @@ public static class DensityProfile
         int cursor = scan;
         for (int i = start; i <= end; i++)
         {
-            long minute = minutes[i].MinuteUnixSeconds;
+            var candle = minutes[i];
+            long minute = candle.MinuteUnixSeconds;
             while (cursor < profiles.Count && profiles.MinuteUnix[cursor] < minute) cursor++;
             if (cursor < profiles.Count && profiles.MinuteUnix[cursor] == minute)
             {
@@ -104,10 +107,10 @@ public static class DensityProfile
                 if (a < lo) lo = a;
                 if (b > hi) hi = b;
             }
-            else if (minutes[i].HasVolume && minutes[i].Volume > 0)
+            else if (candle.HasVolume && candle.Volume > 0)
             {
-                int a = PipLevel(minutes[i].Min);
-                int b = PipLevel(minutes[i].Max);
+                int a = PipLevel(candle.Min);
+                int b = PipLevel(candle.Max);
                 if (a < lo) lo = a;
                 if (b > hi) hi = b;
             }
@@ -120,7 +123,8 @@ public static class DensityProfile
         cursor = scan;
         for (int i = start; i <= end; i++)
         {
-            long minute = minutes[i].MinuteUnixSeconds;
+            var candle = minutes[i];
+            long minute = candle.MinuteUnixSeconds;
             while (cursor < profiles.Count && profiles.MinuteUnix[cursor] < minute) cursor++;
             if (cursor < profiles.Count && profiles.MinuteUnix[cursor] == minute)
             {
@@ -141,11 +145,11 @@ public static class DensityProfile
                 }
                 anySides = true;
             }
-            else if (minutes[i].HasVolume && minutes[i].Volume > 0)
+            else if (candle.HasVolume && candle.Volume > 0)
             {
-                int a = PipLevel(minutes[i].Min);
-                int b = PipLevel(minutes[i].Max);
-                double share = (double)minutes[i].Volume / (b - a + 1);
+                int a = PipLevel(candle.Min);
+                int b = PipLevel(candle.Max);
+                double share = (double)candle.Volume / (b - a + 1);
                 diff[a - lo] += share;
                 diff[b - lo + 1] -= share;
             }
@@ -171,24 +175,26 @@ public static class DensityProfile
         return counts;
     }
 
-    private static DensityHistogram Weighted(Candle[] minutes, int start, int end)
+    private static DensityHistogram Weighted(MinuteSequence minutes, int start, int end)
     {
         int lo = int.MaxValue;
         int hi = int.MinValue;
         for (int i = start; i <= end; i++)
         {
-            int a = PipLevel(minutes[i].Min);
-            int b = PipLevel(minutes[i].Max);
+            var candle = minutes[i];
+            int a = PipLevel(candle.Min);
+            int b = PipLevel(candle.Max);
             if (a < lo) lo = a;
             if (b > hi) hi = b;
         }
         var diff = new double[hi - lo + 2];
         for (int i = start; i <= end; i++)
         {
-            if (!minutes[i].HasVolume || minutes[i].Volume <= 0) continue;
-            int a = PipLevel(minutes[i].Min);
-            int b = PipLevel(minutes[i].Max);
-            double share = (double)minutes[i].Volume / (b - a + 1);
+            var candle = minutes[i];
+            if (!candle.HasVolume || candle.Volume <= 0) continue;
+            int a = PipLevel(candle.Min);
+            int b = PipLevel(candle.Max);
+            double share = (double)candle.Volume / (b - a + 1);
             diff[a - lo] += share;
             diff[b - lo + 1] -= share;
         }
@@ -249,10 +255,10 @@ public static class DensityProfile
 
     public static int PipLevel(int points) => (points + PipPoints / 2) / PipPoints;
 
-    public static int CountInRange(Candle[] minutes, long fromUnix, long toUnix) =>
+    public static int CountInRange(MinuteSequence minutes, long fromUnix, long toUnix) =>
         UpperBound(minutes, toUnix) - UpperBound(minutes, fromUnix - 1);
 
-    private static int UpperBound(Candle[] minutes, long unixSeconds)
+    private static int UpperBound(MinuteSequence minutes, long unixSeconds)
     {
         int lo = 0;
         int hi = minutes.Length;

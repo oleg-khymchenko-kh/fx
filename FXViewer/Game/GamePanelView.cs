@@ -30,6 +30,7 @@ public sealed record GamePanelData(string Time, IReadOnlyList<GamePanelPair> Pai
     public bool FutureOpen { get; init; }
     public bool Replay { get; init; }
     public string OwnTime { get; init; } = "";
+    public string Played { get; init; } = "";
     public bool Locked { get; init; }
     public IReadOnlyList<GamePanelComment> Comments { get; init; } = Array.Empty<GamePanelComment>();
 }
@@ -112,7 +113,22 @@ public sealed class GamePanelView : Border
             + "FXViewer is in front. A minute without input, or in the background, stops it.",
     };
 
+    private readonly TextBlock _played = new()
+    {
+        FontSize = 11,
+        FontFamily = Mono,
+        Foreground = MutedBrush,
+        Margin = new Thickness(0, 2, 0, 0),
+        Visibility = Visibility.Collapsed,
+        ToolTip = "Day and 14:00 are counted separately, these lines are for the mode of the game on the tab.\n"
+            + "Games: finished games, by the real time the day ended. A stopped game and a replay are not "
+            + "counted.\n"
+            + "Own time: your time at the keyboard with FXViewer in front while a game of this mode was on, "
+            + "the time between games and replays included.",
+    };
+
     private readonly Button _replayButton;
+    private readonly Button _finishDayButton;
     private readonly Button _futureButton;
     private readonly Button _notesButton;
     private readonly List<Button> _stepButtons = new();
@@ -176,6 +192,7 @@ public sealed class GamePanelView : Border
     public event Action? NotesToggled;
     public event Action? FutureToggled;
     public event Action? ReplayRequested;
+    public event Action? FinishDayRequested;
     public event Action<string, string>? CommentChanged;
 
     public GamePanelView()
@@ -198,6 +215,7 @@ public sealed class GamePanelView : Border
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var titleRow = new Grid();
         titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -205,32 +223,38 @@ public sealed class GamePanelView : Border
         titleRow.Children.Add(_title);
         titleRow.Children.Add(_elapsed);
         header.Children.Add(titleRow);
-        _replayButton = SmallButton("Replay",
-            "Play this day again from the start. A replay is not written to the game log: it does not count "
-            + "for the random pick and is not in Game stats. The draft drawing is kept.",
+        _replayButton = IconButton("↺", "Replay - play this day again from the start. A replay is not written "
+            + "to the game log: it does not count for the random pick and is not in Game stats. The draft "
+            + "drawing is kept.",
             () => ReplayRequested?.Invoke());
         _replayButton.Margin = new Thickness(0, 0, 6, 0);
         _replayButton.Visibility = Visibility.Collapsed;
         Grid.SetColumn(_replayButton, 1);
         header.Children.Add(_replayButton);
-        _futureButton = SmallButton("Future",
-            "Show or hide the history after the play minute, the rest of the day and everything after it. "
-            + "The game does not end: you keep stepping and trading from the play minute, marked on the "
-            + "chart by a dashed line while the future is shown.",
+        _finishDayButton = IconButton("▶▶", "Ctrl+P - play the day to the end. Open positions and orders are "
+            + "closed at the last minute and the rest of the day is shown.",
+            () => FinishDayRequested?.Invoke());
+        _finishDayButton.Margin = new Thickness(0, 0, 6, 0);
+        _finishDayButton.Visibility = Visibility.Collapsed;
+        Grid.SetColumn(_finishDayButton, 2);
+        header.Children.Add(_finishDayButton);
+        _futureButton = IconButton("»", "Future - show or hide the history after the play minute, the rest of "
+            + "the day and everything after it. The game does not end: you keep stepping and trading from the "
+            + "play minute, marked on the chart by a dashed line while the future is shown.",
             () => FutureToggled?.Invoke());
         _futureButton.Margin = new Thickness(0, 0, 6, 0);
-        Grid.SetColumn(_futureButton, 2);
+        Grid.SetColumn(_futureButton, 3);
         header.Children.Add(_futureButton);
-        _notesButton = SmallButton("Notes",
-            "Show or hide the comment and the day drawing of this day. They are hidden while you play.",
+        _notesButton = IconButton("✎",
+            "Notes - show or hide the comment and the day drawing of this day. They are hidden while you play.",
             () => NotesToggled?.Invoke());
         _notesButton.Margin = new Thickness(0, 0, 6, 0);
         _notesButton.Visibility = Visibility.Collapsed;
-        Grid.SetColumn(_notesButton, 3);
+        Grid.SetColumn(_notesButton, 4);
         header.Children.Add(_notesButton);
         var close = SmallButton("✕", "Stop the game (same as Play in the chart menu)",
             () => StopPlayRequested?.Invoke());
-        Grid.SetColumn(close, 4);
+        Grid.SetColumn(close, 5);
         header.Children.Add(close);
         var timeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
         _stepButtons.Add(SmallButton("◀", "O - one minute back", () => StepRequested?.Invoke(-1)));
@@ -250,6 +274,7 @@ public sealed class GamePanelView : Border
         var body = new StackPanel();
         body.Children.Add(header);
         body.Children.Add(timeRow);
+        body.Children.Add(_played);
         body.Children.Add(_pairs);
         body.Children.Add(pipsRow);
         body.Children.Add(new Border
@@ -319,6 +344,12 @@ public sealed class GamePanelView : Border
     public void SetElapsed(string text) => _elapsed.Text = text;
 
     public void SetOwnTime(string text) => _ownTime.Text = text;
+
+    public void SetPlayed(string text)
+    {
+        _played.Text = text;
+        _played.Visibility = text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
 
     public void FlushComment()
     {
@@ -411,10 +442,13 @@ public sealed class GamePanelView : Border
         _elapsed.Text = data.Elapsed;
         foreach (var step in _stepButtons) step.IsEnabled = !data.Locked;
         _replayButton.Visibility = data.Day.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        _finishDayButton.Visibility = data.Day.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        _finishDayButton.IsEnabled = !data.Locked;
         _replayMark.Visibility = data.Replay ? Visibility.Visible : Visibility.Collapsed;
         _futureButton.FontWeight = data.FutureOpen ? FontWeights.Bold : FontWeights.Normal;
         _futureMark.Visibility = data.FutureOpen ? Visibility.Visible : Visibility.Collapsed;
         _ownTime.Text = data.OwnTime;
+        SetPlayed(data.Played);
         ShowNotes(data);
         _time.Text = data.Time;
         if (!_stopBox.IsFocused)
@@ -662,6 +696,16 @@ public sealed class GamePanelView : Border
         VerticalAlignment = VerticalAlignment.Center,
         Margin = new Thickness(left, 0, 3, 0),
     };
+
+    private static Button IconButton(string glyph, string tip, Action action)
+    {
+        var button = SmallButton(glyph, tip, action);
+        button.FontFamily = new FontFamily("Segoe UI Symbol");
+        button.FontSize = 12;
+        button.MinWidth = 24;
+        button.Padding = new Thickness(2, 0, 2, 0);
+        return button;
+    }
 
     private static Button SmallButton(string text, string tip, Action action)
     {

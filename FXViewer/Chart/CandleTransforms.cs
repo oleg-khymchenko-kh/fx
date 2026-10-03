@@ -57,6 +57,11 @@ public static class CandleTransforms
         return result;
     }
 
+    public static Candle[] TransformWith(List<Candle> candles, int pipPoints, bool mirror, long mirrorBase) =>
+        candles.Count == 0 || (mirror && mirrorBase == 0)
+            ? Array.Empty<Candle>()
+            : Transform(candles, pipPoints, mirror, out _, mirrorBase);
+
     public static int ScalePoints(int points, int pipPoints) =>
         (int)(((long)points * 10 + pipPoints / 2) / pipPoints);
 }

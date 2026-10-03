@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\FXViewer\Compute\ZigZagSymbol.cs" Link="FXViewer\ZigZagSymbol.cs" />
+    <Compile Include="..\..\FXViewer\Storage\Candle.cs" Link="FXViewer\Candle.cs" />
+    <Compile Include="..\..\FXViewer\Storage\SpreadCodes.cs" Link="FXViewer\SpreadCodes.cs" />
+    <Compile Include="..\..\FXViewer\Storage\DrawingStore.cs" Link="FXViewer\DrawingStore.cs" />
+    <Compile Include="..\..\FXViewer\Chart\WeekendCompressor.cs" Link="FXViewer\WeekendCompressor.cs" />
+    <Compile Include="..\..\FXViewer\Chart\SessionClock.cs" Link="FXViewer\SessionClock.cs" />
+  </ItemGroup>
+
+</Project>

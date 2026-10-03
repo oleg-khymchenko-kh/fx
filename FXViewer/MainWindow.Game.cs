@@ -18,10 +18,11 @@ public partial class MainWindow
     private void InitGame()
     {
         Chart.PlayToggleRequested += TogglePlay;
-        Chart.PlayRandomDayRequested += () => _ = PlayRandomDayAsync();
+        Chart.PlayRandomDayRequested += mode => _ = PlayRandomDayAsync(mode);
         Chart.PlayNextDayRequested += () => _ = PlayNextDayAsync();
         Chart.PlayReplayDayRequested += () => _ = ReplayDayAsync();
-        Chart.GameStatsRequested += () => _ = ShowGameStatsAsync(true);
+        Chart.PlayFinishDayRequested += FinishDayNow;
+        Chart.GameStatsRequested += mode => _ = ShowGameStatsAsync(mode, true);
         Chart.PlayStepRequested += StepPlay;
         Chart.PlayOrderRequested += OpenPlayOrder;
         Chart.SeriesReplaced += symbol =>
@@ -43,8 +44,10 @@ public partial class MainWindow
         window.Panel.NotesToggled += ToggleDayNotes;
         window.Panel.FutureToggled += ToggleFuture;
         window.Panel.ReplayRequested += () => _ = ReplayDayAsync();
+        window.Panel.FinishDayRequested += FinishDayNow;
         window.Panel.CommentChanged += SaveDayComment;
         window.StepRequested += StepPlay;
+        window.FinishDayRequested += FinishDayNow;
         window.Moved += (left, top) =>
         {
             _config.GamePanelLeft = left;
@@ -326,15 +329,16 @@ public partial class MainWindow
             PipsText(closed), PipsText(open), PipsText(closed + open), closed + open, stats,
             game.StopPips, game.TakePips)
         {
-            Title = day ? "Day " + DayTitle(game.Day) : "Play",
+            Title = day ? GamePanelTitle(game) : "Play",
             Elapsed = ElapsedText(game),
             Day = game.Day,
-            Comment = day ? GameDays.Comment(game.Day) : "",
+            Comment = day ? DayStore(game.Mode).Comment(game.Day) : "",
             Comments = day ? DayComments(game.Day) : Array.Empty<GamePanelComment>(),
             NotesOpen = day && game.NotesOpen,
             FutureOpen = game.FutureOpen,
             Replay = day && game.Replay,
             OwnTime = OwnTimeText(),
+            Played = PlayedText(game),
             Locked = game.Finished,
         };
     }

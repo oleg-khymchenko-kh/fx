@@ -30,16 +30,17 @@ public static class VolumeColumns
         long groupSec = Math.Max(1, groupMinutes) * ChartColumns.MinuteSeconds;
         var edges = ChartColumns.ColumnEdges(map, columnSeconds, firstBucket, count, maxUnix);
         int columnLevel = ChartColumns.LevelFor(columnSeconds, map);
+        var set = new VolumeColumnSet(columns, bid, ask);
         if (groupSec <= ChartColumns.MinuteSeconds && columnLevel >= 0)
         {
             MaxBlocks(history.Levels[columnLevel], edges, columns);
             MaxMinutes(history.Live, edges, columns);
+            PeakMinuteSides(history, profiles, edges, set);
         }
         else
         {
-            MaxGroups(history, map, groupSec, edges, columns);
+            MaxGroups(history, profiles, map, groupSec, edges, set);
         }
-        FillSides(profiles, edges, bid, ask);
         for (int c = 0; c < count && maxUnix != long.MaxValue; c++)
         {
             if (edges[c] < maxUnix) continue;
@@ -47,7 +48,7 @@ public static class VolumeColumns
             bid[c] = 0L;
             ask[c] = 0L;
         }
-        return new VolumeColumnSet(columns, bid, ask);
+        return set;
     }
 
     private static void MaxBlocks(AggBlock[] blocks, long[] edges, long[] columns)
@@ -73,10 +74,10 @@ public static class VolumeColumns
         }
     }
 
-    private static void MaxGroups(CandleHistory history, WeekendCompressor? map, long groupSec,
-        long[] edges, long[] columns)
+    private static void MaxGroups(CandleHistory history, ProfileSet? profiles, WeekendCompressor? map,
+        long groupSec, long[] edges, VolumeColumnSet set)
     {
-        int count = columns.Length;
+        int count = set.Total.Length;
         long from = edges[0] - edges[0] % groupSec;
         long toExcl = edges[count] - 1;
         toExcl = toExcl - toExcl % groupSec + groupSec;
@@ -88,6 +89,7 @@ public static class VolumeColumns
         int bi = LowerBound(blocks, from);
         int mi = LowerBound(minutes, from);
         int li = LowerBound(live, from);
+        int pi = profiles?.LowerBound(from) ?? 0;
         long groupStart = long.MinValue;
         long groupSum = -1;
         int cursor = 0;
@@ -117,40 +119,81 @@ public static class VolumeColumns
             long start = t - t % groupSec;
             if (start != groupStart)
             {
-                Emit(edges, columns, ref cursor, groupStart, groupSec, groupSum);
+                Emit(edges, set, ref cursor, profiles, ref pi, groupStart, groupSec, groupSum);
                 groupStart = start;
                 groupSum = -1;
             }
             if (v >= 0) groupSum = Math.Max(groupSum, 0) + v;
         }
-        Emit(edges, columns, ref cursor, groupStart, groupSec, groupSum);
+        Emit(edges, set, ref cursor, profiles, ref pi, groupStart, groupSec, groupSum);
     }
 
-    private static void Emit(long[] edges, long[] columns, ref int cursor,
-        long groupStart, long groupSec, long groupSum)
+    private static void Emit(long[] edges, VolumeColumnSet set, ref int cursor,
+        ProfileSet? profiles, ref int profileCursor, long groupStart, long groupSec, long groupSum)
     {
         if (groupStart == long.MinValue || groupSum < 0) return;
         long groupEnd = groupStart + groupSec;
+        var (bid, ask) = SumSides(profiles, ref profileCursor, groupStart, groupEnd);
+        var columns = set.Total;
         while (cursor < columns.Length && edges[cursor + 1] <= groupStart) cursor++;
         for (int c = cursor; c < columns.Length && edges[c] < groupEnd; c++)
-            if (groupSum > columns[c]) columns[c] = groupSum;
-    }
-
-    private static void FillSides(ProfileSet? profiles, long[] edges, long[] bid, long[] ask)
-    {
-        if (profiles == null || profiles.Count == 0) return;
-        int i = profiles.LowerBound(edges[0]);
-        for (int b = 0; b < bid.Length && i < profiles.Count; b++)
         {
-            long hi = edges[b + 1];
-            for (; i < profiles.Count && profiles.MinuteUnix[i] < hi; i++)
-                for (int c = profiles.Start[i]; c < profiles.Start[i + 1]; c++)
-                {
-                    bid[b] += profiles.Bid[c];
-                    ask[b] += profiles.Ask[c];
-                }
+            if (groupSum <= columns[c]) continue;
+            columns[c] = groupSum;
+            set.Bid[c] = bid;
+            set.Ask[c] = ask;
         }
     }
+
+    private static (long Bid, long Ask) SumSides(ProfileSet? profiles, ref int cursor,
+        long fromUnix, long toExclUnix)
+    {
+        if (profiles == null) return (0, 0);
+        while (cursor < profiles.Count && profiles.MinuteUnix[cursor] < fromUnix) cursor++;
+        long bid = 0;
+        long ask = 0;
+        for (; cursor < profiles.Count && profiles.MinuteUnix[cursor] < toExclUnix; cursor++)
+            for (int c = profiles.Start[cursor]; c < profiles.Start[cursor + 1]; c++)
+            {
+                bid += profiles.Bid[c];
+                ask += profiles.Ask[c];
+            }
+        return (bid, ask);
+    }
+
+    private static void PeakMinuteSides(CandleHistory history, ProfileSet? profiles, long[] edges,
+        VolumeColumnSet set)
+    {
+        if (profiles == null || profiles.Count == 0) return;
+        var minutes = history.Minutes;
+        var live = history.Live;
+        int i = profiles.LowerBound(edges[0]);
+        if (i >= profiles.Count) return;
+        int mi = LowerBound(minutes, profiles.MinuteUnix[i]);
+        int li = LowerBound(live, profiles.MinuteUnix[i]);
+        var columns = set.Total;
+        for (int c = 0; c < columns.Length && i < profiles.Count; c++)
+        {
+            long hi = edges[c + 1];
+            bool found = columns[c] < 0;
+            for (; i < profiles.Count && profiles.MinuteUnix[i] < hi; i++)
+            {
+                if (found) continue;
+                long minute = profiles.MinuteUnix[i];
+                while (mi < minutes.Length && minutes[mi].MinuteUnixSeconds < minute) mi++;
+                while (li < live.Length && live[li].MinuteUnixSeconds < minute) li++;
+                if (!HasVolume(minutes, mi, minute, columns[c]) && !HasVolume(live, li, minute, columns[c]))
+                    continue;
+                int cursor = i;
+                (set.Bid[c], set.Ask[c]) = SumSides(profiles, ref cursor, minute, minute + 1);
+                found = true;
+            }
+        }
+    }
+
+    private static bool HasVolume(Candle[] candles, int index, long minuteUnix, long volume) =>
+        index < candles.Length && candles[index].MinuteUnixSeconds == minuteUnix
+        && candles[index].HasVolume && candles[index].Volume == volume;
 
     private static int LowerBound(Candle[] minutes, long unixSeconds)
     {

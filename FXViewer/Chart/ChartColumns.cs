@@ -192,17 +192,18 @@ public static class ChartColumns
 
     public static (ChartSeries View, int[] Chosen, bool[] FullRange) BuildLine(CandleHistory history,
         long columnSeconds, long firstBucket, int count, WeekendCompressor? map, int lookback,
-        int noiseThreshold, long maxUnix = long.MaxValue)
+        int noiseThreshold, long maxUnix = long.MaxValue, CandleHistory? extension = null)
     {
         int run = MinuteRun(columnSeconds);
         if (run == 1)
         {
-            var view = BuildView(history, columnSeconds, firstBucket, count, map, maxUnix);
+            var view = BuildExtendedView(history, extension, columnSeconds, firstBucket, count, map, maxUnix);
             var (values, fullRange) = LineDecimator.ChooseValues(view.Columns, lookback, noiseThreshold);
             return (view, values, fullRange);
         }
         long minuteFirst = MinuteBucket(firstBucket, run);
-        var minutes = BuildView(history, MinuteSeconds, minuteFirst, MinuteCount(count, run), map, maxUnix);
+        var minutes = BuildExtendedView(
+            history, extension, MinuteSeconds, minuteFirst, MinuteCount(count, run), map, maxUnix);
         var (minuteChosen, minuteFullRange) = LineDecimator.ChooseValues(minutes.Columns, lookback, noiseThreshold);
         return (
             new ChartSeries(
@@ -210,6 +211,27 @@ public static class ChartColumns
                 columnSeconds, firstBucket),
             Expand(minuteChosen, minuteFirst, run, firstBucket, count, 0),
             ExpandOnce(minuteFullRange, minuteFirst, run, firstBucket, count));
+    }
+
+    private static ChartSeries BuildExtendedView(CandleHistory history, CandleHistory? extension,
+        long columnSeconds, long firstBucket, int count, WeekendCompressor? map, long maxUnix)
+    {
+        if (extension == null || extension.Minutes.Length == 0)
+            return BuildView(history, columnSeconds, firstBucket, count, map, maxUnix);
+        long extensionFrom = extension.Minutes[0].MinuteUnixSeconds;
+        var view = BuildView(history, columnSeconds, firstBucket, count, map, Math.Min(maxUnix, extensionFrom));
+        var tail = BuildView(extension, columnSeconds, firstBucket, count, map);
+        var columns = view.Columns;
+        for (int i = 0; i < columns.Length; i++)
+        {
+            var t = tail.Columns[i];
+            if (!t.HasData) continue;
+            var c = columns[i];
+            columns[i] = c.HasData
+                ? new ColumnAggregate(Math.Min(c.Min, t.Min), Math.Max(c.Max, t.Max), t.Avg, true)
+                : t;
+        }
+        return view;
     }
 
     public static int LevelFor(long columnSeconds, WeekendCompressor? map)

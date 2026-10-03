@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 
 namespace FXViewer.Game;
 
@@ -47,14 +47,18 @@ public sealed class GameLogTrade
 
 public static class GameLogStore
 {
-    private const string FileName = "game-log.jsonl";
+    private const string DayFileName = "game-log.jsonl";
+    private const string AfternoonFileName = "game-log-1400.jsonl";
 
-    private static string FilePath => Path.Combine(AppConfig.Dir, FileName);
+    private static string FileName(string mode) =>
+        GameModes.IsAfternoon(mode) ? AfternoonFileName : DayFileName;
 
-    public static List<GameLogEntry> Load() =>
-        JsonLines.Load<GameLogEntry>(FilePath, e => e.Day.Length > 0);
+    private static string FilePath(string mode) => Path.Combine(AppConfig.Dir, FileName(mode));
 
-    public static void Append(GameLogEntry entry) => JsonLines.Append(FilePath, entry);
+    public static List<GameLogEntry> Load(string mode) =>
+        JsonLines.Load<GameLogEntry>(FilePath(mode), e => e.Day.Length > 0);
+
+    public static void Append(string mode, GameLogEntry entry) => JsonLines.Append(FilePath(mode), entry);
 
     public static Dictionary<string, int> PlayCounts(IEnumerable<GameLogEntry> entries) =>
         entries.GroupBy(e => e.Day, StringComparer.Ordinal)

@@ -12,6 +12,7 @@ using System.Windows.Shapes;
 using System.Windows.Threading;
 using FXViewer.Calendar;
 using FXViewer.Compute;
+using FXViewer.Game;
 using FXViewer.Storage;
 
 namespace FXViewer.Chart;
@@ -108,6 +109,7 @@ public sealed record SymbolSeries(string Symbol, CandleHistory History, int Colo
     public bool OrderBookPanel { get; init; }
     public bool OrderBookPositions { get; init; }
     public int SellColorArgb { get; init; }
+    public int NeutralColorArgb { get; init; } = IndicatorSymbol.DefaultNeutralColorArgb;
     public OrderBook.OrderBookSnapshot[]? OrderBookSnapshots { get; init; }
     public OrderBook.DepthSnapshot[]? DepthSnapshots { get; init; }
     public int DepthPipPoints { get; init; } = 10;
@@ -116,13 +118,14 @@ public sealed record SymbolSeries(string Symbol, CandleHistory History, int Colo
     public int LevelLengthPx { get; init; } = IndicatorSymbol.DefaultLevelLengthPx;
     public int LevelStepPx { get; init; } = IndicatorSymbol.DefaultLevelStepPx;
     public string? GameDrawing { get; init; }
+    public TradingCentralMark[]? TradingCentralMarks { get; init; }
     public bool BottomPanel => EntryPanel || AgePanel || DensityPanel || SpreadPanel || VolumePanel
         || OrderBookPanel || LevelsPanel;
 }
 
 public sealed record PivotEditRequest(string Symbol, IReadOnlyList<PivotPoint> Points);
 
-public sealed class ChartView : Grid
+public sealed partial class ChartView : Grid
 {
     private static readonly ChartPalette Palette = new(
         unchecked((int)0xFFFFFFFF),
@@ -360,6 +363,7 @@ public sealed class ChartView : Grid
     private int _selLine = -1;
     private bool _selDragging;
     private bool _selMoved;
+    private bool _selInserted;
     private int _selDragVertex = -1;
     private int _selPressX;
     private int _selPressY;
@@ -370,6 +374,15 @@ public sealed class ChartView : Grid
     {
         Visibility = Visibility.Collapsed,
         StrokeThickness = 1.5,
+    };
+
+    private readonly record struct LineBreak(string Symbol, int Line, int Vertex, PivotPoint Point);
+
+    private const double LineBreakMaxDeviationPx = 1;
+    private readonly Ellipse _breakCircle = new()
+    {
+        Visibility = Visibility.Collapsed,
+        Fill = Brushes.Transparent,
     };
 
     private const double ParallelMaxDeltaRad = Math.PI / 4;
@@ -442,6 +455,8 @@ public sealed class ChartView : Grid
     private string? _shiftHotSymbol;
     private string? _pressSymbol;
     private string? _latchSymbol;
+    private string? _orderRestoreSymbol;
+    private int _orderRestoreIndex;
     private bool _pressHeld;
     private string? _shiftDragSymbol;
     private bool _shiftDragging;
@@ -475,10 +490,11 @@ public sealed class ChartView : Grid
     public event Action<Rect?>? MeasureLabelBoundsChanged;
 
     public event Action<long>? PlayToggleRequested;
-    public event Action? PlayRandomDayRequested;
+    public event Action<string>? PlayRandomDayRequested;
     public event Action? PlayNextDayRequested;
     public event Action? PlayReplayDayRequested;
-    public event Action? GameStatsRequested;
+    public event Action? PlayFinishDayRequested;
+    public event Action<string>? GameStatsRequested;
     public event Action<int>? PlayStepRequested;
     public event Action<IReadOnlyList<PlayLevel>, string?>? PlayOrderRequested;
     public event Action<string>? SeriesReplaced;
@@ -518,6 +534,40 @@ public sealed class ChartView : Grid
         if (follow) KeepPlayTimeVisible();
         Rebuild();
         if (_playTimeUnix != previous) RefreshStatsPopup();
+    }
+
+    private sealed record AverageExtensionKey(
+        Candle[] Minutes, Candle[] Live, long CutUnix, AverageSpec Spec);
+
+    private readonly Dictionary<string, (AverageExtensionKey Key, CandleHistory? History)> _averageExtensions = new();
+
+    private CandleHistory? AverageExtension(SymbolSeries s, IReadOnlyList<SymbolSeries> all, long cutUnix)
+    {
+        if (s.Average is not { } spec || s.SourceSymbol == null) return null;
+        SymbolSeries? parent = null;
+        foreach (var candidate in all)
+            if (string.Equals(candidate.Symbol, s.SourceSymbol, StringComparison.OrdinalIgnoreCase))
+            {
+                parent = candidate;
+                break;
+            }
+        if (parent == null || parent.History.Minutes.Length == 0) return null;
+        var key = new AverageExtensionKey(
+            parent.History.AverageMinutes, parent.History.AverageLive, cutUnix, spec);
+        lock (_averageExtensions)
+            if (_averageExtensions.TryGetValue(s.Symbol, out var cached)
+                && ReferenceEquals(cached.Key.Minutes, key.Minutes)
+                && ReferenceEquals(cached.Key.Live, key.Live)
+                && cached.Key.CutUnix == cutUnix && cached.Key.Spec == spec)
+                return cached.History;
+        CandleHistory? history;
+        using (Perf.Step("average.extension"))
+        {
+            var candles = AverageSeries.Projection(key.Minutes, key.Live, cutUnix, spec);
+            history = candles.Length > 0 ? CandleHistory.Build(candles) : null;
+        }
+        lock (_averageExtensions) _averageExtensions[s.Symbol] = (key, history);
+        return history;
     }
 
     private long PlayClampEnd(long loUnix, long hiUnix)
@@ -596,6 +646,7 @@ public sealed class ChartView : Grid
         _editCanvas.Children.Add(_drawPreview);
         _editCanvas.Children.Add(_drawCursor);
         _editCanvas.Children.Add(_selPreview);
+        _editCanvas.Children.Add(_breakCircle);
         _editCanvas.Children.Add(_calHoverCircle);
         _editCanvas.Children.Add(_rangeLabel);
         Children.Add(_editCanvas);
@@ -625,6 +676,12 @@ public sealed class ChartView : Grid
                 BeginMeasure(_cursorPx, _cursorPy);
                 e.Handled = true;
             }
+            else if (e.Key == Key.P && Keyboard.Modifiers == ModifierKeys.Control
+                && _playTimeUnix > 0 && _playDayGame)
+            {
+                PlayFinishDayRequested?.Invoke();
+                e.Handled = true;
+            }
             else if (e.Key is Key.P or Key.O && _playTimeUnix > 0)
             {
                 PlayStepRequested?.Invoke(e.Key == Key.P ? 1 : -1);
@@ -643,6 +700,11 @@ public sealed class ChartView : Grid
             else if (e.Key == Key.Escape && _forecastPopup != null)
             {
                 CloseForecastPopup();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Escape && _tradingCentralPopup != null)
+            {
+                CloseTradingCentralPopup();
                 e.Handled = true;
             }
             else if (e.Key == Key.Escape && _drawSymbol != null)
@@ -695,11 +757,14 @@ public sealed class ChartView : Grid
         PreviewKeyDown += (_, e) =>
         {
             if (IsAltKey(e)) UpdateAltTarget(true);
+            if (IsModifierKey(e) && !e.IsRepeat) RefreshBreakHover();
         };
         PreviewKeyUp += (_, e) =>
         {
             if (IsAltKey(e)) UpdateAltTarget(false);
+            if (IsModifierKey(e)) RefreshBreakHover();
         };
+        LostKeyboardFocus += (_, _) => HideBreakHover();
         MouseMove += OnCrosshairMove;
         MouseMove += OnDragMove;
         MouseMove += OnEditMove;
@@ -707,6 +772,7 @@ public sealed class ChartView : Grid
         {
             SetCrosshairVisible(false);
             HideHover();
+            HideBreakHover();
             HideCalendarHover();
             SetForecastHover(Array.Empty<ForecastMark>());
             _drawCursor.Visibility = Visibility.Collapsed;
@@ -788,6 +854,13 @@ public sealed class ChartView : Grid
     {
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         return key is Key.LeftAlt or Key.RightAlt;
+    }
+
+    private static bool IsModifierKey(KeyEventArgs e)
+    {
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        return key is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift
+            or Key.LeftAlt or Key.RightAlt;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -1377,6 +1450,9 @@ public sealed class ChartView : Grid
             return;
         }
         _pressReleaseTimer.Stop();
+        bool restored = _orderRestoreSymbol != null && _orderRestoreSymbol != symbol && RestoreSeriesOrder();
+        bool wasDimmed = IsSeriesDimmed(symbol);
+        int oldIndex = _seriesOrder.IndexOf(symbol);
         _pressSymbol = symbol;
         _pressHeld = true;
         if (clickCount > 1) _latchSymbol = symbol;
@@ -1384,8 +1460,44 @@ public sealed class ChartView : Grid
         _seriesOrder.Remove(symbol);
         _seriesOrder.Add(symbol);
         if (!onTop) PruneSeriesOrder();
+        if (_latchSymbol == symbol)
+            _orderRestoreSymbol = null;
+        else if (wasDimmed)
+        {
+            _orderRestoreSymbol = symbol;
+            _orderRestoreIndex = oldIndex;
+        }
         Rebuild();
-        if (!onTop) SeriesOrderChanged?.Invoke();
+        if (!onTop || restored) SeriesOrderChanged?.Invoke();
+    }
+
+    private bool IsSeriesDimmed(string symbol)
+    {
+        var highlight = HighlightSymbol;
+        if (highlight == null || highlight == symbol) return false;
+        var series = GetSeries(symbol);
+        return series != null && (series.BasePair || series.TimeShift);
+    }
+
+    private bool RestoreSeriesOrder()
+    {
+        var symbol = _orderRestoreSymbol;
+        _orderRestoreSymbol = null;
+        if (symbol == null || !_seriesOrder.Remove(symbol)) return false;
+        if (_orderRestoreIndex >= 0)
+            _seriesOrder.Insert(Math.Min(_orderRestoreIndex, _seriesOrder.Count), symbol);
+        return true;
+    }
+
+    private void UpdateSeriesOrderRestore()
+    {
+        if (_orderRestoreSymbol == null) return;
+        if (IsSeriesDimmed(_orderRestoreSymbol))
+        {
+            if (RestoreSeriesOrder()) SeriesOrderChanged?.Invoke();
+        }
+        else if (HighlightSymbol == null)
+            _orderRestoreSymbol = null;
     }
 
     private void EndSeriesPress()
@@ -1405,6 +1517,7 @@ public sealed class ChartView : Grid
         if (_pressSymbol == null) return;
         _pressSymbol = null;
         _pressHeld = false;
+        UpdateSeriesOrderRestore();
         Rebuild();
     }
 
@@ -1415,6 +1528,7 @@ public sealed class ChartView : Grid
         _pressSymbol = null;
         _latchSymbol = null;
         _pressHeld = false;
+        _orderRestoreSymbol = null;
         Rebuild();
     }
 
@@ -1824,6 +1938,7 @@ public sealed class ChartView : Grid
         if (_shiftHotSymbol == oldName) _shiftHotSymbol = newName;
         if (_pressSymbol == oldName) _pressSymbol = newName;
         if (_latchSymbol == oldName) _latchSymbol = newName;
+        if (_orderRestoreSymbol == oldName) _orderRestoreSymbol = newName;
         if (_shiftDragSymbol == oldName) _shiftDragSymbol = newName;
         int orderIndex = _seriesOrder.IndexOf(oldName);
         if (orderIndex >= 0)
@@ -1908,6 +2023,7 @@ public sealed class ChartView : Grid
         CancelDrawing();
         DeselectLine();
         HideHover();
+        HideBreakHover();
         ClearRange();
         ClearMeasure();
         ForgetHiddenPivotSegments();
@@ -1932,9 +2048,9 @@ public sealed class ChartView : Grid
                 list[i] = s with
                 {
                     History = CandleHistory.Build(
-                        AverageSeries.Compute(parent.History.Minutes, spec)),
+                        AverageSeries.Compute(parent.History.AverageMinutes, spec)),
                 };
-            _averageParents[s.Symbol] = parent.History.Minutes;
+            _averageParents[s.Symbol] = parent.History.AverageMinutes;
         }
         series = list;
         _series = series.Count > 0 ? series : null;
@@ -1943,6 +2059,7 @@ public sealed class ChartView : Grid
         _shiftHotSymbol = null;
         _pressSymbol = null;
         _latchSymbol = null;
+        _orderRestoreSymbol = null;
         _pressHeld = false;
         _pressReleaseTimer.Stop();
         _shiftDragSymbol = null;
@@ -2043,6 +2160,22 @@ public sealed class ChartView : Grid
         }
     }
 
+    public bool SetTradingCentralMarks(string symbol, TradingCentralMark[] marks)
+    {
+        var series = _series;
+        if (series == null) return false;
+        for (int i = 0; i < series.Count; i++)
+        {
+            if (series[i].Symbol != symbol) continue;
+            var list = new List<SymbolSeries>(series);
+            list[i] = list[i] with { TradingCentralMarks = marks };
+            _series = list;
+            Rebuild();
+            return true;
+        }
+        return false;
+    }
+
     public void PatchSeriesHistory(string symbol, CandleHistory history)
     {
         var series = _series;
@@ -2077,13 +2210,13 @@ public sealed class ChartView : Grid
             if (s.Average is not { } spec
                 || !string.Equals(s.SourceSymbol, parentSymbol, StringComparison.OrdinalIgnoreCase))
                 continue;
-            var minutes = parent.History.Minutes;
+            var minutes = parent.History.AverageMinutes;
             var used = _averageParents.GetValueOrDefault(s.Symbol);
             if (ReferenceEquals(used, minutes)) continue;
             if (!TryTakeReady(ready, s, used, out var updated)) continue;
             _averageParents[s.Symbol] = minutes;
             if (updated == null) continue;
-            updated.SetLive(AverageSeries.LiveTail(minutes, parent.History.Live, spec));
+            updated.SetLive(AverageSeries.LiveTail(minutes, parent.History.AverageLive, spec));
             list ??= new List<SymbolSeries>(series);
             list[i] = s with { History = updated };
         }
@@ -2118,7 +2251,7 @@ public sealed class ChartView : Grid
             if (IsHidden(s.Symbol) || _averageRefreshing.Contains(s.Symbol)) continue;
             var parent = GetSeries(s.SourceSymbol);
             if (parent == null) continue;
-            var minutes = parent.History.Minutes;
+            var minutes = parent.History.AverageMinutes;
             if (minutes.Length == 0) continue;
             var used = _averageParents.GetValueOrDefault(s.Symbol);
             if (ReferenceEquals(used, minutes)) continue;
@@ -2140,7 +2273,7 @@ public sealed class ChartView : Grid
         var series = _series;
         if (series == null) return;
         var parent = GetSeries(parentSymbol);
-        if (parent == null || !ReferenceEquals(parent.History.Minutes, minutes))
+        if (parent == null || !ReferenceEquals(parent.History.AverageMinutes, minutes))
         {
             ScheduleAverageRefresh();
             return;
@@ -2159,7 +2292,7 @@ public sealed class ChartView : Grid
         }
         _averageParents[s.Symbol] = minutes;
         if (result.History == null) return;
-        result.History.SetLive(AverageSeries.LiveTail(minutes, parent.History.Live, spec));
+        result.History.SetLive(AverageSeries.LiveTail(minutes, parent.History.AverageLive, spec));
         var list = new List<SymbolSeries>(series);
         list[idx] = s with { History = result.History };
         _series = list;
@@ -2424,7 +2557,8 @@ public sealed class ChartView : Grid
             if (s.Symbol == symbol) { s.History.ClearLastTick(); return; }
     }
 
-    public void SetLiveTail(string symbol, Candle[] tail, SpreadMark[]? hiddenSpreads = null)
+    public void SetLiveTail(string symbol, Candle[] tail, SpreadMark[]? hiddenSpreads = null,
+        Candle[]? hiddenCandles = null)
     {
         var series = _series;
         if (series == null) return;
@@ -2432,12 +2566,13 @@ public sealed class ChartView : Grid
         foreach (var s in series)
             if (s.Symbol == symbol) { match = s; break; }
         if (match == null) return;
-        match.History.SetLive(tail);
+        match.History.SetLive(tail, hiddenCandles);
         match.History.SetLiveHiddenSpreads(hiddenSpreads ?? Array.Empty<SpreadMark>());
         foreach (var s in series)
             if (s.Average is { } spec
                 && string.Equals(s.SourceSymbol, symbol, StringComparison.OrdinalIgnoreCase))
-                s.History.SetLive(AverageSeries.LiveTail(match.History.Minutes, tail, spec));
+                s.History.SetLive(AverageSeries.LiveTail(
+                    match.History.AverageMinutes, match.History.AverageLive, spec));
         if (tail.Length > 0)
         {
             long last = tail[^1].MinuteUnixSeconds;
@@ -2509,6 +2644,12 @@ public sealed class ChartView : Grid
         var pos = e.GetPosition(this);
         int cx = (int)Math.Floor(pos.X * dpi.DpiScaleX);
         int cy = (int)Math.Floor(pos.Y * dpi.DpiScaleY);
+        if (BreakKeysDown && FindLineBreakAt(cx, cy) is { } lineBreak)
+        {
+            CloseChartPopups();
+            BeginLineBreak(lineBreak, cx, cy);
+            return;
+        }
         if ((Keyboard.Modifiers & ModifierKeys.Alt) != 0 && _renderedColumnSeconds > 0)
         {
             if (_shiftHotSymbol != null)
@@ -2549,6 +2690,12 @@ public sealed class ChartView : Grid
             ShowForecastPopup(forecastHits);
             return;
         }
+        var tradingCentralHits = FindTradingCentralMarkersAt(cx, cy);
+        if (tradingCentralHits.Count > 0)
+        {
+            ShowTradingCentralPopup(tradingCentralHits);
+            return;
+        }
         if (_calHoverCircle.Visibility == Visibility.Visible && _calHoverX >= 0)
         {
             double ddx = cx - _calCircleCenterX;
@@ -2581,7 +2728,8 @@ public sealed class ChartView : Grid
         {
             if (lineHit.Value.Symbol == _selSymbol && lineHit.Value.Line == _selLine)
             {
-                BeginSelDrag(-1, cx, cy);
+                if (SelectedLinePoints() is not { Length: > MaxBodyDragSegments + 1 })
+                    BeginSelDrag(-1, cx, cy);
                 return;
             }
             SelectLine(lineHit.Value.Symbol, lineHit.Value.Line);
@@ -3713,6 +3861,7 @@ public sealed class ChartView : Grid
             return;
         }
         HideHover();
+        HideBreakHover();
         CloseChartPopups();
         if (Keyboard.Modifiers == ModifierKeys.None || Keyboard.Modifiers == ModifierKeys.Alt)
         {
@@ -4084,6 +4233,7 @@ public sealed class ChartView : Grid
         double topPrice = _topPrice;
         double pointsPerRow = _pointsPerRow;
         var forecastMarkers = new List<ForecastMarker>();
+        var tradingCentralMarkers = new List<TradingCentralMarker>();
         var forecastMarks = _forecastHidden ? Array.Empty<ForecastMark>() : SelectedDayForecasts();
         var forecastHover =
             _forecastHidden ? Array.Empty<ForecastMark>() : _forecastHover;
@@ -4140,12 +4290,15 @@ public sealed class ChartView : Grid
                 {
                     var s = visibleSeries[si];
                     if (s.History.Minutes.Length == 0 || s.BottomPanel) continue;
+                    var extension = AverageExtension(s, seriesList, cut);
                     var (view, chosen, fullRange) = ChartColumns.BuildLine(
-                        s.History, k, startBucket - pw, pw * 2, map, pw, NoiseThreshold, cut);
-                    var last = LastCandleBefore(s.History, cut);
+                        s.History, k, startBucket - pw, pw * 2, map, pw, NoiseThreshold, cut, extension);
+                    var last = extension != null
+                        ? extension.Minutes[^1]
+                        : LastCandleBefore(s.History, cut);
                     int lastPrice = last == null
                         ? 0
-                        : cut == long.MaxValue && s.History.HasLastTick
+                        : extension == null && cut == long.MaxValue && s.History.HasLastTick
                             ? s.History.LastTick
                             : last.Value.Avg;
                     long lastReal = last?.MinuteUnixSeconds ?? long.MaxValue / 2;
@@ -4255,6 +4408,15 @@ public sealed class ChartView : Grid
                         DrawDealMarks(_staging, pw, ph, s, flatten, map, k, startBucket,
                             topPrice, pointsPerRow, lineOffsets[si], cut);
                     }
+                if (pointsPerRow > 0)
+                    for (int si = 0; si < visibleSeries.Count; si++)
+                    {
+                        var s = visibleSeries[si];
+                        if (s.TradingCentralMarks is not { Length: > 0 } || s.Transform == null)
+                            continue;
+                        TradingCentralRenderer.Draw(_staging, pw, ph, s, flatten, map, k, startBucket,
+                            topPrice, pointsPerRow, lineOffsets[si], tradingCentralMarkers, cut);
+                    }
                 if (pointsPerRow > 0 && playMarks.Length > 0)
                     for (int si = 0; si < visibleSeries.Count; si++)
                     {
@@ -4318,11 +4480,11 @@ public sealed class ChartView : Grid
                         t = Perf.Since("panel.volume.build", t);
                         volumeCols.Add((s.Symbol, vols));
                         double used = ChartRasterizer.DrawVolumePanel(
-                            _staging, pw, ph, vols, panelBottom, s.ColorArgb,
+                            _staging, pw, ph, vols, panelBottom, s.NeutralColorArgb,
                             volumeScales.TryGetValue(s.Symbol, out var vs)
                                 ? vs
                                 : ClampVolumeScale(s.VolumeBarScale),
-                            s.VolumeSplitSides ? s.SellColorArgb : 0,
+                            s.VolumeSplitSides ? s.ColorArgb : 0, s.SellColorArgb,
                             volumeUnits.TryGetValue(s.Symbol, out var vu) ? vu : 0);
                         t = Perf.Since("panel.volume.draw", t);
                         volumeUnitsUsed.Add((s.Symbol, used, panelBottom));
@@ -4379,6 +4541,8 @@ public sealed class ChartView : Grid
                 }
                 _forecastMarkers.Clear();
                 _forecastMarkers.AddRange(forecastMarkers);
+                _tradingCentralMarkers.Clear();
+                _tradingCentralMarkers.AddRange(tradingCentralMarkers);
                 _commentSpots.Clear();
                 _commentSpots.AddRange(commentSpots);
                 tUi = Perf.Since("chart.publish", tUi);
@@ -4630,6 +4794,7 @@ public sealed class ChartView : Grid
     {
         CloseCalendarPopup();
         CloseForecastPopup();
+        CloseTradingCentralPopup();
     }
 
     private static string ForecastPriceText(double price, string pair)
@@ -4936,6 +5101,7 @@ public sealed class ChartView : Grid
         }
         if (_selSymbol != null) UpdateSelectionVisuals(dpi);
         UpdateParallelVisuals(dpi);
+        RefreshBreakHover();
         Perf.Since("present.rest", t);
         if (!_calendarVisible || _renderedColumnSeconds <= 0 || !CalendarLinesDrawn(_renderedColumnSeconds))
         {
@@ -5086,9 +5252,10 @@ public sealed class ChartView : Grid
             }
             {
                 var sourceSeries = GetSeries(s.SourceSymbol!);
-                var minutes = sourceSeries?.History.Minutes;
-                if (minutes == null || minutes.Length == 0) continue;
-                var profileTransform = sourceSeries!.Transform;
+                if (sourceSeries == null) continue;
+                var minutes = MinuteSequence.Of(sourceSeries.History);
+                if (minutes.Length == 0) continue;
+                var profileTransform = sourceSeries.Transform;
                 int option = Math.Clamp(_densitySelected, 0, s.DensityWindows!.Length);
                 int window = range != null
                     ? DensityProfile.CountInRange(minutes, rangeStartUnix, rangeEndUnix)
@@ -5113,9 +5280,13 @@ public sealed class ChartView : Grid
             if (histogram.MaxCount <= 0) continue;
             int bidColor = s.VolumeWeighted && s.VolumeSplitSides ? s.SellColorArgb : 0;
             double max = DensityScaleMax(s, histogram.MaxCount);
-            used = Math.Max(used, DrawDensity(_densityStaging, pw, ph, histogram,
-                SeriesOffset(s.SourceSymbol!), anchorUnix, s.ColorArgb,
-                max, DensityFillAlpha, bidColor));
+            used = Math.Max(used, s.VolumeWeighted
+                ? DrawDeltaDensity(_densityStaging, pw, ph, histogram,
+                    SeriesOffset(s.SourceSymbol!), anchorUnix, s.NeutralColorArgb,
+                    s.VolumeSplitSides ? s.ColorArgb : 0, s.SellColorArgb, max, DensityFillAlpha)
+                : DrawDensity(_densityStaging, pw, ph, histogram,
+                    SeriesOffset(s.SourceSymbol!), anchorUnix, s.ColorArgb,
+                    max, DensityFillAlpha));
             if (candle.MaxCount > 0)
                 used = Math.Max(used, DrawDensity(_densityStaging, pw, ph, candle,
                     SeriesOffset(s.SourceSymbol!), anchorUnix, s.ColorArgb,
@@ -5349,6 +5520,45 @@ public sealed class ChartView : Grid
         return widest;
     }
 
+    private int DrawDeltaDensity(int[] buffer, int width, int height, DensityHistogram histogram,
+        double offset, long anchorUnix, int neutralArgb, int buyArgb, int sellArgb, double max, int alpha)
+    {
+        int widest = 0;
+        int neutralFill = PremultiplyArgb(neutralArgb, alpha);
+        int neutralEdge = neutralArgb | unchecked((int)0xFF000000);
+        int buyFill = PremultiplyArgb(buyArgb, alpha);
+        int buyEdge = buyArgb | unchecked((int)0xFF000000);
+        int sellFill = PremultiplyArgb(sellArgb, alpha);
+        int sellEdge = sellArgb | unchecked((int)0xFF000000);
+        bool sides = histogram.HasSides && buyArgb != 0;
+        for (int y = 0; y < height; y++)
+        {
+            double top = YToDisplay(y, offset, anchorUnix);
+            double bottom = YToDisplay(y + 1, offset, anchorUnix);
+            int pipLo = DensityProfile.PipLevel((int)Math.Round(bottom));
+            int pipHi = DensityProfile.PipLevel((int)Math.Round(top));
+            var value = sides
+                ? DensityProfile.RowValueIn(histogram, pipLo, pipHi)
+                : new DensityRowValue(DensityProfile.MaxCountIn(histogram, pipLo, pipHi), 0, 0);
+            if (value.Total <= 0) continue;
+            int barWidth = Math.Clamp(
+                (int)Math.Round(value.Total * DensityMaxWidthPx / max), 1, width);
+            if (barWidth > widest) widest = barWidth;
+            double delta = value.Ask - value.Bid;
+            int deltaWidth = (int)Math.Min(barWidth, Math.Round(Math.Abs(delta) * DensityMaxWidthPx / max));
+            int deltaFill = delta > 0 ? buyFill : sellFill;
+            int deltaEdge = delta > 0 ? buyEdge : sellEdge;
+            int row = y * width;
+            int x0 = width - barWidth;
+            int deltaX0 = width - deltaWidth;
+            for (int x = x0; x < deltaX0; x++)
+                buffer[row + x] = BlendOverPremultiplied(buffer[row + x], x == x0 ? neutralEdge : neutralFill);
+            for (int x = deltaX0; x < width; x++)
+                buffer[row + x] = BlendOverPremultiplied(buffer[row + x], x == deltaX0 ? deltaEdge : deltaFill);
+        }
+        return widest;
+    }
+
     private static int PremultiplyArgb(int argb, int alpha)
     {
         int r = (argb >> 16) & 0xFF;
@@ -5529,6 +5739,7 @@ public sealed class ChartView : Grid
     {
         using var _ = Perf.FrameStep("input.edithover");
         if (_series == null) return;
+        bool breakHover = RefreshBreakHover();
         if (_measuring)
         {
             var pm = e.GetPosition(this);
@@ -5586,6 +5797,13 @@ public sealed class ChartView : Grid
             HideHover();
             HideCalendarHover();
             SetForecastHover(Array.Empty<ForecastMark>());
+            return;
+        }
+        if (breakHover)
+        {
+            SetForecastHover(Array.Empty<ForecastMark>());
+            HideHover();
+            HideCalendarHover();
             return;
         }
         SetForecastHover(FindForecastMarkersAt(cx, cy).Select(c => c.Mark).ToArray());
@@ -6014,6 +6232,7 @@ public sealed class ChartView : Grid
         }
         var series = _series;
         if (series == null || _pivotDragging || _selDragging) return;
+        HideBreakHover();
         var dpi = VisualTreeHelper.GetDpi(this);
         var pos = e.GetPosition(this);
         int cx = (int)Math.Floor(pos.X * dpi.DpiScaleX);
@@ -6129,8 +6348,15 @@ public sealed class ChartView : Grid
         play.Click += (_, _) => PlayToggleRequested?.Invoke(t);
         menu.Items.Add(play);
         var randomDay = new MenuItem { Header = "Play random day", IsEnabled = pairs.Count > 0 };
-        randomDay.Click += (_, _) => PlayRandomDayRequested?.Invoke();
+        randomDay.Click += (_, _) => PlayRandomDayRequested?.Invoke(GameModes.Day);
         menu.Items.Add(randomDay);
+        var randomAfternoon = new MenuItem
+        {
+            Header = "Play random " + GameModes.Title(GameModes.Afternoon),
+            IsEnabled = pairs.Count > 0,
+        };
+        randomAfternoon.Click += (_, _) => PlayRandomDayRequested?.Invoke(GameModes.Afternoon);
+        menu.Items.Add(randomAfternoon);
         if (_playDayGame)
         {
             var nextDay = new MenuItem { Header = "Play next day", IsEnabled = _playHasNextDay && pairs.Count > 0 };
@@ -6151,8 +6377,15 @@ public sealed class ChartView : Grid
             menu.Items.Add(order);
         }
         var stats = new MenuItem { Header = "Game stats", IsEnabled = pairs.Count > 0 };
-        stats.Click += (_, _) => GameStatsRequested?.Invoke();
+        stats.Click += (_, _) => GameStatsRequested?.Invoke(GameModes.Day);
         menu.Items.Add(stats);
+        var afternoonStats = new MenuItem
+        {
+            Header = "Game stats " + GameModes.Title(GameModes.Afternoon),
+            IsEnabled = pairs.Count > 0,
+        };
+        afternoonStats.Click += (_, _) => GameStatsRequested?.Invoke(GameModes.Afternoon);
+        menu.Items.Add(afternoonStats);
         menu.Items.Add(new Separator());
     }
 
@@ -6405,28 +6638,6 @@ public sealed class ChartView : Grid
         Rebuild();
     }
 
-    public void ReplaceDrawings(IReadOnlyDictionary<string, PivotPoint[][]> bySymbol)
-    {
-        var series = _series;
-        if (series == null || bySymbol.Count == 0) return;
-        var list = new List<SymbolSeries>(series);
-        bool changed = false;
-        for (int i = 0; i < list.Count; i++)
-        {
-            if (list[i].DrawingLines == null) continue;
-            if (!bySymbol.TryGetValue(list[i].Symbol, out var lines)) continue;
-            if (ReferenceEquals(list[i].DrawingLines, lines)) continue;
-            if (_selSymbol == list[i].Symbol) DeselectLine();
-            list[i] = list[i] with { DrawingLines = lines };
-            changed = true;
-        }
-        if (!changed) return;
-        _series = list;
-        RecomputeGlobalRange();
-        RebuildFlatten();
-        Rebuild();
-    }
-
     public void SetGameDrawings(IReadOnlyList<SymbolSeries> drawings)
     {
         var series = _series;
@@ -6569,6 +6780,164 @@ public sealed class ChartView : Grid
         return hit;
     }
 
+    private static bool BreakKeysDown => Keyboard.Modifiers == ModifierKeys.Control;
+
+    private bool BreakAllowed => _cursorOnChart && _drawSymbol == null && !_measuring && !_hasMeasure
+        && !_rangeSelecting && !_selDragging && !_pivotDragging && !_dragging
+        && !_shiftDragging && !_tiltedDragging;
+
+    private bool RefreshBreakHover()
+    {
+        var hit = BreakKeysDown && BreakAllowed ? FindLineBreakAt(_cursorPx, _cursorPy) : null;
+        if (hit == null) HideBreakHover();
+        else ShowBreakHover(hit.Value);
+        return hit != null;
+    }
+
+    private void ShowBreakHover(LineBreak hit)
+    {
+        var s = GetSeries(hit.Symbol);
+        if (s?.Transform == null)
+        {
+            HideBreakHover();
+            return;
+        }
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var pt = ProjectDrawPointPx(s.Transform, SeriesOffset(s.Symbol), hit.Point);
+        _breakCircle.Width = 2.0 * PivotCircleRadiusPx / dpi.DpiScaleX;
+        _breakCircle.Height = 2.0 * PivotCircleRadiusPx / dpi.DpiScaleY;
+        _breakCircle.Stroke = BrushFor(s.ColorArgb);
+        _breakCircle.StrokeThickness = 1.5 / dpi.DpiScaleX;
+        Canvas.SetLeft(_breakCircle, (pt.X - PivotCircleRadiusPx) / dpi.DpiScaleX);
+        Canvas.SetTop(_breakCircle, (pt.Y - PivotCircleRadiusPx) / dpi.DpiScaleY);
+        _breakCircle.Visibility = Visibility.Visible;
+    }
+
+    private void HideBreakHover()
+    {
+        _breakCircle.Visibility = Visibility.Collapsed;
+    }
+
+    private LineBreak? FindLineBreakAt(int cx, int cy)
+    {
+        var series = _series;
+        if (series == null || _renderedColumnSeconds <= 0 || _renderedPointsPerRow <= 0) return null;
+        double best = double.MaxValue;
+        LineBreak? hit = null;
+        foreach (var s in series)
+        {
+            if (s.DrawingLines is not { Length: > 0 } || s.Transform == null) continue;
+            if (IsHidden(s.Symbol)) continue;
+            double offset = SeriesOffset(s.Symbol);
+            for (int li = 0; li < s.DrawingLines.Length; li++)
+            {
+                var poly = s.DrawingLines[li];
+                if (poly.Length < 2 || poly[0].Level) continue;
+                var prev = ProjectDrawPointPx(s.Transform, offset, poly[0]);
+                for (int i = 1; i < poly.Length; i++)
+                {
+                    var cur = ProjectDrawPointPx(s.Transform, offset, poly[i]);
+                    var found = SegmentBreakPoint(s.Transform, offset, poly[i - 1], poly[i], prev, cur, cx, cy);
+                    if (found != null && found.Value.DistSq < best)
+                    {
+                        best = found.Value.DistSq;
+                        hit = new LineBreak(s.Symbol, li, i, found.Value.Point);
+                    }
+                    prev = cur;
+                }
+            }
+        }
+        return hit;
+    }
+
+    private (PivotPoint Point, double DistSq)? SegmentBreakPoint(SeriesTransform transform, double offset,
+        PivotPoint a, PivotPoint b, (double X, double Y) pa, (double X, double Y) pb, int cx, int cy)
+    {
+        double vertexR = PivotCircleRadiusPx + 1.5;
+        if (SegmentDistSq(cx, cy, pa.X, pa.Y, pa.X, pa.Y) <= vertexR * vertexR
+            || SegmentDistSq(cx, cy, pb.X, pb.Y, pb.X, pb.Y) <= vertexR * vertexR) return null;
+        double r = LineHitRadiusPx + 0.5;
+        double px = cx + 0.5;
+        double py = cy + 0.5;
+        long fromVirtual = ToVirtual(a.UnixSeconds);
+        long toVirtual = ToVirtual(b.UnixSeconds);
+        var cuts = _flatten?.CutsBetween(fromVirtual, toVirtual) ?? Array.Empty<long>();
+        (PivotPoint Point, double DistSq)? best = null;
+        var startPx = pa;
+        for (int k = 0; k <= cuts.Length; k++)
+        {
+            var endPx = pb;
+            if (k < cuts.Length)
+            {
+                double share = (double)(cuts[k] - fromVirtual) / (toVirtual - fromVirtual);
+                endPx = ProjectDrawPointPx(transform, offset, a with
+                {
+                    UnixSeconds = ToReal(cuts[k]),
+                    Value = a.Value + (b.Value - a.Value) * share,
+                });
+            }
+            double d = SegmentDistSq(px, py, startPx.X, startPx.Y, endPx.X, endPx.Y);
+            if (d <= r * r && (best == null || d < best.Value.DistSq)
+                && PieceBreakPoint(transform, offset, a, b, startPx, endPx, px, py) is { } point)
+                best = (point, d);
+            startPx = endPx;
+        }
+        return best;
+    }
+
+    private PivotPoint? PieceBreakPoint(SeriesTransform transform, double offset, PivotPoint a, PivotPoint b,
+        (double X, double Y) startPx, (double X, double Y) endPx, double px, double py)
+    {
+        double vx = endPx.X - startPx.X;
+        double vy = endPx.Y - startPx.Y;
+        double len2 = vx * vx + vy * vy;
+        if (len2 <= 0) return null;
+        double f = Math.Clamp(((px - startPx.X) * vx + (py - startPx.Y) * vy) / len2, 0, 1);
+        double nearX = startPx.X + vx * f;
+        double nearY = startPx.Y + vy * f;
+        long t = ColumnMinute((int)Math.Floor(nearX));
+        if (_renderedColumnSeconds < ChartColumns.MinuteSeconds)
+        {
+            long next = ToReal(ToVirtual(t) + ChartColumns.MinuteSeconds);
+            if (MinuteX(next) - nearX < nearX - MinuteX(t)) t = next;
+        }
+        long fromVirtual = ToVirtual(a.UnixSeconds);
+        long toVirtual = ToVirtual(b.UnixSeconds);
+        long first = Math.Min(fromVirtual, toVirtual) + ChartColumns.MinuteSeconds;
+        long last = Math.Max(fromVirtual, toVirtual) - ChartColumns.MinuteSeconds;
+        PivotPoint? onLine = null;
+        if (first <= last)
+        {
+            long inside = ToReal(Math.Clamp(ToVirtual(t), first, last));
+            inside -= inside % ChartColumns.MinuteSeconds;
+            double share = (double)(ToVirtual(inside) - fromVirtual) / (toVirtual - fromVirtual);
+            if (share > 0 && share < 1)
+            {
+                onLine = a with { UnixSeconds = inside, Value = a.Value + (b.Value - a.Value) * share };
+                var onLinePx = ProjectDrawPointPx(transform, offset, onLine.Value);
+                if (SegmentDistSq(onLinePx.X, onLinePx.Y, nearX, nearY, nearX, nearY)
+                    <= PivotCircleRadiusPx * PivotCircleRadiusPx) return onLine;
+            }
+        }
+        if (Math.Abs(MinuteX(t) - nearX) > LineBreakMaxDeviationPx) return onLine;
+        return a with { UnixSeconds = t, Value = transform.ToRaw(YToDisplay(nearY - 0.5, offset, t)) };
+    }
+
+    private void BeginLineBreak(LineBreak hit, int cx, int cy)
+    {
+        var s = GetSeries(hit.Symbol);
+        if (s?.DrawingLines == null || hit.Line < 0 || hit.Line >= s.DrawingLines.Length) return;
+        var poly = s.DrawingLines[hit.Line];
+        if (hit.Vertex < 1 || hit.Vertex >= poly.Length) return;
+        var grown = new PivotPoint[poly.Length + 1];
+        Array.Copy(poly, 0, grown, 0, hit.Vertex);
+        grown[hit.Vertex] = hit.Point;
+        Array.Copy(poly, hit.Vertex, grown, hit.Vertex + 1, poly.Length - hit.Vertex);
+        HideBreakHover();
+        SelectLine(hit.Symbol, hit.Line);
+        BeginSelDrag(hit.Vertex, cx, cy, grown);
+    }
+
     private void SelectLine(string symbol, int line)
     {
         _selSymbol = symbol;
@@ -6677,6 +7046,7 @@ public sealed class ChartView : Grid
     }
 
     private const int CloneOffsetPips = 20;
+    private const int MaxBodyDragSegments = 3;
 
     private bool IsLevelLine(string symbol, int line)
     {
@@ -6753,9 +7123,9 @@ public sealed class ChartView : Grid
         return anchor with { UnixSeconds = t, Value = v };
     }
 
-    private void BeginSelDrag(int vertex, int cx, int cy)
+    private void BeginSelDrag(int vertex, int cx, int cy, PivotPoint[]? inserted = null)
     {
-        var points = SelectedLinePoints();
+        var points = inserted ?? SelectedLinePoints();
         if (points == null)
         {
             DeselectLine();
@@ -6763,6 +7133,7 @@ public sealed class ChartView : Grid
         }
         _selDragging = true;
         _selMoved = false;
+        _selInserted = inserted != null;
         _selDragVertex = vertex;
         _selPressX = cx;
         _selPressY = cy;
@@ -6770,6 +7141,7 @@ public sealed class ChartView : Grid
         _selCurPoints = points;
         HideHover();
         CaptureMouse();
+        if (_selInserted) UpdateSelectionVisuals(VisualTreeHelper.GetDpi(this));
     }
 
     private void UpdateSelDrag(int cx, int cy)
@@ -6780,8 +7152,9 @@ public sealed class ChartView : Grid
             CancelSelDrag();
             return;
         }
-        if (!_selMoved && (cx != _selPressX || cy != _selPressY))
+        if (!_selMoved)
         {
+            if (cx == _selPressX && cy == _selPressY) return;
             _selMoved = true;
             Rebuild();
         }
@@ -7067,12 +7440,15 @@ public sealed class ChartView : Grid
         if (!_selDragging) return;
         _selDragging = false;
         bool moved = _selMoved;
+        bool inserted = _selInserted;
         _selMoved = false;
+        _selInserted = false;
         var current = _selCurPoints;
         ReleaseMouseCapture();
         var symbol = _selSymbol;
         var s = symbol == null ? null : GetSeries(symbol);
-        if (moved && s?.DrawingLines != null && _selLine >= 0 && _selLine < s.DrawingLines.Length)
+        if ((moved || inserted) && s?.DrawingLines != null
+            && _selLine >= 0 && _selLine < s.DrawingLines.Length)
         {
             current = ParallelSnapped(s, current);
             var lines = (PivotPoint[][])s.DrawingLines.Clone();
@@ -7103,6 +7479,7 @@ public sealed class ChartView : Grid
         _selDragging = false;
         bool moved = _selMoved;
         _selMoved = false;
+        _selInserted = false;
         ReleaseMouseCapture();
         ClearParallel();
         if (moved) Rebuild();
@@ -7112,7 +7489,7 @@ public sealed class ChartView : Grid
     private void UpdateSelectionVisuals(DpiScale dpi)
     {
         var s = _selSymbol == null ? null : GetSeries(_selSymbol);
-        var points = _selDragging && _selMoved ? _selCurPoints : SelectedLinePoints();
+        var points = _selDragging && (_selMoved || _selInserted) ? _selCurPoints : SelectedLinePoints();
         bool valid = s?.Transform != null && points is { Length: > 0 }
             && !IsHidden(s!.Symbol)
             && _renderedColumnSeconds > 0 && _renderedPointsPerRow > 0;

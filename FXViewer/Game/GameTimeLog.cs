@@ -2,6 +2,13 @@ using System.IO;
 
 namespace FXViewer.Game;
 
+public sealed class GameTimeSpan
+{
+    public string Mode { get; set; } = "";
+    public DateTimeOffset From { get; set; }
+    public DateTimeOffset To { get; set; }
+}
+
 public sealed class GameTimeSession
 {
     public DateTimeOffset StartedAt { get; set; }
@@ -11,6 +18,7 @@ public sealed class GameTimeSession
     public int Games { get; set; }
     public int Pauses { get; set; }
     public List<string> Days { get; set; } = new();
+    public List<GameTimeSpan> Spans { get; set; } = new();
 }
 
 public static class GameTimeStore

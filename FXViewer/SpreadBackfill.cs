@@ -26,7 +26,7 @@ public static class SpreadBackfill
             var windowStart = windowEnd.AddHours(-WindowHours);
             if (windowStart < fromUtc) windowStart = fromUtc;
             var minutes = db.ReadRange(symbolName, windowStart.UtcDateTime,
-                windowEnd.AddMinutes(-1).UtcDateTime);
+                windowEnd.AddMinutes(-1).UtcDateTime, includeWide: true);
             int missing = 0;
             foreach (var c in minutes)
                 if (!c.HasSpread) missing++;

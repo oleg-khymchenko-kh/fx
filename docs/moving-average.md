@@ -71,28 +71,130 @@ does not fit; there the average uses whatever candles are available
 the line is continuous. This makes a future MA converge to the last
 candle at the right edge, and a past MA ramp up from the first candle.
 
-## Wide spread minutes are always skipped
+## Wide spread minutes
 
-A minute flagged as wide spread (docs/wide-spread.md) never goes into
-the average, in both modes, whatever the global "Hide wide spread
-minutes" setting says. Those minutes are the post-close spikes; letting
-them into the sum is exactly what the flag exists to prevent. This also
-means the line looks the same whether the user hides them on the chart
-or not.
+A minute flagged as wide spread (docs/wide-spread.md) is a post-close
+minute where the bid dropped because the spread blew up. Its raw price
+would pull the average down, so it is handled apart. What happens
+depends on the kind of average:
 
-What that does to the window:
+- **Plain average (no volume)**: the minute **is used**, but with a
+  corrected price, as if the spread were a normal 1 pip around the same
+  middle:
 
-- by candles: the window is the last N **usable** candles, so it walks
-  over the flagged ones without counting them;
-- by time: the flagged candles sit inside the span and are dropped, so
-  the window just holds fewer of them.
+      bid = real bid + (spread - 1 pip) / 2
+      ask = corrected bid + 1 pip
 
-If a whole window turns out to be flagged, the average holds the last
+  `spread` is the minute's spread from the candle flags (the widest
+  spread inside the minute). With "Show ask instead of bid" on, the chart
+  shows the ask (bid + spread), so there the corrected ask is used:
+  `ask - (spread - 1 pip) / 2`, which is the same corrected bid + 1 pip.
+  Example: bid 1.10000, spread 5.0 pips -> bid 1.10020, ask 1.10030.
+  A flagged minute **without** a known spread cannot be corrected, so it
+  is still skipped.
+- **Volume weighted**: the minute is skipped, as before.
+
+This does not depend on the global "Hide wide spread minutes" setting:
+the line is the same with the setting on or off. When the setting is on,
+the flagged minutes are not in the pair's series at all (the chart does
+not show them), so the chart keeps them on the side for the averages:
+`CandleHistory.HiddenMinutes` (loaded minutes, filled by
+`SeriesDataLoader.SplitHidden` at the startup read and at every lazy
+year load) and `CandleHistory.LiveHidden` (live minutes, from
+`MainWindow.PushLiveTail`). An average never reads `Minutes` / `Live`
+of its parent; it reads `AverageMinutes` and `AverageLive`, which are
+the visible and the hidden minutes merged by time. When the setting is
+off, nothing is hidden and `AverageMinutes` is just `Minutes` (no copy).
+`AverageLive` also drops live minutes that are already in the loaded
+minutes, so the average never counts one minute twice.
+
+The math works in display space, where 1 pip is always 10 points. The
+correction is `(spreadTenths - 10) / 2` points; its sign is kept in
+`AverageSpec.WideSign`: +1 for a normal pair, -1 for a mirrored USDXXX
+pair (the chart draws `base - price`), and flipped once more when the
+ask is shown. The window keeps its sums doubled (`2 * Avg + correction`),
+so the half point of an odd spread is not lost.
+
+What the kind of minute does to the window:
+
+- by candles: the window is the last N **usable** candles. A usable
+  candle is a normal one, or a flagged one with a spread in a plain
+  average. The window walks over the others without counting them;
+- by time: the not usable candles sit inside the span and are dropped,
+  so the window just holds fewer of them.
+
+If a whole window turns out to be not usable, the average holds the last
 usable value (the nearest usable candle before the point, or after it
 for a future MA). If there is no usable candle at all on that side, the
 point falls back to the price of the minute itself. This rule depends on
 the position only, never on where a recompute started, so a partial
 recompute gives exactly the same numbers as a full one.
+
+## The line goes on into the future
+
+After the last candle of the parent the line does not stop: it runs on
+to the **end of the day**, the last minute of the American session
+(20:59 UTC in US summer time, 21:59 in winter, docs/sessions.md). When
+the last candle is already after that minute, it runs to the end of the
+next trading day. The weekend gap is skipped.
+
+What a future minute is worth depends on the kind of average:
+
+- **Plain average (no volume)**: every future minute is a normal candle
+  with the **last price of the pair**: the `Avg` of the last candle that
+  is **not** flagged as wide spread. It goes into the sum like any real
+  candle. Live, the last candle is the open minute, and its `Avg` is the
+  last tick. So:
+  - a past MA bends toward the last price: at `last + 10 min` a 1 hour
+    window holds the last 50 real minutes plus 10 minutes at the last
+    price, and once the window has passed the last candle completely the
+    line is flat at the last price. This is the same in both window
+    modes (by time and by candles).
+  - a future MA near the last candle takes the real candles up to the
+    last one and fills the rest of its window with the last price, so it
+    also runs into the last price. The future goes on as far as the
+    window needs, past the end of the day and over the weekend, so the
+    window is always full. After the last candle the line is flat at the
+    last price.
+- **Volume weighted**: future minutes have no volume, so they are
+  treated as **missing candles**, the same way this average treats a
+  wide spread minute (see above): they sit in the window but add nothing
+  to it. A past MA by time keeps changing until its window has passed the
+  last candle and then holds the last usable value; a past MA by candles
+  and a future MA are flat.
+
+Average max/min has no volume weighted mode, so the plain rule applies
+to each of its averages.
+
+In a game (docs/game-mode.md) the same is done at the play minute: the
+hidden candles are future minutes too. The last price is the `Avg` of
+the last visible candle that is not flagged as wide spread. So no
+average ever uses a hidden candle, a future MA near the play minute
+included, and every average goes on from the play minute to the end of
+the day. With **Future** open the game cut is off and the line is built
+from the end of the loaded data, like outside a game.
+
+The last price for the future minutes is still taken from the last
+minute **without** the wide spread flag, even now that a plain average
+uses the flagged minutes with a corrected price. The live tail carries
+the wide spread flag too (`MainWindow.PushLiveTail` sets it with
+`WideSpreadRule.IsWide`, the same rule the candle file uses), so after
+the American close the last price skips the wide live minutes.
+
+How it is drawn: `AverageSeries.Projection` takes the parent candles
+before the cut (loaded minutes plus the live tail), adds one candle per
+future minute (the last price, or a flagged "missing" candle for a
+volume weighted average) up to the end of the day, and runs the normal
+math over that short slice only - from the first future minute for a
+past MA, from one window before the last candle for a future MA. For a
+plain future MA the slice holds at least one window of future minutes
+after the last candle, even when that runs past the end of the day; only
+the values up to the end of the day are drawn.
+`ChartView.AverageExtension` caches the result per average (parent
+arrays, cut and spec) and `ChartColumns.BuildLine` draws the stored line
+up to the start of the extension and the extension after it as one line.
+Nothing of this is stored in the average history; the last price line
+starts after the extension, at its last value.
 
 ## No storage - computed in memory
 
@@ -119,12 +221,14 @@ affine). One flat candle (Min = Max = Avg) per parent minute.
   into before (or after) that range.
 - `Diff` - given the parent minutes array before and after a change,
   finds the common prefix and suffix (comparing timestamp + Avg + the
-  wide spread flag) and returns the index range whose SMA values could
-  have changed, already widened by one window in the direction the
-  window looks. The widening walks the real window rule (`WindowStart` /
-  `WindowEnd`), so it counts trading minutes in time mode and skips the
-  flagged candles in count mode. Returns null when nothing relevant
-  changed (for example a volume-flag patch that kept every Avg).
+  wide spread flag, plus the spread of a flagged minute in a plain
+  average, because the corrected price depends on it) and returns the
+  index range whose SMA values could have changed, already widened by
+  one window in the direction the window looks. The widening walks the
+  real window rule (`WindowStart` / `WindowEnd`), so it counts trading
+  minutes in time mode and skips the not usable candles in count mode.
+  Returns null when nothing relevant changed (for example a volume-flag
+  patch that kept every Avg).
 - `LiveTail` - SMA values for the parent's live tail candles. A past MA
   window reaches back through the tail into the loaded minutes; a
   future MA shrinks toward the newest tick.
@@ -132,6 +236,9 @@ affine). One flat candle (Min = Max = Avg) per parent minute.
 `ChartView` owns the update points. Every average series carries its
 `AverageSpec` on `SymbolSeries`, and the chart keeps the parent minutes
 array reference each average was computed from (`_averageParents`).
+That array is the parent's `AverageMinutes` (visible plus hidden wide
+spread minutes, see above); it is built once per parent history and
+cached in it, so the same history always gives the same reference.
 `AverageSeries.Recompute` is the one entry point: it runs `Diff` and
 patches only the changed index range via
 `CandleHistory.WithReplacedRange`, so a year prepend recomputes that

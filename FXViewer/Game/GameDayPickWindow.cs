@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -9,9 +9,9 @@ public sealed class GameDayPickWindow : Window
 {
     private static readonly Brush MutedBrush = Brushes.Gray;
 
-    public GameDayPickWindow(DateOnly from, DateOnly to, int days, GameDayPick pick)
+    public GameDayPickWindow(string title, DateOnly from, DateOnly to, int days, GameDayPick pick)
     {
-        Title = "Play random day";
+        Title = title;
         SizeToContent = SizeToContent.WidthAndHeight;
         ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;

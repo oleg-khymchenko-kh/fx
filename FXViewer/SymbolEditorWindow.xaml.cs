@@ -28,12 +28,14 @@ public partial class SymbolEditorWindow : Window
     private readonly Func<IProgress<double>, CancellationToken, Task>? _refresh;
     private readonly List<Border> _swatches = new();
     private readonly List<Border> _sellSwatches = new();
+    private readonly List<Border> _neutralSwatches = new();
     private readonly List<CheckBox> _pairBoxes = new();
     private readonly TextBox[] _densityPeriodBoxes;
     private readonly ComboBox[] _densityUnitBoxes;
     private readonly TextBox[] _densityPercentBoxes;
     private int _selectedColor;
     private int _selectedSellColor;
+    private int _selectedNeutralColor;
     private CancellationTokenSource? _cts;
     private bool _busy;
 
@@ -197,6 +199,7 @@ public partial class SymbolEditorWindow : Window
                 : "";
             SelectColor(editing.ColorArgb);
             SelectSellColor(editing.SellColorArgb);
+            SelectNeutralColor(editing.NeutralColorArgb);
         }
         else
         {
@@ -249,6 +252,7 @@ public partial class SymbolEditorWindow : Window
             DensityScaleBox.Text = "";
             SelectColor(IndicatorPalette.Colors[0]);
             SelectSellColor(IndicatorPalette.Colors[7]);
+            SelectNeutralColor(IndicatorSymbol.DefaultNeutralColorArgb);
         }
 
         UpdateParamsVisibility();
@@ -282,13 +286,15 @@ public partial class SymbolEditorWindow : Window
 
     private void BuildSwatches()
     {
-        FillSwatches(ColorPanel, _swatches, SelectColor);
-        FillSwatches(SellColorPanel, _sellSwatches, SelectSellColor);
+        FillSwatches(ColorPanel, _swatches, SelectColor, IndicatorPalette.Colors);
+        FillSwatches(SellColorPanel, _sellSwatches, SelectSellColor, IndicatorPalette.Colors);
+        FillSwatches(NeutralColorPanel, _neutralSwatches, SelectNeutralColor, IndicatorPalette.Grays);
     }
 
-    private static void FillSwatches(UniformGrid panel, List<Border> swatches, Action<int> select)
+    private static void FillSwatches(UniformGrid panel, List<Border> swatches, Action<int> select,
+        int[] colors)
     {
-        foreach (var argb in IndicatorPalette.Colors)
+        foreach (var argb in colors)
         {
             var color = Color.FromArgb(
                 (byte)(argb >> 24), (byte)(argb >> 16), (byte)(argb >> 8), (byte)argb);
@@ -321,6 +327,12 @@ public partial class SymbolEditorWindow : Window
     {
         _selectedSellColor = argb;
         Highlight(_sellSwatches, argb);
+    }
+
+    private void SelectNeutralColor(int argb)
+    {
+        _selectedNeutralColor = argb;
+        Highlight(_neutralSwatches, argb);
     }
 
     private static void Highlight(List<Border> swatches, int argb)
@@ -467,10 +479,12 @@ public partial class SymbolEditorWindow : Window
             SellColorBlock.Visibility = orderBook || volume || levels
                 ? Visibility.Visible
                 : Visibility.Collapsed;
-            ColorLabel.Text = orderBook ? "Buy color" : volume ? "Ask color"
+            if (NeutralColorBlock != null)
+                NeutralColorBlock.Visibility = volume ? Visibility.Visible : Visibility.Collapsed;
+            ColorLabel.Text = orderBook || volume ? "Buy color"
                 : levels ? "From below" : "Color";
             if (SellColorLabel != null)
-                SellColorLabel.Text = volume ? "Bid color" : levels ? "From above" : "Sell color";
+                SellColorLabel.Text = levels ? "From above" : "Sell color";
         }
         UpdateCurrencyHint();
         UpdateBandHint();
@@ -816,6 +830,7 @@ public partial class SymbolEditorWindow : Window
             VolumeSplitSides = volumeSplit,
             ColorArgb = _selectedColor,
             SellColorArgb = _selectedSellColor,
+            NeutralColorArgb = _selectedNeutralColor,
         };
     }
 
@@ -950,6 +965,7 @@ public partial class SymbolEditorWindow : Window
         DensityScaleBox.IsEnabled = !busy;
         ColorPanel.IsEnabled = !busy;
         SellColorPanel.IsEnabled = !busy;
+        NeutralColorPanel.IsEnabled = !busy;
     }
 
     private void DealsBrowseBtn_Click(object sender, RoutedEventArgs e)
