@@ -11,6 +11,7 @@ public sealed class ChartViewState
     public double PriceOffsetPoints { get; set; }
     public Dictionary<string, double>? SymbolOffsetPoints { get; set; }
     public bool RelativeIndicatorOffsets { get; set; }
+    public bool AbsoluteShiftOffsets { get; set; }
     public List<string>? HiddenSymbols { get; set; }
     public List<string>? CollapsedSymbols { get; set; }
     public bool CalendarVisible { get; set; }

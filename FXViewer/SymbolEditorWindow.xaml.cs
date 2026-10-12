@@ -17,6 +17,7 @@ public partial class SymbolEditorWindow : Window
     private const string TimeFormat = "hh\\:mm";
     private const int MaxLevelWindowMinutes = 10_000_000;
     private const int MaxLevelPixels = 500;
+    private const int MaxLevel2Rows = 50;
     private const int MaxBandCount = 200;
     private const int MaxBandWindowMinutes = 10_000_000;
 
@@ -38,10 +39,12 @@ public partial class SymbolEditorWindow : Window
     private int _selectedNeutralColor;
     private CancellationTokenSource? _cts;
     private bool _busy;
+    private bool _levels2ColorsPicked;
 
     private readonly IReadOnlyList<string> _allSources;
     private readonly IReadOnlyList<string> _indexSources;
     private readonly IReadOnlyList<string> _zigzagSources;
+    private readonly IReadOnlyList<string> _candleSources;
     private readonly string _wantedSource;
 
     public SymbolEditorWindow(
@@ -53,7 +56,8 @@ public partial class SymbolEditorWindow : Window
         Func<IProgress<double>, CancellationToken, Task>? refresh = null,
         IReadOnlyList<string>? indexPairs = null,
         IReadOnlyList<string>? indexSources = null,
-        IReadOnlyList<string>? zigzagSources = null)
+        IReadOnlyList<string>? zigzagSources = null,
+        IReadOnlyList<string>? shiftSources = null)
     {
         InitializeComponent();
         _editing = editing;
@@ -71,6 +75,7 @@ public partial class SymbolEditorWindow : Window
         _allSources = sources;
         _indexSources = indexSources ?? Array.Empty<string>();
         _zigzagSources = zigzagSources ?? Array.Empty<string>();
+        _candleSources = sources.Concat(shiftSources ?? Array.Empty<string>()).ToList();
         _wantedSource = editing?.Source ?? sourcePrefill ?? "";
         foreach (var s in sources) SourceBox.Items.Add(s);
         foreach (var p in indexPairs ?? Array.Empty<string>()) CurrencyPairBox.Items.Add(p);
@@ -79,6 +84,7 @@ public partial class SymbolEditorWindow : Window
         foreach (var t in IndicatorTypes.All) TypeBox.Items.Add(IndicatorTypes.Label(t));
         foreach (var u in IndicatorUnits.All) UnitBox.Items.Add(u);
         foreach (var u in IndicatorUnits.All) LevelUnitBox.Items.Add(u);
+        foreach (var u in IndicatorUnits.All) Level2UnitBox.Items.Add(u);
         _densityPeriodBoxes = new[]
         {
             Density1Box, Density2Box, Density3Box, Density4Box, Density5Box,
@@ -155,6 +161,19 @@ public partial class SymbolEditorWindow : Window
             LevelStepBox.Text = (editing.LevelStepPx > 0
                 ? editing.LevelStepPx
                 : IndicatorSymbol.DefaultLevelStepPx).ToString(CultureInfo.InvariantCulture);
+            bool levels2 = IndicatorTypes.IsLevels2(editing.Type);
+            _levels2ColorsPicked = true;
+            Level2PeriodBox.Text = (levels2 ? editing.Period : IndicatorSymbol.DefaultLevel2Period)
+                .ToString(CultureInfo.InvariantCulture);
+            Level2UnitBox.SelectedItem = IndicatorUnits.All.FirstOrDefault(
+                u => string.Equals(u, levels2 ? editing.Unit : IndicatorSymbol.DefaultLevelUnit,
+                    StringComparison.OrdinalIgnoreCase)) ?? IndicatorSymbol.DefaultLevelUnit;
+            FillLevel2Rows(Level2LeftRows, levels2
+                ? editing.EffectiveLevel2LeftSteps()
+                : IndicatorSymbol.DefaultLevel2LeftSteps());
+            FillLevel2Rows(Level2RightRows, levels2
+                ? editing.EffectiveLevel2RightSteps()
+                : IndicatorSymbol.DefaultLevel2RightSteps());
             long shiftSource = editing.SourceTimeUnix;
             long shiftChart = editing.ChartTimeUnix;
             if (IndicatorTypes.IsShift(editing.Type)
@@ -232,6 +251,11 @@ public partial class SymbolEditorWindow : Window
                 IndicatorSymbol.DefaultLevelLengthPx.ToString(CultureInfo.InvariantCulture);
             LevelStepBox.Text =
                 IndicatorSymbol.DefaultLevelStepPx.ToString(CultureInfo.InvariantCulture);
+            Level2PeriodBox.Text =
+                IndicatorSymbol.DefaultLevel2Period.ToString(CultureInfo.InvariantCulture);
+            Level2UnitBox.SelectedItem = IndicatorSymbol.DefaultLevelUnit;
+            FillLevel2Rows(Level2LeftRows, IndicatorSymbol.DefaultLevel2LeftSteps());
+            FillLevel2Rows(Level2RightRows, IndicatorSymbol.DefaultLevel2RightSteps());
             SetAnchor(SourceDate, SourceTimeBox, 0, DefaultSourceTime);
             SetAnchor(ChartDate, ChartTimeBox, 0, DefaultChartTime);
             TargetBox.SelectedItem = SameAsSourceLabel;
@@ -409,6 +433,7 @@ public partial class SymbolEditorWindow : Window
         var wanted = type == null ? _allSources
             : IndicatorTypes.SourceIsIndex(type) ? _indexSources
             : IndicatorTypes.SourceIsZigZag(type) ? _zigzagSources
+            : IndicatorTypes.SourceMayBeShift(type) ? _candleSources
             : _allSources;
         if (SourceBox.Items.Count == wanted.Count
             && SourceBox.Items.Cast<string>().SequenceEqual(wanted))
@@ -456,6 +481,9 @@ public partial class SymbolEditorWindow : Window
         if (LevelsParams != null)
             LevelsParams.Visibility =
                 type == IndicatorTypes.Levels ? Visibility.Visible : Visibility.Collapsed;
+        if (Levels2Params != null)
+            Levels2Params.Visibility =
+                type == IndicatorTypes.Levels2 ? Visibility.Visible : Visibility.Collapsed;
         if (DealsParams != null)
             DealsParams.Visibility =
                 type == IndicatorTypes.Deals ? Visibility.Visible : Visibility.Collapsed;
@@ -476,15 +504,24 @@ public partial class SymbolEditorWindow : Window
             bool orderBook = type != null && IndicatorTypes.IsOrderBook(type);
             bool volume = type == IndicatorTypes.Volume;
             bool levels = type == IndicatorTypes.Levels;
-            SellColorBlock.Visibility = orderBook || volume || levels
+            bool levels2 = type == IndicatorTypes.Levels2;
+            SellColorBlock.Visibility = orderBook || volume || levels || levels2
                 ? Visibility.Visible
                 : Visibility.Collapsed;
             if (NeutralColorBlock != null)
                 NeutralColorBlock.Visibility = volume ? Visibility.Visible : Visibility.Collapsed;
             ColorLabel.Text = orderBook || volume ? "Buy color"
-                : levels ? "From below" : "Color";
+                : levels ? "From below"
+                : levels2 ? "Price rose" : "Color";
             if (SellColorLabel != null)
-                SellColorLabel.Text = levels ? "From above" : "Sell color";
+                SellColorLabel.Text = levels ? "From above"
+                    : levels2 ? "Price fell" : "Sell color";
+            if (levels2 && !_levels2ColorsPicked && _swatches.Count > 0)
+            {
+                _levels2ColorsPicked = true;
+                SelectColor(IndicatorSymbol.DefaultLevel2RiseColorArgb);
+                SelectSellColor(IndicatorSymbol.DefaultLevel2FallColorArgb);
+            }
         }
         UpdateCurrencyHint();
         UpdateBandHint();
@@ -584,6 +621,8 @@ public partial class SymbolEditorWindow : Window
         bool volumeSplit = _editing?.VolumeSplitSides ?? true;
         int levelLength = _editing?.LevelLengthPx ?? IndicatorSymbol.DefaultLevelLengthPx;
         int levelStep = _editing?.LevelStepPx ?? IndicatorSymbol.DefaultLevelStepPx;
+        var level2Left = LevelStep.CopyOf(_editing?.Level2LeftSteps ?? new List<LevelStep>());
+        var level2Right = LevelStep.CopyOf(_editing?.Level2RightSteps ?? new List<LevelStep>());
         if (type == IndicatorTypes.ZigZag)
         {
             if (!int.TryParse(Limit1Box.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture,
@@ -776,6 +815,25 @@ public partial class SymbolEditorWindow : Window
                 return null;
             }
         }
+        else if (type == IndicatorTypes.Levels2)
+        {
+            if (!int.TryParse(Level2PeriodBox.Text.Trim(), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out period) || period <= 0)
+            {
+                Warn("Lookback must be a positive whole number.");
+                return null;
+            }
+            unit = (Level2UnitBox.SelectedItem as string) ?? IndicatorSymbol.DefaultLevelUnit;
+            if ((long)period * IndicatorUnits.BarsPerUnit(unit) > MaxLevelWindowMinutes)
+            {
+                Warn("Lookback is too long, keep it under 10M minutes.");
+                return null;
+            }
+            if (ReadLevel2Rows(Level2LeftRows, "left") is not { } left) return null;
+            if (ReadLevel2Rows(Level2RightRows, "right") is not { } right) return null;
+            level2Left = left;
+            level2Right = right;
+        }
         else if (type == IndicatorTypes.Density)
         {
             if (ReadDensityOptions() is not { } opts) return null;
@@ -823,6 +881,8 @@ public partial class SymbolEditorWindow : Window
             DensitySelected = _editing?.DensitySelected ?? 0,
             LevelLengthPx = levelLength,
             LevelStepPx = levelStep,
+            Level2LeftSteps = level2Left,
+            Level2RightSteps = level2Right,
             VolumeGroupMinutes = volumeGroup,
             VolumeBarScale = volumeBarScale,
             VolumeBarUnit = IndicatorSymbol.ScaleVolumeBarUnit(volumeBarUnit, volumeGroupWas, volumeGroup),
@@ -832,6 +892,90 @@ public partial class SymbolEditorWindow : Window
             SellColorArgb = _selectedSellColor,
             NeutralColorArgb = _selectedNeutralColor,
         };
+    }
+
+    private void FillLevel2Rows(StackPanel panel, IEnumerable<LevelStep> steps)
+    {
+        panel.Children.Clear();
+        foreach (var step in steps.OrderBy(x => x.Pips)) AddLevel2Row(panel, step.Pips, step.Pixels);
+    }
+
+    private static TextBox Level2Box(double? value) => new()
+    {
+        Width = 56,
+        Height = 24,
+        Margin = new Thickness(0, 0, 8, 0),
+        VerticalContentAlignment = VerticalAlignment.Center,
+        Text = value?.ToString("0.##", CultureInfo.InvariantCulture) ?? "",
+    };
+
+    private void AddLevel2Row(StackPanel panel, double? pips, double? pixels)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+        row.Children.Add(Level2Box(pips));
+        row.Children.Add(Level2Box(pixels));
+        var remove = new Button
+        {
+            Content = "✕",
+            Width = 24,
+            Height = 24,
+            ToolTip = "Delete this row",
+        };
+        remove.Click += (_, _) => panel.Children.Remove(row);
+        row.Children.Add(remove);
+        panel.Children.Add(row);
+    }
+
+    private void Level2LeftAddBtn_Click(object sender, RoutedEventArgs e) => AddLevel2NewRow(Level2LeftRows);
+
+    private void Level2RightAddBtn_Click(object sender, RoutedEventArgs e) => AddLevel2NewRow(Level2RightRows);
+
+    private void AddLevel2NewRow(StackPanel panel)
+    {
+        if (panel.Children.Count >= MaxLevel2Rows) return;
+        AddLevel2Row(panel, null, null);
+        if (panel.Children[^1] is StackPanel row && row.Children[0] is TextBox pips) pips.Focus();
+    }
+
+    private static bool TryReadNumber(TextBox box, out double value) =>
+        double.TryParse(box.Text.Trim().Replace(',', '.'), NumberStyles.Float,
+            CultureInfo.InvariantCulture, out value)
+        && double.IsFinite(value);
+
+    private List<LevelStep>? ReadLevel2Rows(StackPanel panel, string side)
+    {
+        var steps = new List<LevelStep>();
+        foreach (var child in panel.Children)
+        {
+            if (child is not StackPanel row || row.Children[0] is not TextBox pipsBox
+                || row.Children[1] is not TextBox pixelsBox) continue;
+            if (pipsBox.Text.Trim().Length == 0 && pixelsBox.Text.Trim().Length == 0) continue;
+            if (!TryReadNumber(pipsBox, out double pips) || pips <= 0)
+            {
+                Warn($"Pips in the {side} table must be positive numbers.");
+                pipsBox.Focus();
+                return null;
+            }
+            if (!TryReadNumber(pixelsBox, out double pixels) || pixels < 0 || pixels > MaxLevelPixels)
+            {
+                Warn($"Pixels in the {side} table must be numbers from 0 to {MaxLevelPixels}.");
+                pixelsBox.Focus();
+                return null;
+            }
+            if (steps.Any(x => x.Pips == pips))
+            {
+                Warn($"The {side} table has {pips.ToString("0.##", CultureInfo.InvariantCulture)} pips twice.");
+                pipsBox.Focus();
+                return null;
+            }
+            steps.Add(new LevelStep { Pips = pips, Pixels = pixels });
+        }
+        if (steps.Count == 0)
+        {
+            Warn($"The {side} table needs at least one row.");
+            return null;
+        }
+        return steps.OrderBy(x => x.Pips).ToList();
     }
 
     private async void OkBtn_Click(object sender, RoutedEventArgs e)

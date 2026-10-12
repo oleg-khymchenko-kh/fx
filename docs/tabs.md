@@ -110,6 +110,15 @@ live `IndicatorSymbol` objects and collects one `ShiftReapply` per
 indicator that really moved. Tabs whose Shift settings are equal (the
 usual case) switch without any work at all.
 
+A placement can also change the Source of a Shift. The chart series and
+the symbol bar keep their own copy of the source (`SourceSymbol`, the
+group a symbol sits under), so `SyncShiftSource` pushes the new source
+into both (`ChartView.SetSeriesSource`, `SymbolBarView.SetSymbolSource`)
+right after the placement is applied. Before 2026-10-05 the series kept
+the source of the last full chart load: after a reload in a tab where
+Find-CHF was built over USDCAD, a find result applied in the CHF tab was
+placed over USDCAD's offset instead of USDCHF's, 515 pips too low.
+
 When something did move, the series are rebuilt **in memory** -
 `QueueShiftReapply` runs the changes one after another (a queue, so fast
 clicking through tabs cannot reorder them). Two cases:

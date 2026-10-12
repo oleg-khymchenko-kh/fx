@@ -223,8 +223,18 @@ Limits:
 
 A Shift symbol is a normal non-editable line series with `SourceSymbol`
 set to its pair, so it keeps the Edit / Delete / Align to source context
-menu and its vertical offset is stored relative to the source pair like
-any other indicator.
+menu.
+
+Its vertical offset is absolute (since 2026-10-04, user's rule): the
+offset chain in `ChartView.EffectiveSeriesOffset` stops at a `TimeShift`
+series, so moving the source pair up or down does not move the copy.
+Indicators built on the copy (Levels2) still chain to it and follow it.
+"Align to source", "Auto align", the selection align and a Find result
+compute the copy's offset above the source and add the source's own
+offset to it (`SetSeriesOffsetOverSource`). Saved view states from before
+that day hold the old relative value; `ChartViewState.AbsoluteShiftOffsets`
+is false for them and `RestoreState` adds the source offset once, so
+nothing jumps on the first load.
 
 If the chart time is later than the source time, the copy runs past the
 last real candle: `RecomputeGlobalRange` takes the maximum over all
@@ -241,6 +251,46 @@ built on top of it - the same cost as one more pair on the chart.
 The two time points can also be set automatically by the similarity
 search: select a fragment on the chart, right-click the Shift indicator,
 pick `Find`. See docs/find-similar.md.
+
+## Presets
+
+`Presets` in the right-click menu of a Shift indicator opens a window
+like `Show results`. A preset is a named parameter set:
+
+- source pair, target pair, source time, chart time, flip - the same
+  fields as a tab's `ShiftPlacement`;
+- the copy's vertical offset above its source (`OffsetOverSource`,
+  points), so applying a preset puts the copy where it was saved;
+- the copy's mirror base (`MirrorBase`, 0 when the copy is not
+  mirrored). A mirrored copy (USDXXX target, or flip) is drawn as
+  `MirrorBase - price`, and a retarget recomputes the base from the
+  loaded range, so the same offset would land somewhere else. On apply
+  with a target or flip change the saved base is written to
+  `AppConfig.MirrorBases` before the reapply, so `RetargetShiftAsync`
+  uses it as the fixed base; without a retarget the series keeps its
+  base and the offset is corrected by the base difference.
+
+Presets are global (`AppConfig.ShiftPresets`), one list shared by all
+Shift indicators, kept in config order. `AppConfig.Load` rebases their
+anchors together with the indicators and tabs.
+
+In the window:
+
+- Click a row (or Enter) - the preset is applied to the indicator the
+  window was opened for. The tab's placement for that indicator is set
+  to the preset and `ApplyShiftPlacements` runs, so the same in-memory
+  re-stamp / retarget path as a tab switch is used; the offset is set
+  with `SetSeriesOffsetOverSource`. If a DB operation is running the
+  config is updated and the chart reload at its end picks it up.
+- The row whose parameters equal the indicator's current ones is
+  selected on open and after every change.
+- `Save as new...` asks for a name (default: target + source date +
+  "flip"); an existing name asks to overwrite that preset.
+- `Save to selected` overwrites the selected preset with the current
+  parameters, `Rename...` and `Delete` (also the Delete key) do what
+  they say, each after a confirmation where data is lost.
+- Drag a row and drop it on another row to reorder; a drop below the
+  last row moves it to the end.
 
 ## Not in v1 (next steps)
 

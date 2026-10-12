@@ -50,8 +50,17 @@ public partial class FindResultsWindow : Window
         ProgressPanel.Visibility = Visibility.Collapsed;
         ResultsList.Visibility = Visibility.Visible;
         bool zigzag = FindSearchTypes.IsZigZag(data.SearchType);
-        if (zigzag && !ResultsView.Columns.Contains(FitColumn)) ResultsView.Columns.Insert(3, FitColumn);
-        else if (!zigzag) ResultsView.Columns.Remove(FitColumn);
+        bool levels2 = FindSearchTypes.IsLevels2(data.SearchType);
+        bool preferred = levels2 && data.Results.Any(r => r.PreferredTotal > 0);
+        bool fit = zigzag || preferred;
+        if (fit && !ResultsView.Columns.Contains(FitColumn)) ResultsView.Columns.Insert(3, FitColumn);
+        else if (!fit) ResultsView.Columns.Remove(FitColumn);
+        FitColumn.Header = preferred ? "Pref" : "Fit";
+        int simIndex = ResultsView.Columns.IndexOf(SimColumn);
+        if (!levels2 && !ResultsView.Columns.Contains(RhoColumn))
+            ResultsView.Columns.Insert(simIndex + 1, RhoColumn);
+        else if (levels2) ResultsView.Columns.Remove(RhoColumn);
+        OverlapColumn.Header = levels2 ? "Levels" : "Overlap";
         string targets = data.Targets is { Count: > 0 } ? string.Join(", ", data.Targets) : data.Source;
         HeaderText.Text = $"{FragmentText(data)} - {data.Results.Count} matches in {targets}";
         var w = WeekendCompressor.Instance;
@@ -64,7 +73,9 @@ public partial class FindResultsWindow : Window
                 (i + 1).ToString(CultureInfo.InvariantCulture),
                 r.Symbol.Length > 0 ? r.Symbol : data.Source,
                 $"{Utc(r.SourceUnix):ddd dd MMM yyyy HH:mm} .. {Utc(endUnix):dd MMM HH:mm}",
-                r.TimeFit.ToString("F3", CultureInfo.InvariantCulture),
+                preferred
+                    ? $"{r.Preferred}/{r.PreferredTotal}"
+                    : r.TimeFit.ToString("F3", CultureInfo.InvariantCulture),
                 r.Sim.ToString("F4", CultureInfo.InvariantCulture),
                 r.Rho.ToString("F3", CultureInfo.InvariantCulture),
                 r.Zoom.ToString("F2", CultureInfo.InvariantCulture),

@@ -63,6 +63,44 @@ public static class ChartRasterizer
             DrawLastPrice(buffer, width, height, lines[i], startBucket, topPrice, pointsPerRow);
     }
 
+    public static void RenderPlainGrid(int[] buffer, int width, int height, int fromX,
+        double topPrice, double pointsPerRow, ChartPalette palette,
+        IReadOnlyList<int> dividerColumns, int dividerColor,
+        IReadOnlyList<int> separatorColumns, int separatorColor)
+    {
+        fromX = Math.Clamp(fromX, 0, width);
+        int stripWidth = width - fromX;
+        if (stripWidth <= 0 || height <= 0) return;
+        var strip = new int[stripWidth * height];
+        Array.Fill(strip, palette.Background);
+        if (pointsPerRow > 0)
+        {
+            double bottom = topPrice - pointsPerRow * (height - 1);
+            if (GridPrice10StepPoints / pointsPerRow >= MinPriceGridSpacingPixels)
+                DrawPriceLines(strip, stripWidth, height, topPrice, bottom, pointsPerRow,
+                    GridPrice10StepPoints, palette.GridPrice10, true, null);
+            if (GridPrice50StepPoints / pointsPerRow >= MinPriceGridSpacingPixels)
+                DrawPriceLines(strip, stripWidth, height, topPrice, bottom, pointsPerRow,
+                    GridPrice50StepPoints, palette.GridPrice50, true, null);
+            DrawPriceLines(strip, stripWidth, height, topPrice, bottom, pointsPerRow,
+                GridPriceStepPoints, palette.GridPrice100, false, null);
+        }
+        foreach (int column in separatorColumns)
+        {
+            int x = column - fromX;
+            if (x < 0 || x >= stripWidth) continue;
+            for (int y = 0; y < height; y++) strip[y * stripWidth + x] = separatorColor;
+        }
+        foreach (int column in dividerColumns)
+        {
+            int x = column - fromX;
+            if (x < 0 || x >= stripWidth) continue;
+            for (int y = 0; y < height; y++) strip[y * stripWidth + x] = dividerColor;
+        }
+        for (int y = 0; y < height; y++)
+            Array.Copy(strip, y * stripWidth, buffer, y * width + fromX, stripWidth);
+    }
+
     public static void DrawSeries(int[] buffer, int width, int height,
         RenderLine line, long startBucket, double topPrice, double pointsPerRow)
     {

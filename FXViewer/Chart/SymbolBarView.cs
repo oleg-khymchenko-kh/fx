@@ -76,6 +76,7 @@ public sealed class SymbolBarView : FrameworkElement
     public event Action<string>? DrawLevelRequested;
     public event Action<string>? FindRequested;
     public event Action<string>? ShowResultsRequested;
+    public event Action<string>? PresetsRequested;
     public event Action? UnflattenClick;
     public event Action<bool, int>? TiltedGridSelected;
     public event Action? TiltedGridSettingsRequested;
@@ -195,6 +196,9 @@ public sealed class SymbolBarView : FrameworkElement
                 };
                 show.Click += (_, _) => ShowResultsRequested?.Invoke(symbol);
                 menu.Items.Add(show);
+                var presets = new MenuItem { Header = "Presets" };
+                presets.Click += (_, _) => PresetsRequested?.Invoke(symbol);
+                menu.Items.Add(presets);
                 menu.Items.Add(new Separator());
             }
             if (!_averageWindows.ContainsKey(symbol))
@@ -421,6 +425,35 @@ public sealed class SymbolBarView : FrameworkElement
                 list.Add(e.Symbol);
             }
         }
+        RebuildVisibleRows();
+        InvalidateMeasure();
+        InvalidateVisual();
+    }
+
+    public void SetSymbolSource(string symbol, string? source)
+    {
+        _sourceOf.TryGetValue(symbol, out var current);
+        if (string.Equals(current, source, StringComparison.OrdinalIgnoreCase)) return;
+        if (current != null)
+        {
+            _sourceOf.Remove(symbol);
+            if (_alignableBySource.TryGetValue(current, out var oldList)) oldList.Remove(symbol);
+        }
+        _sourcedSymbols.Remove(symbol);
+        if (source != null)
+        {
+            _sourceOf[symbol] = source;
+            _groupSymbols.Add(source);
+            if (_indicatorSymbols.Contains(symbol)) _sourcedSymbols.Add(symbol);
+            if (_indicatorSymbols.Contains(symbol) && !_shiftSymbols.Contains(symbol))
+            {
+                if (!_alignableBySource.TryGetValue(source, out var list))
+                    _alignableBySource[source] = list = new List<string>();
+                list.Add(symbol);
+            }
+        }
+        _groupSymbols.Clear();
+        foreach (var s in _sourceOf.Values) _groupSymbols.Add(s);
         RebuildVisibleRows();
         InvalidateMeasure();
         InvalidateVisual();

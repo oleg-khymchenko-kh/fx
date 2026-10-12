@@ -41,6 +41,12 @@ public sealed class IndicatorSymbol
     public List<string> FindTargets { get; set; } = new();
     public string FindSearchType { get; set; } = FindSearchTypes.Similarity;
     public List<string> FindZigZagTargets { get; set; } = new();
+    public List<string> FindLevels2Targets { get; set; } = new();
+    public string FindLevels2Template { get; set; } = "";
+    public int FindLevelTolerancePips { get; set; } = DefaultFindLevelTolerancePips;
+    public int FindLevels2MinLeftPips { get; set; } = DefaultFindLevels2ArmPips;
+    public int FindLevels2MinRightPips { get; set; } = DefaultFindLevels2ArmPips;
+    public bool FindLevels2PickOnChart { get; set; }
     public List<int> DensityPeriods { get; set; } = new();
     public List<string> DensityUnits { get; set; } = new();
     public List<int> DensityScalePercents { get; set; } = new();
@@ -48,6 +54,8 @@ public sealed class IndicatorSymbol
     public int DensitySelected { get; set; }
     public int LevelLengthPx { get; set; } = DefaultLevelLengthPx;
     public int LevelStepPx { get; set; } = DefaultLevelStepPx;
+    public List<LevelStep> Level2LeftSteps { get; set; } = new();
+    public List<LevelStep> Level2RightSteps { get; set; } = new();
     public int VolumeGroupMinutes { get; set; } = 1;
     public double VolumeBarScale { get; set; } = 1;
     public double VolumeBarUnit { get; set; }
@@ -66,11 +74,37 @@ public sealed class IndicatorSymbol
     public const int DefaultFindSmoothMinutes = 240;
     public const int DefaultFindZoomPercent = 50;
     public const int DefaultFindStepMinutes = 60;
+    public const int DefaultFindLevelTolerancePips = 5;
+    public const int DefaultFindLevels2ArmPips = 50;
     public const int DensityOptionCount = 9;
     public const int DensityAllOption = DensityOptionCount;
     public const int DefaultLevelLengthPx = 4;
     public const int DefaultLevelStepPx = 2;
     public const int DefaultLevelPeriod = 5;
+    public const int DefaultLevel2Period = 3;
+    public const int DefaultLevel2RiseColorArgb = unchecked((int)0xFF43A047);
+    public const int DefaultLevel2FallColorArgb = unchecked((int)0xFFFB8C00);
+
+    public static List<LevelStep> DefaultLevel2LeftSteps() => new()
+    {
+        new LevelStep { Pips = 20, Pixels = 0 },
+        new LevelStep { Pips = 40, Pixels = 10 },
+        new LevelStep { Pips = 60, Pixels = 20 },
+        new LevelStep { Pips = 100, Pixels = 30 },
+    };
+
+    public static List<LevelStep> DefaultLevel2RightSteps() => new()
+    {
+        new LevelStep { Pips = 30, Pixels = 10 },
+        new LevelStep { Pips = 50, Pixels = 20 },
+        new LevelStep { Pips = 100, Pixels = 30 },
+    };
+
+    public List<LevelStep> EffectiveLevel2LeftSteps() =>
+        Level2LeftSteps.Count > 0 ? LevelStep.CopyOf(Level2LeftSteps) : DefaultLevel2LeftSteps();
+
+    public List<LevelStep> EffectiveLevel2RightSteps() =>
+        Level2RightSteps.Count > 0 ? LevelStep.CopyOf(Level2RightSteps) : DefaultLevel2RightSteps();
     public const string DefaultLevelUnit = IndicatorUnits.Days;
     public const bool DefaultAverageTimeWindow = true;
     public const int DefaultBandCount = 40;
@@ -191,6 +225,12 @@ public sealed class IndicatorSymbol
         FindTargets = new List<string>(FindTargets),
         FindSearchType = FindSearchType,
         FindZigZagTargets = new List<string>(FindZigZagTargets),
+        FindLevels2Targets = new List<string>(FindLevels2Targets),
+        FindLevels2Template = FindLevels2Template,
+        FindLevelTolerancePips = FindLevelTolerancePips,
+        FindLevels2MinLeftPips = FindLevels2MinLeftPips,
+        FindLevels2MinRightPips = FindLevels2MinRightPips,
+        FindLevels2PickOnChart = FindLevels2PickOnChart,
         DensityPeriods = new List<int>(DensityPeriods),
         DensityUnits = new List<string>(DensityUnits),
         DensityScalePercents = new List<int>(DensityScalePercents),
@@ -198,6 +238,8 @@ public sealed class IndicatorSymbol
         DensitySelected = DensitySelected,
         LevelLengthPx = LevelLengthPx,
         LevelStepPx = LevelStepPx,
+        Level2LeftSteps = LevelStep.CopyOf(Level2LeftSteps),
+        Level2RightSteps = LevelStep.CopyOf(Level2RightSteps),
         VolumeGroupMinutes = VolumeGroupMinutes,
         VolumeBarScale = VolumeBarScale,
         VolumeBarUnit = VolumeBarUnit,
@@ -235,7 +277,7 @@ public sealed class IndicatorSymbol
             || IndicatorTypes.IsDeals(Type) || IndicatorTypes.IsDensity(Type)
             || IndicatorTypes.IsSpread(Type) || IndicatorTypes.IsVolume(Type)
             || IndicatorTypes.IsOrderBook(Type) || IndicatorTypes.IsLevels(Type)
-            || IndicatorTypes.IsTradingCentral(Type)) return true;
+            || IndicatorTypes.IsLevels2(Type) || IndicatorTypes.IsTradingCentral(Type)) return true;
         return Limit1Pips == other.Limit1Pips
             && Limit2Pips == other.Limit2Pips
             && Limit2DelayMinutes == other.Limit2DelayMinutes;
@@ -284,12 +326,13 @@ public static class IndicatorTypes
     public const string OpenPositions = "OpenPositions";
     public const string MarketDepth = "MarketDepth";
     public const string Levels = "Levels";
+    public const string Levels2 = "Levels2";
     public const string TradingCentral = "TradingCentral";
 
     public static readonly string[] All =
     {
         ZigZag, Average, AverageBand, Shift, Drawing, Index, Currency, EntryPoints, PriceAge, Deals, Density,
-        Spread, Volume, PendingOrders, OpenPositions, MarketDepth, Levels, TradingCentral,
+        Spread, Volume, PendingOrders, OpenPositions, MarketDepth, Levels, Levels2, TradingCentral,
     };
 
     public static bool IsDrawing(string type) =>
@@ -336,13 +379,16 @@ public static class IndicatorTypes
     public static bool IsLevels(string type) =>
         string.Equals(type, Levels, StringComparison.OrdinalIgnoreCase);
 
+    public static bool IsLevels2(string type) =>
+        string.Equals(type, Levels2, StringComparison.OrdinalIgnoreCase);
+
     public static bool IsTradingCentral(string type) =>
         string.Equals(type, TradingCentral, StringComparison.OrdinalIgnoreCase);
 
     public static bool HasStorage(string type) =>
         !IsDrawing(type) && !IsShift(type) && !IsDeals(type) && !IsDensity(type) && !IsSpread(type)
         && !IsVolume(type) && !IsOrderBook(type) && !IsAverage(type) && !IsLevels(type)
-        && !IsTradingCentral(type);
+        && !IsLevels2(type) && !IsTradingCentral(type);
 
     public static bool IsZigZag(string type) =>
         string.Equals(type, ZigZag, StringComparison.OrdinalIgnoreCase);
@@ -368,6 +414,8 @@ public static class IndicatorTypes
 
     public static bool SourceIsZigZag(string type) => IsLevels(type);
 
+    public static bool SourceMayBeShift(string type) => IsLevels2(type);
+
     public static string Label(string type) =>
         IsIndex(type) ? "USD Index"
         : IsCurrency(type) ? "Currency Index"
@@ -383,6 +431,15 @@ public static class IndicatorTypes
 
     public static string FromLabel(string label) =>
         All.FirstOrDefault(t => string.Equals(Label(t), label, StringComparison.OrdinalIgnoreCase)) ?? label;
+}
+
+public sealed class LevelStep
+{
+    public double Pips { get; set; }
+    public double Pixels { get; set; }
+
+    public static List<LevelStep> CopyOf(IEnumerable<LevelStep> steps) =>
+        steps.Select(x => new LevelStep { Pips = x.Pips, Pixels = x.Pixels }).ToList();
 }
 
 public static class IndexMethods

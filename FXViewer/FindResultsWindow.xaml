@@ -29,11 +29,11 @@
                     <GridViewColumn Header="Pair" Width="72" DisplayMemberBinding="{Binding Symbol}" />
                     <GridViewColumn Header="Source window (UTC)" Width="250" DisplayMemberBinding="{Binding Window}" />
                     <GridViewColumn x:Name="FitColumn" Header="Fit" Width="52" DisplayMemberBinding="{Binding Fit}" />
-                    <GridViewColumn Header="Sim" Width="62" DisplayMemberBinding="{Binding Sim}" />
-                    <GridViewColumn Header="Rho" Width="56" DisplayMemberBinding="{Binding Rho}" />
+                    <GridViewColumn x:Name="SimColumn" Header="Sim" Width="62" DisplayMemberBinding="{Binding Sim}" />
+                    <GridViewColumn x:Name="RhoColumn" Header="Rho" Width="56" DisplayMemberBinding="{Binding Rho}" />
                     <GridViewColumn Header="Zoom" Width="50" DisplayMemberBinding="{Binding Zoom}" />
                     <GridViewColumn Header="Mir" Width="40" DisplayMemberBinding="{Binding Mirror}" />
-                    <GridViewColumn Header="Overlap" Width="70" DisplayMemberBinding="{Binding Overlap}" />
+                    <GridViewColumn x:Name="OverlapColumn" Header="Overlap" Width="70" DisplayMemberBinding="{Binding Overlap}" />
                 </GridView>
             </ListView.View>
         </ListView>

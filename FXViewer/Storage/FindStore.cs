@@ -5,21 +5,26 @@ namespace FXViewer.Storage;
 
 public sealed record FindResult(
     long SourceUnix, double Sim, double Score, double Rho, double Zoom, bool Mirrored, int Overlap,
-    double MeanA, double MeanB, string Symbol, double TimeFit = 0);
+    double MeanA, double MeanB, string Symbol, double TimeFit = 0, int Preferred = 0, int PreferredTotal = 0);
 
 public sealed record FindData(
     int Version, string Source, long FragStartUnix, long FragEndUnix, long SearchedUnix,
     int WindowMinutes, List<FindResult> Results, List<string> Targets,
     int SmoothMinutes, int ZoomPercent, int StepMinutes,
-    string SearchType = FindSearchTypes.Similarity, string TargetIndicator = "");
+    string SearchType = FindSearchTypes.Similarity, string TargetIndicator = "",
+    int TolerancePips = 0);
 
 public static class FindSearchTypes
 {
     public const string Similarity = "Similarity";
     public const string ZigZag = "ZigZag";
+    public const string Levels2 = "Levels2";
 
     public static bool IsZigZag(string type) =>
         string.Equals(type, ZigZag, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsLevels2(string type) =>
+        string.Equals(type, Levels2, StringComparison.OrdinalIgnoreCase);
 }
 
 public static class FindStore

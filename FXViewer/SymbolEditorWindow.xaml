@@ -104,6 +104,48 @@
                        Margin="0,6,0,0" Foreground="Gray" TextWrapping="Wrap" />
         </StackPanel>
 
+        <StackPanel x:Name="Levels2Params" Grid.Row="3" Grid.Column="1" Margin="0,0,0,10">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="Lookback" VerticalAlignment="Center" Width="70" />
+                <TextBox x:Name="Level2PeriodBox" Width="60" Height="26" VerticalContentAlignment="Center" />
+                <ComboBox x:Name="Level2UnitBox" Width="90" Height="26" VerticalContentAlignment="Center"
+                          Margin="8,0,0,0" />
+                <TextBlock Text="back from the cursor" VerticalAlignment="Center" Margin="10,0,0,0"
+                           Foreground="Gray" />
+            </StackPanel>
+            <Grid Margin="0,10,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Margin="0,0,24,0">
+                    <TextBlock Text="Left part" FontWeight="SemiBold" />
+                    <TextBlock Text="move into the level" Foreground="Gray" Margin="0,0,0,4" />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+                        <TextBlock Text="pips" Width="64" Foreground="Gray" />
+                        <TextBlock Text="pixels" Width="64" Foreground="Gray" />
+                    </StackPanel>
+                    <StackPanel x:Name="Level2LeftRows" />
+                    <Button x:Name="Level2LeftAddBtn" Content="Add row" Width="80" Height="24"
+                            HorizontalAlignment="Left" Margin="0,4,0,0" Click="Level2LeftAddBtn_Click" />
+                </StackPanel>
+                <StackPanel Grid.Column="1">
+                    <TextBlock Text="Right part" FontWeight="SemiBold" />
+                    <TextBlock Text="reversal after the level" Foreground="Gray" Margin="0,0,0,4" />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+                        <TextBlock Text="pips" Width="64" Foreground="Gray" />
+                        <TextBlock Text="pixels" Width="64" Foreground="Gray" />
+                    </StackPanel>
+                    <StackPanel x:Name="Level2RightRows" />
+                    <Button x:Name="Level2RightAddBtn" Content="Add row" Width="80" Height="24"
+                            HorizontalAlignment="Left" Margin="0,4,0,0" Click="Level2RightAddBtn_Click" />
+                </StackPanel>
+            </Grid>
+            <TextBlock Margin="0,8,0,0" Foreground="Gray" TextWrapping="Wrap" MaxWidth="420"
+                       HorizontalAlignment="Left"
+                       Text="A swing is a level only when the move into it is at least the smallest left pips and the reversal after it is at least the smallest right pips. Between rows the length is interpolated, above the last row it stays at the last row's pixels." />
+        </StackPanel>
+
         <StackPanel x:Name="EntryParams" Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,10">
             <TextBlock Text="Stop loss, pips" VerticalAlignment="Center" Margin="0,0,10,0" />
             <TextBox x:Name="StopLossBox" Width="60" Height="26" VerticalContentAlignment="Center" />

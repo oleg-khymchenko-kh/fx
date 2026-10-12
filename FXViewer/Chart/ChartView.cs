@@ -117,10 +117,13 @@ public sealed record SymbolSeries(string Symbol, CandleHistory History, int Colo
     public int LevelWindowMinutes { get; init; }
     public int LevelLengthPx { get; init; } = IndicatorSymbol.DefaultLevelLengthPx;
     public int LevelStepPx { get; init; } = IndicatorSymbol.DefaultLevelStepPx;
+    public bool Levels2Panel { get; init; }
+    public LevelSizeTable? Level2Left { get; init; }
+    public LevelSizeTable? Level2Right { get; init; }
     public string? GameDrawing { get; init; }
     public TradingCentralMark[]? TradingCentralMarks { get; init; }
     public bool BottomPanel => EntryPanel || AgePanel || DensityPanel || SpreadPanel || VolumePanel
-        || OrderBookPanel || LevelsPanel;
+        || OrderBookPanel || LevelsPanel || Levels2Panel;
 }
 
 public sealed record PivotEditRequest(string Symbol, IReadOnlyList<PivotPoint> Points);
@@ -418,10 +421,11 @@ public sealed partial class ChartView : Grid
     {
         HorizontalAlignment = HorizontalAlignment.Right,
         VerticalAlignment = VerticalAlignment.Top,
-        Margin = new Thickness(0, 28, 8, 0),
+        Margin = new Thickness(0, LegendTopPx, 8, 0),
         IsHitTestVisible = false,
         Visibility = Visibility.Collapsed,
     };
+    private const double LegendTopPx = 5;
     private WriteableBitmap? _densityBmp;
     private int[] _densityStaging = Array.Empty<int>();
     private int _densityUsedPx = DensityMaxWidthPx;
@@ -1022,6 +1026,12 @@ public sealed partial class ChartView : Grid
                         && double.IsFinite(sourceAbs))
                         _seriesOffsetPoints[s.Symbol] =
                             _seriesOffsetPoints.GetValueOrDefault(s.Symbol) - sourceAbs;
+            if (!state.AbsoluteShiftOffsets && _series != null)
+                foreach (var s in _series)
+                    if (s.TimeShift && s.SourceSymbol != null)
+                        _seriesOffsetPoints[s.Symbol] =
+                            _seriesOffsetPoints.GetValueOrDefault(s.Symbol)
+                            + EffectiveSeriesOffset(s.SourceSymbol);
             foreach (var locked in _offsetLockedSymbols) _seriesOffsetPoints.Remove(locked);
         }
         if (state.HiddenSymbols != null)
@@ -1836,8 +1846,7 @@ public sealed partial class ChartView : Grid
         double center = _topPrice - _pointsPerRow * (ph - 1) / 2;
         double middle = (range.Lo + range.Hi) / 2;
         double total = GridAlignedOffset(s, center - middle);
-        double sourceOffset = s.SourceSymbol == null ? 0 : EffectiveSeriesOffset(s.SourceSymbol);
-        double own = total - _priceOffsetPoints - sourceOffset;
+        double own = total - _priceOffsetPoints - ParentOffset(s);
         if (_seriesOffsetPoints.GetValueOrDefault(symbol) == own) return;
         _seriesOffsetPoints[symbol] = own;
         SeriesOffsetsChanged?.Invoke();
@@ -2155,6 +2164,23 @@ public sealed partial class ChartView : Grid
             var list = new List<SymbolSeries>(series);
             list[i] = list[i] with { ColorArgb = argb };
             _series = list;
+            Rebuild();
+            return;
+        }
+    }
+
+    public void SetSeriesSource(string symbol, string? source)
+    {
+        var series = _series;
+        if (series == null) return;
+        for (int i = 0; i < series.Count; i++)
+        {
+            if (!string.Equals(series[i].Symbol, symbol, StringComparison.OrdinalIgnoreCase)) continue;
+            if (string.Equals(series[i].SourceSymbol, source, StringComparison.OrdinalIgnoreCase)) return;
+            var list = new List<SymbolSeries>(series);
+            list[i] = list[i] with { SourceSymbol = source };
+            _series = list;
+            SeriesOffsetsChanged?.Invoke();
             Rebuild();
             return;
         }
@@ -3657,7 +3683,7 @@ public sealed partial class ChartView : Grid
         foreach (var s in seriesList)
         {
             if (!desired.TryGetValue(s.Symbol, out var effective)) continue;
-            double sourceEffective = s.SourceSymbol == null ? 0
+            double sourceEffective = s.SourceSymbol == null || s.TimeShift ? 0
                 : desired.TryGetValue(s.SourceSymbol, out var se) ? se
                 : EffectiveSeriesOffset(s.SourceSymbol);
             double offset = effective - sourceEffective;
@@ -4250,6 +4276,8 @@ public sealed partial class ChartView : Grid
         var calShown = _calendarShown;
         var map = Compressor;
         bool sessionBands = _sessionsVisible;
+        int levels2Strip = Math.Min(pw, Levels2StripPx(visibleSeries));
+        var (levels2Dividers, levels2Separators) = Levels2StripColumns(visibleSeries, pw);
         var flatten = _flatten;
         var tiltedGrid = new TiltedGridSettings(
             TiltedRenderSettings(true), TiltedRenderSettings(false));
@@ -4510,6 +4538,10 @@ public sealed partial class ChartView : Grid
                         panelBottom -= ChartRasterizer.EntryPanelHeightPx + ChartRasterizer.EntryPanelGapPx;
                     }
                 }
+                if (levels2Strip > 0)
+                    ChartRasterizer.RenderPlainGrid(_staging, pw, ph, pw - levels2Strip,
+                        topPrice, pointsPerRow, Palette, levels2Dividers, Levels2SplitLineArgb,
+                        levels2Separators, Palette.GridDay);
             });
             long tUi = Perf.Now();
             if (version == _version)
@@ -4523,6 +4555,7 @@ public sealed partial class ChartView : Grid
                 _renderedStartBucket = startBucket;
                 _renderedTopPrice = topPrice;
                 _renderedPointsPerRow = pointsPerRow;
+                _levels2StripPx = levels2Strip;
                 _shiftLines.Clear();
                 _shiftLines.AddRange(shiftLines);
                 _renderedLines.Clear();
@@ -4567,6 +4600,7 @@ public sealed partial class ChartView : Grid
                     PriceOffsetPoints = _priceOffsetPoints,
                     SymbolOffsetPoints = new Dictionary<string, double>(_seriesOffsetPoints),
                     RelativeIndicatorOffsets = true,
+                    AbsoluteShiftOffsets = true,
                     HiddenSymbols = new List<string>(_hiddenSymbols),
                     CollapsedSymbols = new List<string>(_collapsedSources),
                     CalendarVisible = _calendarVisible,
@@ -5086,6 +5120,7 @@ public sealed partial class ChartView : Grid
         _image.Height = ph / dpi.DpiScaleY;
         long t = Perf.Now();
         _bitmap.WritePixels(new Int32Rect(0, 0, pw, ph), _staging, pw * 4, 0);
+        ClipOverlaysToLevels2Strip(pw, ph, dpi);
         t = Perf.Since("present.blit", t);
         UpdateRangeVisuals();
         UpdateMeasureVisuals();
@@ -5168,7 +5203,8 @@ public sealed partial class ChartView : Grid
                     && ((s.DensityPanel && s.DensityWindows is { Length: > 0 })
                         || (s.OrderBookPanel && (s.OrderBookSnapshots is { Length: > 0 }
                             || s.DepthSnapshots is { Length: > 0 }))
-                        || (s.LevelsPanel && _pivots.ContainsKey(s.SourceSymbol))))
+                        || (s.LevelsPanel && _pivots.ContainsKey(s.SourceSymbol))
+                        || Levels2Shown(s)))
                     (panels ??= new List<SymbolSeries>()).Add(s);
         if (panels == null)
         {
@@ -5199,10 +5235,26 @@ public sealed partial class ChartView : Grid
             Array.Clear(_densityStaging, y * pw + pw - stale, stale);
         int used = DensityMaxWidthPx;
         bool drew = false;
+        int levels2Right = pw;
         foreach (var s in panels)
         {
             DensityHistogram histogram;
             DensityHistogram candle = default;
+            if (s.Levels2Panel)
+            {
+                long levels2From = range != null
+                    ? rangeStartUnix
+                    : TradingMinutesBefore(anchorUnix, s.LevelWindowMinutes);
+                int areaRight = levels2Right;
+                levels2Right -= Levels2AreaWidth(s) + Levels2AreaGapPx;
+                int levels2Width = DrawLevels2(_densityStaging, pw, ph, areaRight, s,
+                    levels2From, anchorUnix);
+                tDensity = Perf.Since("density.levels2", tDensity);
+                if (levels2Width <= 0) continue;
+                used = Math.Max(used, levels2Width);
+                drew = true;
+                continue;
+            }
             if (s.LevelsPanel)
             {
                 long levelsFrom = range != null
@@ -5593,7 +5645,7 @@ public sealed partial class ChartView : Grid
         {
             var s = panels[i];
             var label = (TextBlock)_densityLabelPanel.Children[i];
-            if (s.LevelsPanel)
+            if (s.LevelsPanel || s.Levels2Panel)
             {
                 label.Text = SelectedRange != null
                     ? $"{s.Symbol}: selection"
@@ -5622,6 +5674,14 @@ public sealed partial class ChartView : Grid
             }
             label.Foreground = BrushFor(s.ColorArgb);
         }
+        double legendTop = LegendTopPx / VisualTreeHelper.GetDpi(this).DpiScaleY;
+        if (_densityLabelPanel.Children.Count > 0 && _densityLabelPanel.Children[0] is TextBlock first)
+        {
+            var typeface = new Typeface(first.FontFamily, first.FontStyle, first.FontWeight, first.FontStretch);
+            legendTop -= (first.FontFamily.Baseline - typeface.CapsHeight) * first.FontSize;
+        }
+        if (_densityLabelPanel.Margin.Top != legendTop)
+            _densityLabelPanel.Margin = new Thickness(0, legendTop, 8, 0);
         _densityLabelPanel.Visibility = Visibility.Visible;
     }
 
@@ -5690,6 +5750,27 @@ public sealed partial class ChartView : Grid
     private double SeriesOffset(string symbol) =>
         _priceOffsetPoints + EffectiveSeriesOffset(symbol);
 
+    private double ParentOffset(SymbolSeries s) =>
+        s.SourceSymbol == null || s.TimeShift ? 0 : EffectiveSeriesOffset(s.SourceSymbol);
+
+    public double SeriesOffsetOverSource(string symbol)
+    {
+        var s = GetSeries(symbol);
+        double sourceOffset = s is { TimeShift: true, SourceSymbol: not null }
+            ? EffectiveSeriesOffset(s.SourceSymbol)
+            : 0;
+        return _seriesOffsetPoints.GetValueOrDefault(symbol) - sourceOffset;
+    }
+
+    public void SetSeriesOffsetOverSource(string symbol, double pointsAboveSource)
+    {
+        var s = GetSeries(symbol);
+        double sourceOffset = s is { TimeShift: true, SourceSymbol: not null }
+            ? EffectiveSeriesOffset(s.SourceSymbol)
+            : 0;
+        SetSeriesOffset(symbol, pointsAboveSource + sourceOffset);
+    }
+
     private double EffectiveSeriesOffset(string symbol)
     {
         double total = 0;
@@ -5697,7 +5778,8 @@ public sealed partial class ChartView : Grid
         for (int depth = 0; current != null && depth < 8; depth++)
         {
             total += _seriesOffsetPoints.GetValueOrDefault(current);
-            current = GetSeries(current)?.SourceSymbol;
+            var series = GetSeries(current);
+            current = series == null || series.TimeShift ? null : series.SourceSymbol;
         }
         return total;
     }
@@ -7547,8 +7629,9 @@ public sealed partial class ChartView : Grid
         if (s?.SourceSymbol == null || s.BottomPanel) return null;
         var src = GetSeries(s.SourceSymbol);
         if (src == null) return null;
-        if (s.Transform == null || src.Transform == null) return 0;
-        return (double)src.Transform.ToDisplay(0) - s.Transform.ToDisplay(0);
+        double sourceOffset = s.TimeShift ? EffectiveSeriesOffset(s.SourceSymbol) : 0;
+        if (s.Transform == null || src.Transform == null) return sourceOffset;
+        return (double)src.Transform.ToDisplay(0) - s.Transform.ToDisplay(0) + sourceOffset;
     }
 
     public bool IsAlignedToSource(string symbol)

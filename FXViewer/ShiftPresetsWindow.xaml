@@ -1,0 +1,48 @@
+<Window x:Class="FXViewer.ShiftPresetsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Shift presets" Width="640" Height="420" WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False" UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ListView x:Name="PresetsList" Grid.Row="0" SelectionMode="Single" AllowDrop="True"
+                  SelectionChanged="PresetsList_SelectionChanged"
+                  PreviewMouseMove="PresetsList_PreviewMouseMove"
+                  DragOver="PresetsList_DragOver" Drop="PresetsList_Drop">
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem">
+                    <EventSetter Event="PreviewMouseLeftButtonDown" Handler="PresetRow_MouseDown" />
+                    <EventSetter Event="PreviewMouseLeftButtonUp" Handler="PresetRow_MouseUp" />
+                </Style>
+            </ListView.ItemContainerStyle>
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Name" Width="200" DisplayMemberBinding="{Binding Name}" />
+                    <GridViewColumn Header="Target" Width="70" DisplayMemberBinding="{Binding Target}" />
+                    <GridViewColumn Header="Source time (UTC)" Width="130" DisplayMemberBinding="{Binding SourceTime}" />
+                    <GridViewColumn Header="Chart time (UTC)" Width="130" DisplayMemberBinding="{Binding ChartTime}" />
+                    <GridViewColumn Header="Flip" Width="40" DisplayMemberBinding="{Binding Flip}" />
+                </GridView>
+            </ListView.View>
+        </ListView>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,10,0,0">
+            <Button x:Name="SaveNewBtn" Content="Save as new..." Width="120" Height="28"
+                    Margin="0,0,8,0" Click="SaveNewBtn_Click" />
+            <Button x:Name="OverwriteBtn" Content="Save to selected" Width="120" Height="28"
+                    Margin="0,0,8,0" Click="OverwriteBtn_Click" />
+            <Button x:Name="RenameBtn" Content="Rename..." Width="100" Height="28"
+                    Margin="0,0,8,0" Click="RenameBtn_Click" />
+            <Button x:Name="DeleteBtn" Content="Delete" Width="100" Height="28"
+                    Click="DeleteBtn_Click" />
+        </StackPanel>
+
+        <TextBlock x:Name="HintText" Grid.Row="2" Margin="0,10,0,0" Foreground="Gray"
+                   TextWrapping="Wrap" />
+    </Grid>
+</Window>

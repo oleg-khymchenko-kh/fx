@@ -20,6 +20,7 @@ public sealed class AppConfig
     public List<IndicatorSymbol> Indicators { get; set; } = new();
     public List<string> SeriesOrder { get; set; } = new();
     public List<ZoomLevel> ZoomLevels { get; set; } = new();
+    public List<ShiftPreset> ShiftPresets { get; set; } = new();
     public bool IndicatorsInitialized { get; set; }
     public int EditHitRadiusPx { get; set; } = 3;
     public CalendarSettings Calendar { get; set; } = new();
@@ -131,6 +132,8 @@ public sealed class AppConfig
         foreach (var tab in Tabs)
             foreach (var placement in tab.Shifts)
                 if (placement.Rebase(anchor)) changed = true;
+        foreach (var preset in ShiftPresets)
+            if (preset.Rebase(anchor)) changed = true;
         return changed;
     }
 
