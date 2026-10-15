@@ -68,7 +68,8 @@ public partial class FindResultsWindow : Window
         for (int i = 0; i < data.Results.Count; i++)
         {
             var r = data.Results[i];
-            long endUnix = w.ToRealEnd(w.ToVirtual(r.SourceUnix) + data.WindowMinutes * 60L);
+            int windowMinutes = r.WindowMinutes > 0 ? r.WindowMinutes : data.WindowMinutes;
+            long endUnix = w.ToRealEnd(w.ToVirtual(r.SourceUnix) + windowMinutes * 60L);
             rows.Add(new Row(
                 (i + 1).ToString(CultureInfo.InvariantCulture),
                 r.Symbol.Length > 0 ? r.Symbol : data.Source,

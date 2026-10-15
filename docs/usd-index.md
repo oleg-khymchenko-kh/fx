@@ -1,6 +1,8 @@
 # USD index and currency index
 
-Status: implemented, v1.
+Status: implemented, v1. Since 2026-10-15 both index types update by
+themselves: live tail every 10 seconds, full rebuild every hour (see
+"Automatic refresh and rebuild").
 
 ## Goal
 
@@ -283,8 +285,75 @@ index live on the same 1.0000 baseline, "Align to source" is meaningful
 for it.
 SameData compares the source index and the pair.
 
+## Automatic refresh and rebuild
+
+Code: MainWindow.IndexAuto.cs. A 10 second timer (started at the end of
+startup) handles every USD Index together with the Currency Indexes
+built on it. Nothing needs to be pressed by hand.
+
+Every 10 seconds (refresh): the line is extended from the last stored
+minute up to the current minute. This is computed in memory only, it
+is never written to the DB:
+
+- `DollarIndexSymbol.Tail` resumes the accumulator from the last stored
+  index minute (same as Refresh) and steps over the pair minutes after
+  it: DB minutes (provisional ones included) merged with the live
+  minutes that are not in the DB yet (closed minutes still in memory and
+  the forming minute, avg = (open + high + low + close) / 4, wide spread
+  minutes skipped when they are hidden). A DB minute wins over a live
+  one for the same time.
+- `CurrencyIndexSymbol.Tail` does the same for each currency, with the
+  USD tail as the index input.
+- The result goes to the chart as the series live tail
+  (`ChartView.SetLiveTail`), like the live tail of a real pair, and the
+  last value goes to the symbol bar. Averages built on the index follow
+  it, because `SetLiveTail` updates them too. Nothing is reloaded.
+
+The tail can be 1 point (index) or 2 points (currency) off a full
+recompute, because it resumes from a rounded stored value. The next
+rebuild removes that.
+
+Every hour (rebuild), and on the first tick after startup: the whole
+index is computed again from the start and the DB is brought to that
+result. The end is clamped to the confirmed watermark (see
+docs/live-candles.md), so provisional minutes are never stored; they
+stay in the tail.
+
+- `DollarIndexSymbol.Compute` and `CurrencyIndexSymbol.Compute` run the
+  same steps as Generate, but into memory, in the background, with no
+  DB lock.
+- `FlatSeriesSync.Diff` compares the result with the stored minutes and
+  makes a plan: minutes to write (new or changed) and minutes to clear
+  (stored but not in the result).
+- Small plan (up to 20,000 changes, the normal case: only the minutes of
+  the last hour): under `_dbBusy` the plan is written in place. If the
+  stored data changed since the plan was made (last stored minute moved),
+  the plan is made again first. Typical cost: about 50 ms under the lock.
+- Big plan (for example after "Hide wide spread minutes" was switched,
+  or after old pair history changed - the index is cumulative, so every
+  later minute moves): the full result is written into a temp symbol
+  `<NAME>AUTOREBUILD` in the background, then under `_dbBusy` the temp
+  folder is renamed over the real one. The lock is held only for the
+  rename.
+- The chart series of every changed symbol is then re-read for its
+  loaded years and replaced in place (`ChartView.ReplaceSeries`), with
+  the lazy loader paused for those symbols. No full chart reload.
+
+The rebuild gives up (and tries again on the next tick) when another DB
+operation, a history download or a chart load is running, or when the
+index or its currency indexes were changed while it was computing. A
+failed rebuild is tried again after 5 minutes. A tail longer than 90
+minutes (for example right after a long history download) asks for a
+rebuild on the next tick, at most once every 5 minutes. Switching "Hide
+wide spread minutes" in Settings also asks for a rebuild.
+
+Measured on the user's index (start 2025-08-26, 6 pairs, 6 currencies,
+2.9 M minutes): compute about 4 s in the background, 35 minutes written
+in 58 ms. The old full Generate of the same data takes about 20 s and
+rewrites 118 MB.
+
+Manual Refresh and Rebuild in the symbol bar menu still work as before.
+
 ## Not in v1 (next steps)
 
-- Live update from ticks; both index types extend only on Refresh /
-  Compute derived.
 - Weighting pairs by liquidity, or PCA / Kalman style factor extraction.

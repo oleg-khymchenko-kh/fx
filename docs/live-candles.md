@@ -121,7 +121,9 @@ Computed symbols do read provisional minutes. That is the point of the feature.
 
 Averages have no storage anymore: the line is computed in memory from the parent series
 (see docs/moving-average.md), so it follows the live tail and needs no repair pass.
-Everything else (USD index, currency index, zigzag) still needs a manual recompute.
+The USD index and the currency indexes update by themselves since 2026-10-15: a live tail
+every 10 seconds and an hourly rebuild clamped to the confirmed watermark (see
+docs/usd-index.md "Automatic refresh and rebuild"). Zigzag still needs a manual recompute.
 
 The one real danger is the cumulative index level. `DollarIndexSymbol.Refresh` and
 `CurrencyIndexSymbol.Refresh` read their running state back out of the DB at the last written minute.
@@ -136,8 +138,6 @@ ZigZag has no Refresh at all, only a full rebuild.
   and the lazy loader never re-reads a year it already covers, so corrected highs and lows appear
   only after the next full chart load. Until then the newest candles show the tick derived, slightly
   narrower high and low.
-- Only Averages follow the data automatically (they are computed in memory from the parent).
-  Zigzag must stay manual because its only update path is a full rebuild, which would wipe hand
-  edited points. The two index types must stay manual because a full rebuild is expensive and their
-  Refresh is already clamped to the confirmed watermark.
+- Only Averages and the two index types follow the data automatically. Zigzag must stay manual
+  because its only update path is a full rebuild, which would wipe hand edited points.
 - The Verify DB button does not report provisional counts.

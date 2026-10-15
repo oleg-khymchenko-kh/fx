@@ -144,9 +144,12 @@ scan on 120 random windows of EURUSD and GBPUSD.
 ## Find by levels
 
 The Find dialog of a Shift indicator (docs/find-similar.md, "Levels2
-search") has a `Levels2` search type: it takes the dashes a Levels2
-indicator shows for the chart selection as the pattern and looks for a
-past window of the indicator's pair with a similar set of dashes.
+search") has a `Levels2` search type: it takes the levels of a pair in
+the chart selection as the pattern and looks for a past window of a pair
+with a similar set of dashes. It uses the same two tables as this
+indicator, but its own copy of them, edited in the `Level parameters`
+popup of the dialog and stored on the Shift indicator; no Levels2
+indicator has to exist for the search.
 
 ## Code
 

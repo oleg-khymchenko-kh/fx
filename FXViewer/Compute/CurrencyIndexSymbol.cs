@@ -84,16 +84,78 @@ public static class CurrencyIndexSymbol
             return 0;
         }
 
+        var st = Resume(db, targetSymbol, indexSymbol, pair, lastTargetUnix, IndexAlgorithms.IsPips(algorithm));
+        if (st == null)
+            return Generate(db, targetSymbol, indexSymbol, pair, algorithm, pairPipPoints,
+                log, ct, progress).Minutes;
+
+        RunRange(db, targetSymbol, indexSymbol, pair, pairPipPoints, lastTargetUnix + 60, to,
+            st, ct, progress);
+        db.FlushAll();
+        progress?.Report(1.0);
+        log?.Invoke($"{targetSymbol}: refreshed {st.Written:N0} minutes, final {FinalText(st)}");
+        return st.Written;
+    }
+
+    public static Candle[] Compute(
+        CandleDatabase db, Candle[] indexCandles, string pair, string algorithm, int pairPipPoints,
+        long endUnix, CancellationToken ct = default)
+    {
+        var result = new List<Candle>();
+        var st = new State { UsePips = IndexAlgorithms.IsPips(algorithm) };
+        long end = endUnix > 0 ? endUnix : long.MaxValue;
+        bool usdBase = UsdIsBase(pair);
+        Action<long, int> write = (t, v) => result.Add(DollarIndexSymbol.Flat(t, v));
+        int i = 0;
+        while (i < indexCandles.Length && indexCandles[i].MinuteUnixSeconds <= end)
+        {
+            ct.ThrowIfCancellationRequested();
+            long from = indexCandles[i].MinuteUnixSeconds;
+            long yearTo = Math.Min(end, YearStartUnix(UnixToUtc(from).Year + 1) - 60);
+            int k = i;
+            while (k < indexCandles.Length && indexCandles[k].MinuteUnixSeconds <= yearTo) k++;
+            var pairCandles = db.ReadRange(pair, UnixToUtc(from), UnixToUtc(yearTo));
+            Step(new ArraySegment<Candle>(indexCandles, i, k - i), pairCandles, usdBase, pairPipPoints,
+                st, write, ct);
+            i = k;
+        }
+        return result.ToArray();
+    }
+
+    public static List<Candle> Tail(
+        CandleDatabase db, string targetSymbol, string indexSymbol, string pair,
+        string algorithm, int pairPipPoints, IReadOnlyList<Candle> indexTail, IReadOnlyList<Candle>? pairLive)
+    {
+        var tail = new List<Candle>();
+        var lastTarget = db.LastFilledMinuteUtc(targetSymbol);
+        if (lastTarget == null) return tail;
+        long lastTargetUnix = ((DateTimeOffset)lastTarget.Value).ToUnixTimeSeconds();
+        long to = DollarIndexSymbol.NowMinuteUnix();
+        if (to <= lastTargetUnix) return tail;
+        var st = Resume(db, targetSymbol, indexSymbol, pair, lastTargetUnix, IndexAlgorithms.IsPips(algorithm));
+        if (st == null) return tail;
+
+        var from = UnixToUtc(lastTargetUnix + 60);
+        var indexCandles = DollarIndexSymbol.WithLive(
+            db.ReadRange(indexSymbol, from, UnixToUtc(to)), indexTail, lastTargetUnix, to);
+        var pairCandles = DollarIndexSymbol.WithLive(
+            db.ReadRange(pair, from, UnixToUtc(to)), pairLive, lastTargetUnix, to);
+        Step(indexCandles, pairCandles, UsdIsBase(pair), pairPipPoints, st,
+            (t, v) => tail.Add(DollarIndexSymbol.Flat(t, v)), CancellationToken.None);
+        return tail;
+    }
+
+    private static State? Resume(
+        CandleDatabase db, string targetSymbol, string indexSymbol, string pair, long lastTargetUnix,
+        bool usePips)
+    {
         var targetCandle = ReadAt(db, targetSymbol, lastTargetUnix);
         var indexCandle = ReadAt(db, indexSymbol, lastTargetUnix);
         var pairCandle = ReadAt(db, pair, lastTargetUnix);
         if (targetCandle is not { Avg: > 0 } || indexCandle is not { Avg: > 0 }
             || pairCandle is not { Avg: > 0 })
-            return Generate(db, targetSymbol, indexSymbol, pair, algorithm, pairPipPoints,
-                log, ct, progress).Minutes;
-
-        bool usePips = IndexAlgorithms.IsPips(algorithm);
-        var st = new State
+            return null;
+        return new State
         {
             Started = true,
             LastUnix = lastTargetUnix,
@@ -104,12 +166,6 @@ public static class CurrencyIndexSymbol
             LastIndex = indexCandle.Value.Avg,
             LastPair = pairCandle.Value.Avg,
         };
-        RunRange(db, targetSymbol, indexSymbol, pair, pairPipPoints, lastTargetUnix + 60, to,
-            st, ct, progress);
-        db.FlushAll();
-        progress?.Report(1.0);
-        log?.Invoke($"{targetSymbol}: refreshed {st.Written:N0} minutes, final {FinalText(st)}");
-        return st.Written;
     }
 
     private static int RunRange(
@@ -125,6 +181,7 @@ public static class CurrencyIndexSymbol
 
         var span = years.Where(y => YearStartUnix(y + 1) > from && YearStartUnix(y) <= to).ToList();
         bool usdBase = UsdIsBase(pair);
+        Action<long, int> write = (t, v) => db.WriteMinute(targetSymbol, UnixToUtc(t), v, v, v, false);
         int done = 0;
         foreach (int year in span)
         {
@@ -133,7 +190,7 @@ public static class CurrencyIndexSymbol
             long yearTo = Math.Min(to, YearStartUnix(year + 1) - 60);
             var indexCandles = db.ReadRange(indexSymbol, UnixToUtc(yearFrom), UnixToUtc(yearTo));
             var pairCandles = db.ReadRange(pair, UnixToUtc(yearFrom), UnixToUtc(yearTo));
-            Step(db, targetSymbol, indexCandles, pairCandles, usdBase, pairPipPoints, st, ct);
+            Step(indexCandles, pairCandles, usdBase, pairPipPoints, st, write, ct);
             done++;
             progress?.Report((double)done / span.Count);
         }
@@ -141,8 +198,8 @@ public static class CurrencyIndexSymbol
     }
 
     private static void Step(
-        CandleDatabase db, string targetSymbol, List<Candle> indexCandles, List<Candle> pairCandles,
-        bool usdBase, int pairPipPoints, State st, CancellationToken ct)
+        IReadOnlyList<Candle> indexCandles, IReadOnlyList<Candle> pairCandles,
+        bool usdBase, int pairPipPoints, State st, Action<long, int> write, CancellationToken ct)
     {
         int i = 0;
         int j = 0;
@@ -166,7 +223,7 @@ public static class CurrencyIndexSymbol
                 st.Acc = 0;
                 st.LastIndex = indexValue;
                 st.LastPair = pairValue;
-                WriteStep(db, targetSymbol, ti, st);
+                WriteStep(ti, st, write);
                 continue;
             }
 
@@ -179,16 +236,16 @@ public static class CurrencyIndexSymbol
             st.LastIndex = indexValue;
             st.LastPair = pairValue;
             st.Acc += usdBase ? u - r : u + r;
-            WriteStep(db, targetSymbol, ti, st);
+            WriteStep(ti, st, write);
         }
     }
 
-    private static void WriteStep(CandleDatabase db, string targetSymbol, long unix, State st)
+    private static void WriteStep(long unix, State st, Action<long, int> write)
     {
         int v = (int)Math.Round(
             st.UsePips ? PriceScale + st.Acc * PipScale : Math.Exp(st.Acc) * PriceScale,
             MidpointRounding.AwayFromZero);
-        db.WriteMinute(targetSymbol, UnixToUtc(unix), v, v, v, false);
+        write(unix, v);
         st.Written++;
         st.LastUnix = unix;
     }

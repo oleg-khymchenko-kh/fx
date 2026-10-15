@@ -1,7 +1,8 @@
 # Find similar (search for a Shift indicator)
 
 Status: implemented, v3 (v1 + the ZigZag search type + the Levels2 search
-type).
+type; since 2026-10-12 the Levels2 search works on pairs with its own
+level tables and a window length grid).
 
 ## Goal
 
@@ -15,9 +16,10 @@ indicator (docs/shifted-symbol.md).
 1. Select a time range on the chart (Shift+drag - the same range band
    the stats popup uses).
 2. Right-click the Shift indicator row in the right bar, pick `Find`.
-   The item is enabled only while a selection exists. A "Search
-   parameters" dialog opens first (see below); Cancel there drops the
-   search.
+   The item is enabled while a selection exists, or when the indicator
+   has a last search (see "Last search" below), so a search can be
+   reopened with no selection at all. A "Search parameters" dialog
+   opens first (see below); Cancel there drops the search.
 3. A popup shows the search progress (with Cancel). The search takes
    well under a second on 16 years of M1, so the bar mostly just flashes.
 4. When done the same popup switches to the ranked result list, best
@@ -31,6 +33,37 @@ indicator (docs/shifted-symbol.md).
    chart reload, so browsing results with the arrow keys is fast. The
    series' vertical offset is set so the found window's mean lines up
    with the fragment's mean.
+
+## Last search
+
+Since 2026-10-14 (user's request) the dialog remembers the whole last
+search per Shift indicator: the fragment range and everything the
+dialog showed when `Search` was pressed - search type, all text boxes
+and their units, the checked pairs and ZigZag indicators, the
+template, the Level tables, the `Table` / `Chart` mode, the ZigZag
+Points table and the Levels table with all hand edits (Use, Pips
+up / down, Seq, Min left / right, rows added from the chart, deleted
+rows). It is stored on the indicator in config.json as `FindLast`
+(`FindDialogState`) and copied on Edit and Clone; renaming a ZigZag
+indicator renames it inside `FindLast` too. Cancel does not change
+it. Edit of the Shift indicator now keeps all `Find*` fields; before
+2026-10-14 it kept only the four Similarity ones and dropped the
+search type and the ZigZag / Levels2 settings.
+
+- `Find` with a last search opens the dialog exactly as it was, on the
+  saved range, also when another range is selected on the chart. The
+  fragment line says `(last search)`; when the chart selection differs
+  it also says which range `New search` would take.
+- When the saved range is in years the chart has not loaded yet (lazy
+  loading), those years are loaded for all pairs before the dialog
+  opens, so the mini chart and the template levels are there.
+- `Find` without a last search works as before: it needs a selection.
+- The `New search` button (bottom left of the dialog) starts over,
+  the same as `Find` did before 2026-10-14: the dialog is reopened on
+  the current chart selection (or on the same range when nothing is
+  selected), the fields are filled from the stored per-type values on
+  the indicator (below) and the Points and Levels tables are generated
+  from scratch.
 
 ## Search parameters
 
@@ -179,8 +212,9 @@ The dialog starts with a `Search type` combo with three options:
 - **Similarity** - everything described above, unchanged.
 - **ZigZag** - match a sequence of ZigZag extremums instead of the
   smoothed curve.
-- **Levels2** - match the picture of a Levels2 indicator (the set of
-  level dashes) instead of the curve, see "Levels2 search" below.
+- **Levels2** - match the picture of the levels of a pair (the set of
+  level dashes a Levels2 indicator would draw) instead of the curve, see
+  "Levels2 search" below.
 
 The chosen type is stored on the indicator (`FindSearchType`), so the
 next Find opens in the same mode. The ZigZag mode also stores its
@@ -229,8 +263,9 @@ targets (`FindZigZagTargets`) and shares `FindZoomPercent`.
   or deleted. `Minutes` must not decrease down the table, all values
   must be plain finite numbers (cells reject text that does not
   parse), at least two rows are required, and exactly two rows must
-  carry the `Zoom` mark, at different pip levels. The table is not
-  persisted: every Find rebuilds it from the fresh selection.
+  carry the `Zoom` mark, at different pip levels. The table is kept
+  in the last search (see "Last search"); `New search` rebuilds it
+  from the fresh selection.
 
   On Search the table is rebased to its first row: the first row's
   `Pips` and `Minutes` are subtracted from every row, so the pattern
@@ -316,29 +351,32 @@ window shows a `Fit` column only for ZigZag data.
 ## Levels2 search
 
 The third search type. Instead of a curve (Similarity) or a run of
-zigzag points (ZigZag) it compares the PICTURE a Levels2 indicator
-draws (docs/levels2.md): the set of dashes at the right edge, each at a
-price row with a left part (approach) and a right part (reversal) in
-two colors. The search looks for a past window whose Levels2 picture
-looks like the picture of the selection.
+zigzag points (ZigZag) it compares the PICTURE of the levels of a pair,
+the dashes a Levels2 indicator draws for them (docs/levels2.md): the set
+of dashes at the right edge, each at a price row with a left part
+(approach) and a right part (reversal) in two colors. The search looks
+for a past window whose level picture looks like the picture of the
+selection. The window does not have to be as long as the selection:
+the levels are matched as a sequence, without a time binding, so a
+one-week template can be found as a two-week window (see Time stretch).
+
+Since 2026-10-12 the template and the targets are PAIRS, not Levels2
+indicators (user's request): the levels are found in the pair's own
+candles with a set of tables that belongs to the search itself, so no
+Levels2 indicator has to exist on the chart.
 
 ### Parameters
 
-- **Template** - a drop-down over all Levels2 indicators. The chosen
-  one is the template: its levels inside the chart selection, with its
-  own pips -> pixels tables, are the pattern. As the template a Levels2
-  whose source is a Shift indicator uses the shifted copy's candles
-  (chart time, flip included), exactly what the chart draws in the
-  selection. The template does not have to be in the search list.
-- **Search in** - a multi-select over the same Levels2 indicators,
-  independent of the template. Every checked indicator is a search
-  target: the search runs in the indicator's pair with the indicator's
-  tables, so two Levels2 with different tables on the same pair are two
-  different searches. A Levels2 whose source is a Shift indicator
-  searches the Shift's target pair. A Levels2 whose source is not a
-  traded pair is not offered. The `Pair` column of the results shows
-  the pair a row belongs to, and that pair is what a clicked row
-  overlays.
+- **Template** - a drop-down over the traded pairs. The chosen pair is
+  the template: its levels inside the chart selection, found with the
+  Level tables below, are the pattern. The default is the Shift's Source
+  pair (or the stored last choice). The template does not have to be in
+  the search list.
+- **Search in** - a multi-select over the traded pairs, independent of
+  the template. Every checked pair is searched with the same Level
+  tables. The `Pair` column of the results shows the pair a row belongs
+  to, and that pair is what a clicked row overlays. The default is the
+  stored last list, else the Similarity target list, else the template.
 - **Max zoom, %** - the clamp `1/(1+P/100) .. 1+P/100` on the price
   zoom, see the algorithm. 0 means no zoom.
 - **Step, min** - the candidate step along the time axis, shared with
@@ -347,6 +385,32 @@ looks like the picture of the selection.
   template level and still count as the same level. It is the width
   (sigma) of the Gaussian used to blur both pictures; 5 pips by
   default, 1..100. Stored on the indicator as `FindLevelTolerancePips`.
+- **Time stretch, %** - how much longer or shorter than the selection a
+  found window may be. P gives the clamp `1/(1+P/100) .. 1+P/100` on the
+  window length (in trading time); the dialog shows the range. The
+  search tries several lengths on a geometric grid with steps of about
+  1.5x: with the default 100 % the lengths are 0.5, 0.71, 1, 1.41 and 2
+  times the selection, each rounded to whole hours. 0 means only the
+  selection's own length (the behaviour before 2026-10-12). 0..1000,
+  stored as `FindLevels2StretchPercent`.
+- **Min span** - a number plus Minutes / Hours / Days: the smallest
+  trading time (weekends removed) that must pass from the first to the
+  last level of the required chain in a match. 0 means no limit. A
+  chain of fewer than two levels is never limited. Stored as
+  `FindLevels2MinSpanMinutes`.
+- **Level tables** - the same two `pips -> pixels` tables a Levels2
+  indicator has (docs/levels2.md): the left table for the move into a
+  level, the right table for the reversal after it. The smallest pips of
+  each table decide what counts as a level at all, the pixels give the
+  weight of a level in the picture. The dialog shows them as one summary
+  line (`Left 20/0 40/10 60/20 100/30 | Right 30/10 50/20 100/30`) with
+  an `Edit...` button that opens the `Level parameters` popup over the
+  dialog (`LevelParamsWindow`): the two row lists with Add row and
+  delete buttons, `Defaults` (the Levels2 defaults), OK and Cancel. On
+  OK the template levels and the Levels table below are regenerated
+  from the new tables, hand edits of the table included. Stored on the
+  Shift indicator as `FindLevel2LeftSteps` / `FindLevel2RightSteps`;
+  empty lists mean the Levels2 defaults.
 - **Levels** - a table of template levels the search must respect.
   One row is:
   - `Level` - the price of the level, as the chart shows it for the
@@ -362,14 +426,22 @@ looks like the picture of the selection.
     may sit anywhere in time inside the window. Numbered levels must
     come in time order: every level with number N comes after every
     level with a smaller number and before every level with a bigger
-    one. Several rows with the same number may come in any order
-    among themselves (gaps in the numbers do not matter). Two
-    `Required` rows whose numbers differ by exactly 1 (say 2 and 3)
-    also form a range: between the two matched levels the price must
-    stay inside them, no minute high above the higher level and no
-    minute low below the lower one (the minutes of the two levels
-    themselves are not checked). The range is taken from the
-    candidate's own two levels, not from the template;
+    one. Several `Preferred` rows with the same number may come in any
+    order among themselves (gaps in the numbers do not matter).
+
+    The numbered `Required` rows form the REQUIRED CHAIN (user's rules
+    2026-10-12): they are ordered by their number and, for equal
+    numbers, by their position in the table, and the matched levels
+    must come strictly in that order in time. Between every two
+    neighbours of the chain (no other required row between them,
+    whatever the gap in the numbers: 1 and 3 with no row 2, or with a
+    `Preferred` or `Off` row 2) the price must stay inside the range
+    the two matched levels bound: no minute high above the higher
+    level and no minute low below the lower one (the minutes of the
+    two levels themselves are not checked). The range is taken from
+    the candidate's own two levels, not from the template. Before
+    2026-10-12 this range rule applied only to pairs with numbers N
+    and N+1, and equal numbers meant any order;
   - `Min left` / `Min right` - the smallest approach and reversal in
     pips a candidate level must have to count as this level.
 
@@ -390,8 +462,9 @@ looks like the picture of the selection.
   (and drops hand edits). Changing the template also rebuilds it,
   unless the table has hand edits. The `Delete` button removes the
   selected rows (the Delete key on a selected row works too). Like the
-  ZigZag points table it is not persisted: every Find rebuilds it from
-  the fresh selection.
+  ZigZag points table it is kept in the last search (see "Last
+  search"), with the levels added from the chart shown on the mini
+  chart again; `New search` rebuilds it from the fresh selection.
 
   The `Table` / `Chart` combo next to the buttons switches how the
   levels are picked. `Chart` replaces the table with a mini chart of
@@ -420,20 +493,22 @@ looks like the picture of the selection.
   tables), so a row whose minimums are below those never matches
   smaller swings than the indicator draws.
 
-No Smoothing and no Points table. The chosen template is stored on the
-indicator as `FindLevels2Template`, the search list as
-`FindLevels2Targets`, the type as `FindSearchType = Levels2`. The next
-Find opens with the same template and list; without a stored template
-the drop-down starts on the first checked indicator. Renaming a Levels2
-indicator renames it in both stored fields.
+No Smoothing and no Points table. The chosen template pair is stored on
+the indicator as `FindLevels2Template`, the search list as
+`FindLevels2Targets` (pair names), the type as `FindSearchType =
+Levels2`. The next Find opens with the same template and list. A stored
+value that is not a traded pair (the fields held Levels2 indicator names
+before 2026-10-12) is ignored, and the dialog falls back to the defaults
+above.
 
 ### Algorithm
 
 1. **Template.** The selection is floored / ceiled to whole hours of
    trading time (the same window the Similarity search uses, at least
    2 hours). The template levels are found by the chart's own
-   `Levels2Finder` over that window with the anchor at the window end,
-   so they are the dashes the chart shows for the selection. At least
+   `Levels2Finder` over that window with the anchor at the window end
+   and the Level tables of the dialog, so they are the dashes a Levels2
+   indicator with those tables would show for the selection. At least
    two levels are required. Each level is one mark whose WEIGHT is the
    total dash length: left table pixels at the approach plus right
    table pixels at the reversal. Both arms count, so with the default
@@ -442,12 +517,15 @@ indicator renames it in both stored fields.
    A mark lives in one of two channels, top or bottom (the two color
    orders of a dash). Rows are pips relative to the mean price of the
    template's levels.
-2. **Candidates.** For every target, windows of the template's trading
-   length ending at every Step on the hour grid, from the start of the
-   history to a window that ends at or before the fragment start. The
-   levels of a candidate window are the same levels the chart would
-   draw with the selection set to that window: approach back past the
-   window start, reversal only up to the window end.
+2. **Candidates.** For every target pair and every window length of the
+   Time stretch grid, windows of that length ending at every Step on
+   the hour grid, from the start of the history to a window that ends
+   at or before the fragment start. The levels of a candidate window
+   are the same levels the chart would draw with the selection set to
+   that window: approach back past the window start, reversal only up
+   to the window end. A longer window is just more history under the
+   same rules, so a sequence of levels that took two weeks instead of
+   one is found in the 2x window.
 3. **Score.** Both pictures are blurred with a Gaussian of width
    Tolerance per channel and compared with the cosine similarity, so
    `sim` is 1 for the same set of dashes and falls when a dash is
@@ -497,15 +575,17 @@ indicator renames it in both stored fields.
      no valid order is dropped; otherwise it gets the exact number of
      matched preferred rows. Rows without a number take part in the
      count but not in the order.
-   - Range pairs (two `Required` rows with numbers N and N+1): the
-     required numbered rows are pinned by a small search over their
-     matching levels in number order (a level must come after every
-     pinned level with a smaller number, and for a pair the minutes
-     between the two levels must stay inside them, checked with a
-     per-target block max/min index, 64 minutes per block); every full
-     pinning runs the same group DP with the required rows fixed to the
-     pinned times, the best preferred count wins. The search stops as
-     soon as the upper bound is reached or after 4096 full pinnings.
+   - Required chain (two or more numbered `Required` rows): the chain
+     rows are pinned by a small search over their matching levels in
+     chain order (a level must come after the previously pinned one,
+     and the minutes between the two must stay inside the range the
+     two levels bound, checked with a per-target block max/min index,
+     64 minutes per block); a full pinning is dropped when the trading
+     time from the first to the last pinned level is below Min span;
+     every surviving full pinning runs the same group DP with the
+     required rows fixed to the pinned times, the best preferred count
+     wins. The search stops as soon as the upper bound is reached or
+     after 4096 full pinnings.
    - The best alignment of a candidate is the one with the most
      preferred matches, then the highest `sim`. Shifts are scanned from
      the highest preferred count down and the scan stops as soon as a
@@ -527,9 +607,10 @@ indicator renames it in both stored fields.
    between the paired levels: 0 violations, 78 results instead of 100,
    2.8 s.
 8. **Ranking.** Candidates with `sim > 0` are sorted by the number of
-   matched preferred rows, then by `sim`; a window
-   closer than one window length to an already kept better one is
-   dropped (the same dedup as Similarity); top 100 per target, the
+   matched preferred rows, then by `sim`; a window that overlaps an
+   already kept better one by more than half of the shorter of the two
+   is dropped, so the same place found with several lengths is listed
+   once, with the length that scored best; top 100 per target, the
    merged list cut to 100.
 
 ### Results and applying
@@ -540,9 +621,24 @@ The results window hides the `Rho` and `Fit` columns for this type
 `PreferredTotal`) and
 shows the number of levels of the candidate window in the last column
 (`Levels` instead of `Overlap`). `Sim` and `Score` carry the same
-cosine. Applying a row works like the other types: the row's `Symbol`
-is the pair, `SourceUnix` the window start, the vertical offset comes
-from `MeanA` / `MeanB`, Flip from the `M` flag.
+cosine. The `Source window` column shows each result's own start and
+end, so rows of one search can have different lengths. Applying a row
+works like the other types: the row's `Symbol` is the pair, the
+vertical offset comes from `MeanA` / `MeanB`, Flip from the `M` flag.
+
+The time alignment (user's rule 2026-10-12) puts the LAST required
+level of the template on the last required level of the found window:
+the anchor row is the `Required` row with the latest template time (a
+hand-typed row has no time and is never the anchor); its template time
+is `FindData.AlignUnix`, and for every result the latest level of the
+window that matches that row at the result's alignment (arms, band,
+zoom, mirror, shift) is `FindResult.AlignUnix`. Applying sets Source
+time to `AlignUnix` of the result and Chart time to `AlignUnix` of the
+data, so the two levels coincide on the chart whatever the window
+length. Without a required row with a time (no rules, only preferred
+rows, or an old file) both are 0 and the window start lands on the
+fragment start as before. The log line of the apply shows the two
+times.
 
 ### Speed
 
@@ -564,8 +660,12 @@ approach is not capped at 50 000 minutes as in the drawn version, which
 only matters for a swing higher than everything in the previous 35
 days with an approach below the left table's last row.
 
-The whole search takes about 2 s for one pair at a 1-hour step (index
-0.8 s, scan 1-1.5 s on 8 threads); 15-minute steps take 4x longer.
+The whole search takes about 2 s for one pair at a 1-hour step and one
+window length (index 0.8 s, scan 1-1.5 s on 8 threads); 15-minute steps
+take 4x longer. Every window length of the Time stretch grid is a full
+scan, so the default 100 % (5 lengths) costs about 5x: 4-7 s for 7 years
+of EURUSD (2026-10-12, with and without rows), Time stretch 0 gives the
+old speed.
 
 Checked on EURUSD with planted copies of the selection (the fragment
 and 7 days before it copied into March 2025): a copy moved by +37 pips
@@ -575,13 +675,31 @@ copy moved by -20 pips is found first as `M`, a copy stretched 1.3x
 found first with `Zoom` 0.76, and with Max zoom 0 the same stretched
 copy drops to rank 61.
 
+Checked again on 2026-10-12 for the time stretch (scratch console
+`lvtest2`, EURUSD 2020-2026): the selection plus the 7 days before it,
+stretched 2x in time (every minute doubled) and moved by +37 pips, was
+planted in February / March 2025. With Time stretch 100 it is found
+first with `sim` 1.000 and a 234 h window (the template is 117 h), both
+without rows and with all rows Required and numbered; with Time stretch
+0 it is not in the list at all. A brute-force checker over every result
+(required and sequence rules at the result's own window, preferred
+counts, sort order, overlap between kept windows) reported 0 violations
+in every mix.
+
 ### Storage
 
 The same `data/NAME/find.json`, version still 3: `FindData.SearchType`
-is `Levels2`, `TargetIndicator` the template Levels2 indicator,
-`Targets` the searched Levels2 indicators, `StepMinutes` the step,
-`ZoomPercent` the clamp, and a new optional `TolerancePips` (0 in older
-files and for the other types).
+is `Levels2`, `TargetIndicator` the template pair, `Targets` the
+searched pairs (both held Levels2 indicator names before 2026-10-12),
+`StepMinutes` the step, `ZoomPercent` the clamp, the optional
+`TolerancePips` (0 in older files and for the other types) and, since
+2026-10-12, the optional `StretchPercent` and `MinSpanMinutes`. Every
+`FindResult` carries
+its own optional `WindowMinutes` (0 in older files and for the other
+types = `FindData.WindowMinutes`); the results window uses it for the
+window end. `FindData.AlignUnix` and `FindResult.AlignUnix` (optional,
+0 = none) hold the anchor times of the last required level, see
+"Results and applying".
 
 ## Not in v1 (next steps)
 

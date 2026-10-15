@@ -26,6 +26,9 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <TextBlock x:Name="FragmentText" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
@@ -41,9 +44,9 @@
                    VerticalAlignment="Center" Margin="0,0,10,10" Visibility="Collapsed" />
         <StackPanel x:Name="Levels2TemplatePanel" Grid.Row="2" Grid.Column="1" Orientation="Horizontal"
                     Margin="0,0,0,10" Visibility="Collapsed">
-            <ComboBox x:Name="Levels2TemplateBox" Width="200" Height="26" VerticalContentAlignment="Center"
+            <ComboBox x:Name="Levels2TemplateBox" Width="120" Height="26" VerticalContentAlignment="Center"
                       SelectionChanged="Levels2TemplateBox_SelectionChanged" />
-            <TextBlock Text="whose picture in the selection is the pattern" VerticalAlignment="Center"
+            <TextBlock Text="pair whose levels in the selection are the pattern" VerticalAlignment="Center"
                        Foreground="Gray" Margin="10,0,0,0" />
         </StackPanel>
 
@@ -96,9 +99,38 @@
                        VerticalAlignment="Center" Foreground="Gray" Margin="10,0,0,0" />
         </StackPanel>
 
-        <TextBlock x:Name="RequiredLabel" Grid.Row="8" Grid.Column="0" Text="Levels"
+        <TextBlock x:Name="StretchLabel" Grid.Row="8" Grid.Column="0" Text="Time stretch, %"
                    VerticalAlignment="Center" Margin="0,0,10,10" Visibility="Collapsed" />
-        <StackPanel x:Name="RequiredPanel" Grid.Row="8" Grid.Column="1" Orientation="Horizontal"
+        <StackPanel x:Name="StretchPanel" Grid.Row="8" Grid.Column="1" Orientation="Horizontal"
+                    Margin="0,0,0,10" Visibility="Collapsed">
+            <TextBox x:Name="StretchBox" Width="60" Height="26" VerticalContentAlignment="Center" />
+            <TextBlock x:Name="StretchHint" VerticalAlignment="Center" Foreground="Gray" Margin="10,0,0,0" />
+        </StackPanel>
+
+        <TextBlock x:Name="MinSpanLabel" Grid.Row="9" Grid.Column="0" Text="Min span"
+                   VerticalAlignment="Center" Margin="0,0,10,10" Visibility="Collapsed" />
+        <StackPanel x:Name="MinSpanPanel" Grid.Row="9" Grid.Column="1" Orientation="Horizontal"
+                    Margin="0,0,0,10" Visibility="Collapsed">
+            <TextBox x:Name="MinSpanBox" Width="60" Height="26" VerticalContentAlignment="Center" />
+            <ComboBox x:Name="MinSpanUnitBox" Width="90" Height="26" VerticalContentAlignment="Center"
+                      Margin="8,0,0,0" />
+            <TextBlock Text="trading time from the first to the last required level, 0 = any"
+                       VerticalAlignment="Center" Foreground="Gray" Margin="10,0,0,0" />
+        </StackPanel>
+
+        <TextBlock x:Name="LevelParamsLabel" Grid.Row="10" Grid.Column="0" Text="Level tables"
+                   VerticalAlignment="Center" Margin="0,0,10,10" Visibility="Collapsed" />
+        <DockPanel x:Name="LevelParamsPanel" Grid.Row="10" Grid.Column="1" Margin="0,0,0,10"
+                   Visibility="Collapsed" LastChildFill="True">
+            <Button x:Name="LevelParamsBtn" DockPanel.Dock="Left" Content="Edit..." Width="70" Height="26"
+                    Click="LevelParamsBtn_Click" />
+            <TextBlock x:Name="LevelParamsText" VerticalAlignment="Center" Foreground="Gray"
+                       Margin="10,0,0,0" TextWrapping="Wrap" />
+        </DockPanel>
+
+        <TextBlock x:Name="RequiredLabel" Grid.Row="11" Grid.Column="0" Text="Levels"
+                   VerticalAlignment="Center" Margin="0,0,10,10" Visibility="Collapsed" />
+        <StackPanel x:Name="RequiredPanel" Grid.Row="11" Grid.Column="1" Orientation="Horizontal"
                     Margin="0,0,0,10" Visibility="Collapsed">
             <TextBlock Text="Min left, pips" VerticalAlignment="Center" Foreground="Gray" />
             <TextBox x:Name="RequiredLeftBox" Width="50" Height="26" VerticalContentAlignment="Center"
@@ -115,9 +147,9 @@
                       Margin="12,0,0,0" SelectionChanged="RequiredModeBox_SelectionChanged" />
         </StackPanel>
 
-        <local:LevelsPickerView x:Name="RequiredPicker" Grid.Row="9" Grid.Column="1" Width="480" Height="260"
+        <local:LevelsPickerView x:Name="RequiredPicker" Grid.Row="12" Grid.Column="1" Width="480" Height="260"
                                 HorizontalAlignment="Left" Margin="0,0,0,10" Visibility="Collapsed" />
-        <DataGrid x:Name="RequiredGrid" Grid.Row="9" Grid.Column="1" Visibility="Collapsed"
+        <DataGrid x:Name="RequiredGrid" Grid.Row="12" Grid.Column="1" Visibility="Collapsed"
                   AutoGenerateColumns="False" CanUserAddRows="True" CanUserDeleteRows="True"
                   CanUserResizeRows="False" CanUserSortColumns="False" CanUserReorderColumns="False"
                   HeadersVisibility="Column" RowHeaderWidth="0" MaxHeight="200" Margin="0,0,0,10"
@@ -142,9 +174,9 @@
             </DataGrid.Columns>
         </DataGrid>
 
-        <TextBlock x:Name="PointsLabel" Grid.Row="10" Grid.Column="0" Text="Points"
+        <TextBlock x:Name="PointsLabel" Grid.Row="13" Grid.Column="0" Text="Points"
                    VerticalAlignment="Top" Margin="0,4,10,10" Visibility="Collapsed" />
-        <DataGrid x:Name="PointsGrid" Grid.Row="10" Grid.Column="1" Visibility="Collapsed"
+        <DataGrid x:Name="PointsGrid" Grid.Row="13" Grid.Column="1" Visibility="Collapsed"
                   AutoGenerateColumns="False" CanUserAddRows="True" CanUserDeleteRows="True"
                   CanUserResizeRows="False" CanUserSortColumns="False" CanUserReorderColumns="False"
                   HeadersVisibility="Column" RowHeaderWidth="0" MaxHeight="260" Margin="0,0,0,10"
@@ -172,7 +204,9 @@
             </DataGrid.Columns>
         </DataGrid>
 
-        <DockPanel Grid.Row="11" Grid.Column="0" Grid.ColumnSpan="2" LastChildFill="False">
+        <DockPanel Grid.Row="14" Grid.Column="0" Grid.ColumnSpan="2" LastChildFill="False">
+            <Button x:Name="NewSearchBtn" DockPanel.Dock="Left" Content="New search" Width="90" Height="28"
+                    Click="NewSearchBtn_Click" />
             <Button x:Name="CancelBtn" DockPanel.Dock="Right" Content="Cancel" Width="90" Height="28"
                     IsCancel="True" Click="CancelBtn_Click" />
             <Button x:Name="OkBtn" DockPanel.Dock="Right" Content="Search" Width="90" Height="28"

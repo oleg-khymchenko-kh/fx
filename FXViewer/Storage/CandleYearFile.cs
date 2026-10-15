@@ -166,6 +166,18 @@ public sealed class CandleYearFile : IDisposable
         }
     }
 
+    public void Clear(int minuteOfYear)
+    {
+        if ((uint)minuteOfYear >= (uint)MinutesInYear)
+            throw new ArgumentOutOfRangeException(nameof(minuteOfYear));
+        lock (_lock)
+        {
+            Array.Clear(_rec);
+            _fs.Position = HeaderSize + (long)minuteOfYear * RecordSize;
+            _fs.Write(_rec);
+        }
+    }
+
     public bool WriteSpread(int minuteOfYear, int spreadCode)
     {
         if ((uint)minuteOfYear >= (uint)MinutesInYear) return false;

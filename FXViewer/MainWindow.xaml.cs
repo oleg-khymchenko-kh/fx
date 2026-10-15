@@ -679,7 +679,13 @@ public partial class MainWindow : Window, INotesHost
         SymbolBar.FindRequested += name => _ = RunFindAsync(name);
         SymbolBar.ShowResultsRequested += ShowFindResults;
         SymbolBar.PresetsRequested += OpenShiftPresets;
-        SymbolBar.HasChartSelection = () => Chart.SelectedRange != null && !_findBusy;
+        SymbolBar.CanFind = name =>
+        {
+            if (_findBusy) return false;
+            if (Chart.SelectedRange != null) return true;
+            var ind = _config.Indicators.FirstOrDefault(x => SymbolNameEquals(x.Name, name));
+            return ind?.FindLast is { } last && last.HasRange();
+        };
         SymbolBar.HasFindResults = name =>
         {
             if (_findBusy) return false;
@@ -744,6 +750,7 @@ public partial class MainWindow : Window, INotesHost
         InitGame();
         InitComments();
         InitTradingCentral();
+        InitIndexAuto();
         RefreshZoomLevels();
         SeedIndicators();
         _stateSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -800,6 +807,7 @@ public partial class MainWindow : Window, INotesHost
         _orderBookTimer.Start();
         PollVolume();
         _volumeTimer.Start();
+        StartIndexAuto();
         if (string.IsNullOrEmpty(_config.AccessToken))
         {
             AppendLog("No access token - open the Connection tab and Authorize to enable live updates");
@@ -2910,8 +2918,7 @@ public partial class MainWindow : Window, INotesHost
         {
             if (s.MinuteUnix != long.MinValue)
             {
-                int avg = (int)Math.Round(((long)s.Open + s.High + s.Low + s.Close) / 4.0,
-                    MidpointRounding.AwayFromZero);
+                int avg = LiveAvg(s);
                 bool hasSpread = s.MaxSpreadTenths >= 0;
                 int code = hasSpread ? SpreadCodes.FromTenths(s.MaxSpreadTenths) : 0;
                 s.Closed.Add(new Candle(s.MinuteUnix, s.Low, s.High, avg, true, hasSpread, code));
@@ -2932,6 +2939,9 @@ public partial class MainWindow : Window, INotesHost
         if (spreadTenths > s.MaxSpreadTenths) s.MaxSpreadTenths = spreadTenths;
         s.Dirty = true;
     }
+
+    private static int LiveAvg(LiveState s) =>
+        (int)Math.Round(((long)s.Open + s.High + s.Low + s.Close) / 4.0, MidpointRounding.AwayFromZero);
 
     private void FlushLive()
     {
@@ -3984,6 +3994,7 @@ public partial class MainWindow : Window, INotesHost
         {
             _config.HideWideSpread = dlg.HideWideSpread;
             WideSpreadRule.Hide = _config.HideWideSpread;
+            RequestIndexRebuild();
             changed = true;
         }
         if (dlg.SpotDiameterPx != _config.CommentSpotDiameterPx
@@ -4812,17 +4823,11 @@ public partial class MainWindow : Window, INotesHost
                     if (SymbolNameEquals(child.Source, replacing!.Name)) child.Source = def.Name;
             if (nameChanged && IndicatorTypes.IsZigZag(def.Type))
                 foreach (var child in _config.Indicators)
+                {
                     for (int i = 0; i < child.FindZigZagTargets.Count; i++)
                         if (SymbolNameEquals(child.FindZigZagTargets[i], replacing!.Name))
                             child.FindZigZagTargets[i] = def.Name;
-            if (nameChanged && IndicatorTypes.IsLevels2(def.Type))
-                foreach (var child in _config.Indicators)
-                {
-                    for (int i = 0; i < child.FindLevels2Targets.Count; i++)
-                        if (SymbolNameEquals(child.FindLevels2Targets[i], replacing!.Name))
-                            child.FindLevels2Targets[i] = def.Name;
-                    if (SymbolNameEquals(child.FindLevels2Template, replacing!.Name))
-                        child.FindLevels2Template = def.Name;
+                    child.FindLast?.RenameZigZag(replacing!.Name, def.Name);
                 }
             if (replacing != null && IndicatorTypes.IsShift(def.Type)
                 && !SymbolNameEquals(replacing.ShiftTarget(), def.ShiftTarget()))
@@ -4931,11 +4936,46 @@ public partial class MainWindow : Window, INotesHost
         return win;
     }
 
+    private static string FindDialogFragmentText((long StartUnix, long EndUnix) range, bool restored,
+        (long StartUnix, long EndUnix)? selection)
+    {
+        string text = $"Fragment: {FmtUtc(range.StartUnix)} .. {FmtUtc(range.EndUnix)} UTC";
+        if (!restored) return text;
+        text += " (last search)";
+        if (selection is { } s && s != range)
+            text += $"\nNew search takes the chart selection {FmtUtc(s.StartUnix)} .. {FmtUtc(s.EndUnix)} UTC";
+        return text;
+    }
+
+    private async Task EnsureFindRangeLoadedAsync(long startUnix, long endUnix)
+    {
+        var loader = _loader;
+        if (loader == null) return;
+        int fromYear = DateTimeOffset.FromUnixTimeSeconds(startUnix).Year;
+        int toYear = DateTimeOffset.FromUnixTimeSeconds(endUnix).Year;
+        foreach (var cfg in SymbolConfigs)
+        {
+            var loadTask = loader.EnsureYearsAsync(cfg.Symbol, fromYear, toYear, "find");
+            if (loadTask.IsCompleted) continue;
+            AppendLog($"Find: loading {cfg.Symbol} {fromYear}..{toYear} for the last search...");
+            try
+            {
+                await loadTask;
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"Find: loading {cfg.Symbol} failed: {ex.Message}");
+            }
+        }
+    }
+
     private async Task RunFindAsync(string name)
     {
         var ind = _config.Indicators.FirstOrDefault(x => SymbolNameEquals(x.Name, name));
         if (ind == null || !IndicatorTypes.IsShift(ind.Type)) return;
-        if (Chart.SelectedRange is not { } sel)
+        var selection = Chart.SelectedRange;
+        var last = ind.FindLast is { } saved && saved.HasRange() ? saved : null;
+        if (selection == null && last == null)
         {
             AppendLog("Find: select a range on the chart first (Shift+drag)");
             return;
@@ -4950,16 +4990,42 @@ public partial class MainWindow : Window, INotesHost
             AppendLog($"Find: source {ind.Source} is not loaded");
             return;
         }
-        string fragmentText = $"Fragment: {FmtUtc(sel.StartUnix)} .. {FmtUtc(sel.EndUnix)} UTC";
+        (long StartUnix, long EndUnix) sel = last != null
+            ? (last.FragStartUnix, last.FragEndUnix)
+            : selection!.Value;
+        if (last != null)
+        {
+            _findBusy = true;
+            try
+            {
+                await EnsureFindRangeLoadedAsync(sel.StartUnix, sel.EndUnix);
+            }
+            finally
+            {
+                _findBusy = false;
+            }
+            if (!ReferenceEquals(ind, _config.Indicators.FirstOrDefault(x => SymbolNameEquals(x.Name, name))))
+                return;
+        }
         var zigzagTargets = ZigZagFindTargets();
         var levels2Targets = Levels2FindTargets();
-        var paramsDlg = new SearchParamsWindow(
-            ind.Name, fragmentText, SymbolConfigs.Select(c => c.Symbol).ToList(),
-            zigzagTargets, levels2Targets, sel.StartUnix, sel.EndUnix, ind)
+        SearchParamsWindow paramsDlg;
+        while (true)
         {
-            Owner = this,
-        };
-        if (paramsDlg.ShowDialog() != true) return;
+            paramsDlg = new SearchParamsWindow(
+                ind.Name, FindDialogFragmentText(sel, last != null, selection),
+                SymbolConfigs.Select(c => c.Symbol).ToList(),
+                zigzagTargets, levels2Targets, sel.StartUnix, sel.EndUnix, ind, last)
+            {
+                Owner = this,
+            };
+            if (paramsDlg.ShowDialog() == true) break;
+            if (!paramsDlg.NewSearchRequested) return;
+            last = null;
+            if (selection is { } fresh) sel = fresh;
+        }
+        ind.FindLast = paramsDlg.State;
+        string fragmentText = $"Fragment: {FmtUtc(sel.StartUnix)} .. {FmtUtc(sel.EndUnix)} UTC";
         var searchParams = paramsDlg.Params;
         var targetNames = paramsDlg.Targets;
         bool zigzag = FindSearchTypes.IsZigZag(paramsDlg.SearchType);
@@ -4970,16 +5036,16 @@ public partial class MainWindow : Window, INotesHost
         {
             foreach (var lvName in paramsDlg.Levels2TargetNames)
             {
-                var t = levels2Targets.FirstOrDefault(x => SymbolNameEquals(x.Name, lvName));
+                var t = levels2Targets.FirstOrDefault(x => SymbolNameEquals(x.Pair, lvName));
                 if (t != null) lvSelected.Add(t);
             }
             if (lvSelected.Count == 0)
             {
-                AppendLog("Find: no Levels2 indicators selected");
+                AppendLog("Find: no pairs selected");
                 return;
             }
             ind.FindSearchType = FindSearchTypes.Levels2;
-            ind.FindLevels2Targets = lvSelected.Select(t => t.Name).ToList();
+            ind.FindLevels2Targets = lvSelected.Select(t => t.Pair).ToList();
             ind.FindLevels2Template = paramsDlg.TemplateLevels2Name;
             ind.FindZoomPercent = searchParams.ZoomPercent;
             ind.FindStepMinutes = searchParams.StepMinutes;
@@ -4987,6 +5053,10 @@ public partial class MainWindow : Window, INotesHost
             ind.FindLevels2MinLeftPips = paramsDlg.RequiredMinLeftPips;
             ind.FindLevels2MinRightPips = paramsDlg.RequiredMinRightPips;
             ind.FindLevels2PickOnChart = paramsDlg.RequiredPickOnChart;
+            ind.FindLevel2LeftSteps = paramsDlg.FindLeftSteps;
+            ind.FindLevel2RightSteps = paramsDlg.FindRightSteps;
+            ind.FindLevels2StretchPercent = paramsDlg.StretchPercent;
+            ind.FindLevels2MinSpanMinutes = paramsDlg.MinSpanMinutes;
         }
         else if (zigzag)
         {
@@ -5026,7 +5096,7 @@ public partial class MainWindow : Window, INotesHost
             var loader = _loader;
             if (loader != null)
             {
-                var loadNames = levels2 ? Levels2LoadNames(levels2Targets, lvSelected, paramsDlg.TemplateLevels2Name)
+                var loadNames = levels2 ? Levels2LoadNames(lvSelected, paramsDlg.TemplateLevels2Name)
                     : zigzag ? zzSelected.Select(t => t.Source).ToList()
                     : targetNames;
                 foreach (var symbol in loadNames.Prepend(ind.Source).Distinct(SymbolNameComparer))
@@ -5050,13 +5120,12 @@ public partial class MainWindow : Window, INotesHost
             if (levels2)
             {
                 var templateTarget = levels2Targets.FirstOrDefault(
-                    t => SymbolNameEquals(t.Name, paramsDlg.TemplateLevels2Name)) ?? lvSelected[0];
-                var templateSeries = Chart.GetSeries(templateTarget.Source)
-                    ?? Chart.GetSeries(templateTarget.Pair);
+                    t => SymbolNameEquals(t.Pair, paramsDlg.TemplateLevels2Name)) ?? lvSelected[0];
+                var templateSeries = Chart.GetSeries(templateTarget.Pair);
                 if (templateSeries == null || templateSeries.History.Minutes.Length == 0)
                 {
-                    AppendLog($"Find: template {templateTarget.Source} is not loaded");
-                    if (win.IsLoaded) win.ShowFailed($"Template {templateTarget.Source} is not loaded");
+                    AppendLog($"Find: template {templateTarget.Pair} is not loaded");
+                    if (win.IsLoaded) win.ShowFailed($"Template {templateTarget.Pair} is not loaded");
                     return;
                 }
                 var lvSearchTargets = new List<Levels2SearchTarget>();
@@ -5073,11 +5142,14 @@ public partial class MainWindow : Window, INotesHost
                 }
                 var templateMinutes = templateSeries.History.Minutes;
                 int tolerance = paramsDlg.TolerancePips;
+                int stretch = paramsDlg.StretchPercent;
+                int minSpan = paramsDlg.MinSpanMinutes;
+                var tables = Levels2Tables.Of(paramsDlg.FindLeftSteps, paramsDlg.FindRightSteps);
                 var required = paramsDlg.LevelRules;
                 data = await Task.Run(
                     () => Levels2Search.Search(ind.Source, templateTarget, templateMinutes, lvSearchTargets,
-                        sel.StartUnix, sel.EndUnix, tolerance, searchParams.ZoomPercent,
-                        searchParams.StepMinutes, required, progress, cts.Token),
+                        tables, sel.StartUnix, sel.EndUnix, tolerance, searchParams.ZoomPercent,
+                        searchParams.StepMinutes, stretch, minSpan, required, progress, cts.Token),
                     cts.Token);
             }
             else if (zigzag)
@@ -5173,41 +5245,24 @@ public partial class MainWindow : Window, INotesHost
         return list;
     }
 
-    private static List<string> Levels2LoadNames(IReadOnlyList<Levels2FindTarget> all,
-        IReadOnlyList<Levels2FindTarget> selected, string templateName)
+    private static List<string> Levels2LoadNames(IReadOnlyList<Levels2FindTarget> selected, string templateName)
     {
         var names = selected.Select(t => t.Pair).ToList();
-        var template = all.FirstOrDefault(t => SymbolNameEquals(t.Name, templateName));
-        if (template != null)
-        {
-            names.Add(template.Source);
-            names.Add(template.Pair);
-        }
+        if (templateName.Length > 0) names.Add(templateName);
         return names;
     }
 
     private List<Levels2FindTarget> Levels2FindTargets()
     {
         var list = new List<Levels2FindTarget>();
-        foreach (var lv in _config.Indicators)
+        foreach (var cfg in SymbolConfigs)
         {
-            if (!IndicatorTypes.IsLevels2(lv.Type)) continue;
-            string pair = lv.Source;
-            var sourceIndicator = _config.Indicators.FirstOrDefault(x => SymbolNameEquals(x.Name, lv.Source));
-            if (sourceIndicator != null)
-            {
-                if (!IndicatorTypes.IsShift(sourceIndicator.Type)) continue;
-                pair = sourceIndicator.ShiftTarget();
-            }
-            if (!SymbolConfigs.Any(c => SymbolNameEquals(c.Symbol, pair))) continue;
-            var templateSeries = Chart.GetSeries(lv.Source) ?? Chart.GetSeries(pair);
-            int priceMul = templateSeries?.PriceMul ?? 1;
-            int pipPoints = templateSeries?.PipPoints ?? SourcePipPoints(pair);
-            list.Add(new Levels2FindTarget(lv.Name, lv.Source, pair, SourcePipPoints(pair),
-                new LevelSizeTable(lv.EffectiveLevel2LeftSteps()),
-                new LevelSizeTable(lv.EffectiveLevel2RightSteps()),
-                templateSeries?.Transform, priceMul, PriceDigitsOf(pipPoints * priceMul),
-                templateSeries?.History.Minutes));
+            string pair = cfg.Symbol;
+            var series = Chart.GetSeries(pair);
+            int priceMul = series?.PriceMul ?? 1;
+            int pipPoints = series?.PipPoints ?? SourcePipPoints(pair);
+            list.Add(new Levels2FindTarget(pair, SourcePipPoints(pair), series?.Transform, priceMul,
+                PriceDigitsOf(pipPoints * priceMul), series?.History.Minutes));
         }
         return list;
     }
@@ -5315,14 +5370,17 @@ public partial class MainWindow : Window, INotesHost
             }
             bool flip = result.Mirrored;
             bool targetChanged = !SymbolNameEquals(ind.ShiftTarget(), target);
-            ind.SourceTimeUnix = result.SourceUnix;
-            ind.ChartTimeUnix = data.FragStartUnix;
+            bool aligned = result.AlignUnix > 0 && data.AlignUnix > 0;
+            long sourceTime = aligned ? result.AlignUnix : result.SourceUnix;
+            long chartTime = aligned ? data.AlignUnix : data.FragStartUnix;
+            ind.SourceTimeUnix = sourceTime;
+            ind.ChartTimeUnix = chartTime;
             ind.Flip = flip;
             ind.TargetSymbol = target;
             if (targetChanged) ClearMirrorBase(name);
             RecordShiftPlacements();
             _config.Save();
-            long delta = ShiftedSymbol.VirtualDelta(result.SourceUnix, data.FragStartUnix);
+            long delta = ShiftedSymbol.VirtualDelta(sourceTime, chartTime);
             var minutes = tgt.History.Minutes;
             var transform = tgt.Transform;
             var (history, offset, newTransform) = await Task.Run(() =>
@@ -5351,7 +5409,8 @@ public partial class MainWindow : Window, INotesHost
                 newTransform.PipPoints);
             string simText = result.Sim.ToString("F4", CultureInfo.InvariantCulture);
             AppendLog($"{name}: {target} shifted to {FmtUtc(result.SourceUnix)} " +
-                $"(sim {simText}{(flip ? ", flipped" : "")})");
+                $"(sim {simText}{(flip ? ", flipped" : "")}" +
+                $"{(aligned ? $", last required level {FmtUtc(sourceTime)} on {FmtUtc(chartTime)}" : "")})");
         }
         finally
         {
@@ -5625,6 +5684,7 @@ public partial class MainWindow : Window, INotesHost
         _computeCts?.Cancel();
         _findCts?.Cancel();
         StopTradingCentralWatch();
+        StopIndexAuto();
         _loader?.Dispose();
         await DisconnectAsync();
         _db?.Dispose();

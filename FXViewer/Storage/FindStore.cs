@@ -5,14 +5,15 @@ namespace FXViewer.Storage;
 
 public sealed record FindResult(
     long SourceUnix, double Sim, double Score, double Rho, double Zoom, bool Mirrored, int Overlap,
-    double MeanA, double MeanB, string Symbol, double TimeFit = 0, int Preferred = 0, int PreferredTotal = 0);
+    double MeanA, double MeanB, string Symbol, double TimeFit = 0, int Preferred = 0, int PreferredTotal = 0,
+    int WindowMinutes = 0, long AlignUnix = 0);
 
 public sealed record FindData(
     int Version, string Source, long FragStartUnix, long FragEndUnix, long SearchedUnix,
     int WindowMinutes, List<FindResult> Results, List<string> Targets,
     int SmoothMinutes, int ZoomPercent, int StepMinutes,
     string SearchType = FindSearchTypes.Similarity, string TargetIndicator = "",
-    int TolerancePips = 0);
+    int TolerancePips = 0, int StretchPercent = 0, long AlignUnix = 0, int MinSpanMinutes = 0);
 
 public static class FindSearchTypes
 {

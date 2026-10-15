@@ -28,6 +28,7 @@ public partial class SearchParamsWindow : Window
 {
     private const string MinutesLabel = "Minutes";
     private const string HoursLabel = "Hours";
+    private const string DaysLabel = "Days";
 
     public sealed class PatternRow
     {
@@ -90,6 +91,9 @@ public partial class SearchParamsWindow : Window
     private readonly List<CheckBox> _levels2Boxes = new();
     private readonly IReadOnlyList<ZigZagFindTarget> _zigZagTargets;
     private readonly IReadOnlyList<Levels2FindTarget> _levels2Targets;
+    private List<LevelStep> _findLeft;
+    private List<LevelStep> _findRight;
+    private Levels2Tables _tables;
     private readonly long _fragStartUnix;
     private readonly long _fragEndUnix;
     private readonly ObservableCollection<PatternRow> _rows = new();
@@ -146,9 +150,21 @@ public partial class SearchParamsWindow : Window
 
     public bool RequiredPickOnChart { get; private set; }
 
+    public List<LevelStep> FindLeftSteps => LevelStep.CopyOf(_findLeft);
+
+    public List<LevelStep> FindRightSteps => LevelStep.CopyOf(_findRight);
+
+    public int StretchPercent { get; private set; } = IndicatorSymbol.DefaultFindLevels2StretchPercent;
+
+    public int MinSpanMinutes { get; private set; }
+
+    public FindDialogState State { get; private set; } = new();
+
+    public bool NewSearchRequested { get; private set; }
+
     public SearchParamsWindow(string indicatorName, string fragmentText, IReadOnlyList<string> pairs,
         IReadOnlyList<ZigZagFindTarget> zigZagTargets, IReadOnlyList<Levels2FindTarget> levels2Targets,
-        long fragStartUnix, long fragEndUnix, IndicatorSymbol ind)
+        long fragStartUnix, long fragEndUnix, IndicatorSymbol ind, FindDialogState? last)
     {
         InitializeComponent();
         _zigZagTargets = zigZagTargets;
@@ -177,8 +193,34 @@ public partial class SearchParamsWindow : Window
         ToleranceBox.Text = Math.Max(1, ind.FindLevelTolerancePips).ToString(CultureInfo.InvariantCulture);
         RequiredLeftBox.Text = Math.Max(0, ind.FindLevels2MinLeftPips).ToString(CultureInfo.InvariantCulture);
         RequiredRightBox.Text = Math.Max(0, ind.FindLevels2MinRightPips).ToString(CultureInfo.InvariantCulture);
+        StretchBox.Text = Math.Max(0, ind.FindLevels2StretchPercent).ToString(CultureInfo.InvariantCulture);
+        MinSpanUnitBox.Items.Add(MinutesLabel);
+        MinSpanUnitBox.Items.Add(HoursLabel);
+        MinSpanUnitBox.Items.Add(DaysLabel);
+        int minSpan = Math.Max(0, ind.FindLevels2MinSpanMinutes);
+        if (minSpan > 0 && minSpan % 1440 == 0)
+        {
+            MinSpanBox.Text = (minSpan / 1440).ToString(CultureInfo.InvariantCulture);
+            MinSpanUnitBox.SelectedItem = DaysLabel;
+        }
+        else if (minSpan > 0 && minSpan % 60 == 0)
+        {
+            MinSpanBox.Text = (minSpan / 60).ToString(CultureInfo.InvariantCulture);
+            MinSpanUnitBox.SelectedItem = HoursLabel;
+        }
+        else
+        {
+            MinSpanBox.Text = minSpan.ToString(CultureInfo.InvariantCulture);
+            MinSpanUnitBox.SelectedItem = minSpan > 0 ? MinutesLabel : HoursLabel;
+        }
+        _findLeft = ind.EffectiveFindLevel2LeftSteps();
+        _findRight = ind.EffectiveFindLevel2RightSteps();
+        _tables = Levels2Tables.Of(_findLeft, _findRight);
+        LevelParamsText.Text = LevelParamsWindow.Summary(_findLeft, _findRight);
         ZoomBox.TextChanged += (_, _) => UpdateZoomHint();
+        StretchBox.TextChanged += (_, _) => UpdateStretchHint();
         UpdateZoomHint();
+        UpdateStretchHint();
         var selected = new HashSet<string>(
             ind.EffectiveFindTargets().Select(IndicatorSymbol.NameKey));
         foreach (var pair in pairs)
@@ -241,31 +283,38 @@ public partial class SearchParamsWindow : Window
         }
         var storedLevels2 = new HashSet<string>(
             ind.FindLevels2Targets.Select(IndicatorSymbol.NameKey));
-        bool anyStoredLevels2 = levels2Targets.Any(
-            t => storedLevels2.Contains(IndicatorSymbol.NameKey(t.Name)));
+        if (!levels2Targets.Any(t => storedLevels2.Contains(IndicatorSymbol.NameKey(t.Pair))))
+            storedLevels2 = new HashSet<string>(ind.EffectiveFindTargets().Select(IndicatorSymbol.NameKey));
         int templateIndex = -1;
+        int sourceIndex = -1;
         for (int i = 0; i < levels2Targets.Count; i++)
         {
-            string name = levels2Targets[i].Name;
-            bool stored = storedLevels2.Contains(IndicatorSymbol.NameKey(name));
+            string pair = levels2Targets[i].Pair;
             var box = new CheckBox
             {
-                Content = name,
+                Content = pair,
                 Margin = new Thickness(0, 2, 12, 2),
-                IsChecked = anyStoredLevels2 ? stored : i == 0,
+                IsChecked = storedLevels2.Contains(IndicatorSymbol.NameKey(pair)),
                 Tag = i,
             };
             _levels2Boxes.Add(box);
             Levels2TargetsPanel.Children.Add(box);
-            Levels2TemplateBox.Items.Add(name);
-            if (templateIndex < 0 && IndicatorSymbol.NameKey(name)
+            Levels2TemplateBox.Items.Add(pair);
+            if (templateIndex < 0 && IndicatorSymbol.NameKey(pair)
                     == IndicatorSymbol.NameKey(ind.FindLevels2Template))
                 templateIndex = i;
+            if (sourceIndex < 0 && IndicatorSymbol.NameKey(pair) == IndicatorSymbol.NameKey(ind.Source))
+                sourceIndex = i;
         }
+        if (templateIndex < 0) templateIndex = sourceIndex;
         if (templateIndex < 0)
             templateIndex = _levels2Boxes.FindIndex(b => b.IsChecked == true);
         if (levels2Targets.Count > 0)
+        {
             Levels2TemplateBox.SelectedIndex = Math.Max(0, templateIndex);
+            if (_levels2Boxes.All(b => b.IsChecked != true))
+                _levels2Boxes[Math.Max(0, templateIndex)].IsChecked = true;
+        }
         SearchTypeBox.Items.Add(new ComboBoxItem { Content = FindSearchTypes.Similarity });
         SearchTypeBox.Items.Add(new ComboBoxItem
         {
@@ -280,11 +329,190 @@ public partial class SearchParamsWindow : Window
         bool zig = FindSearchTypes.IsZigZag(ind.FindSearchType) && zigZagTargets.Count > 0;
         bool lv2 = FindSearchTypes.IsLevels2(ind.FindSearchType) && levels2Targets.Count > 0;
         SearchTypeBox.SelectedIndex = zig ? 1 : lv2 ? 2 : 0;
+        if (last != null) ApplyState(last);
         _ready = true;
         PrefillPoints();
         LoadTemplateLevels();
-        FillRequiredRows();
+        if (last != null)
+        {
+            RestorePoints(last);
+            RestoreLevels(last);
+        }
+        else
+        {
+            FillRequiredRows();
+        }
         UpdateMode();
+    }
+
+    private void ApplyState(FindDialogState s)
+    {
+        SmoothBox.Text = s.Smooth;
+        if (SmoothUnitBox.Items.Contains(s.SmoothUnit)) SmoothUnitBox.SelectedItem = s.SmoothUnit;
+        ZoomBox.Text = s.Zoom;
+        StepBox.Text = s.Step;
+        ToleranceBox.Text = s.Tolerance;
+        StretchBox.Text = s.Stretch;
+        MinSpanBox.Text = s.MinSpan;
+        if (MinSpanUnitBox.Items.Contains(s.MinSpanUnit)) MinSpanUnitBox.SelectedItem = s.MinSpanUnit;
+        RequiredLeftBox.Text = s.LevelsMinLeft;
+        RequiredRightBox.Text = s.LevelsMinRight;
+        RequiredModeBox.SelectedItem = s.PickOnChart ? ChartModeLabel : TableModeLabel;
+        if (s.LeftSteps.Count > 0 && s.RightSteps.Count > 0)
+        {
+            _findLeft = LevelStep.CopyOf(s.LeftSteps);
+            _findRight = LevelStep.CopyOf(s.RightSteps);
+            _tables = Levels2Tables.Of(_findLeft, _findRight);
+            LevelParamsText.Text = LevelParamsWindow.Summary(_findLeft, _findRight);
+        }
+        CheckByName(_targetBoxes, s.Targets, b => (string)b.Tag!);
+        CheckByName(_zigZagBoxes, s.ZigZagTargets, b => _zigZagTargets[(int)b.Tag!].Name);
+        CheckByName(_levels2Boxes, s.Levels2Targets, b => _levels2Targets[(int)b.Tag!].Pair);
+        int template = -1;
+        for (int i = 0; i < _levels2Targets.Count && template < 0; i++)
+            if (IndicatorSymbol.NameKey(_levels2Targets[i].Pair) == IndicatorSymbol.NameKey(s.Levels2Template))
+                template = i;
+        if (template >= 0) Levels2TemplateBox.SelectedIndex = template;
+        bool zig = FindSearchTypes.IsZigZag(s.SearchType) && _zigZagTargets.Count > 0;
+        bool lv2 = FindSearchTypes.IsLevels2(s.SearchType) && _levels2Targets.Count > 0;
+        SearchTypeBox.SelectedIndex = zig ? 1 : lv2 ? 2 : 0;
+    }
+
+    private static void CheckByName(List<CheckBox> boxes, List<string> names, Func<CheckBox, string> nameOf)
+    {
+        var keys = new HashSet<string>(names.Select(IndicatorSymbol.NameKey));
+        if (!boxes.Any(b => keys.Contains(IndicatorSymbol.NameKey(nameOf(b))))) return;
+        foreach (var box in boxes) box.IsChecked = keys.Contains(IndicatorSymbol.NameKey(nameOf(box)));
+    }
+
+    private void RestorePoints(FindDialogState s)
+    {
+        _prefilling = true;
+        try
+        {
+            _rows.Clear();
+            foreach (var p in s.Points)
+                _rows.Add(new PatternRow
+                {
+                    Pips = p.Pips,
+                    Minutes = p.Minutes,
+                    PipsUp = p.PipsUp,
+                    PipsDown = p.PipsDown,
+                    MinLeft = p.MinLeft,
+                    MinRight = p.MinRight,
+                    Zoom = p.Zoom,
+                    SourceUnix = p.SourceUnix,
+                });
+            _patternSource = s.PointsSource;
+        }
+        finally
+        {
+            _prefilling = false;
+            _rowsEdited = s.PointsEdited;
+        }
+    }
+
+    private void RestoreLevels(FindDialogState s)
+    {
+        _requiredFilling = true;
+        try
+        {
+            _requiredRows.Clear();
+            foreach (var r in s.Levels)
+                _requiredRows.Add(new RequiredRow
+                {
+                    Level = r.Level,
+                    Use = UseOptions.Contains(r.Use) ? r.Use : UseRequired,
+                    TolUp = r.TolUp,
+                    TolDown = r.TolDown,
+                    Seq = r.Seq,
+                    MinLeft = r.MinLeft,
+                    MinRight = r.MinRight,
+                    TimeUnix = r.TimeUnix,
+                });
+            _requiredSource = SelectedTemplate()?.Pair ?? "";
+        }
+        finally
+        {
+            _requiredFilling = false;
+            _requiredEdited = s.LevelsEdited;
+            _seqEdited = s.SeqEdited;
+        }
+        if (SelectedTemplate() is { } target) RestoreAddedLevels(target);
+        RequiredPicker.Refresh();
+    }
+
+    private void RestoreAddedLevels(Levels2FindTarget target)
+    {
+        foreach (var row in _requiredRows)
+        {
+            if (row.TimeUnix == 0 || !TryLevelPoints(target, row.Level, out double points)) continue;
+            bool Same(Level2 level) => LevelTime(target, level) == row.TimeUnix
+                && Math.Abs(points - level.Value) < DensityProfile.PipPoints / 2.0;
+            if (_shownLevels.Any(Same)) continue;
+            foreach (var level in _extremes)
+            {
+                if (!Same(level)) continue;
+                _extraLevels.Add(level);
+                _shownLevels.Add(level);
+                break;
+            }
+        }
+    }
+
+    private FindDialogState CaptureState()
+    {
+        PointsGrid.CommitEdit(DataGridEditingUnit.Row, true);
+        RequiredGrid.CommitEdit(DataGridEditingUnit.Row, true);
+        static double Finite(double value) => double.IsFinite(value) ? value : 0;
+        return new FindDialogState
+        {
+            FragStartUnix = _fragStartUnix,
+            FragEndUnix = _fragEndUnix,
+            SearchType = IsZigZagMode ? FindSearchTypes.ZigZag
+                : IsLevels2Mode ? FindSearchTypes.Levels2
+                : FindSearchTypes.Similarity,
+            Targets = _targetBoxes.Where(b => b.IsChecked == true).Select(b => (string)b.Tag!).ToList(),
+            ZigZagTargets = _zigZagBoxes.Where(b => b.IsChecked == true)
+                .Select(b => _zigZagTargets[(int)b.Tag!].Name).ToList(),
+            Levels2Targets = _levels2Boxes.Where(b => b.IsChecked == true)
+                .Select(b => _levels2Targets[(int)b.Tag!].Pair).ToList(),
+            Levels2Template = SelectedTemplate()?.Pair ?? "",
+            Smooth = SmoothBox.Text.Trim(),
+            SmoothUnit = SmoothUnitBox.SelectedItem as string ?? MinutesLabel,
+            Zoom = ZoomBox.Text.Trim(),
+            Step = StepBox.Text.Trim(),
+            Tolerance = ToleranceBox.Text.Trim(),
+            Stretch = StretchBox.Text.Trim(),
+            MinSpan = MinSpanBox.Text.Trim(),
+            MinSpanUnit = MinSpanUnitBox.SelectedItem as string ?? HoursLabel,
+            LevelsMinLeft = RequiredLeftBox.Text.Trim(),
+            LevelsMinRight = RequiredRightBox.Text.Trim(),
+            PickOnChart = IsChartPickMode,
+            LeftSteps = LevelStep.CopyOf(_findLeft),
+            RightSteps = LevelStep.CopyOf(_findRight),
+            Points = _rows.Select(r => new FindPatternRow(Finite(r.Pips), Finite(r.Minutes), Finite(r.PipsUp),
+                Finite(r.PipsDown), Finite(r.MinLeft), Finite(r.MinRight), r.Zoom, r.SourceUnix)).ToList(),
+            PointsSource = _patternSource,
+            PointsEdited = _rowsEdited,
+            Levels = _requiredRows.Select(r => new FindLevelRow(r.Level ?? "", r.Use ?? UseRequired,
+                Finite(r.TolUp), Finite(r.TolDown), r.Seq ?? "", Finite(r.MinLeft), Finite(r.MinRight),
+                r.TimeUnix)).ToList(),
+            LevelsEdited = _requiredEdited,
+            SeqEdited = _seqEdited,
+        };
+    }
+
+    private void Accept()
+    {
+        State = CaptureState();
+        DialogResult = true;
+    }
+
+    private void NewSearchBtn_Click(object sender, RoutedEventArgs e)
+    {
+        NewSearchRequested = true;
+        DialogResult = false;
     }
 
     private bool IsChartPickMode => (RequiredModeBox.SelectedItem as string) == ChartModeLabel;
@@ -311,16 +539,15 @@ public partial class SearchParamsWindow : Window
         _shownLevels.Clear();
         _extremes.Clear();
         var target = SelectedTemplate();
-        if (target?.TemplateMinutes == null)
+        if (target?.Minutes == null)
         {
             RequiredPicker.Clear();
             return;
         }
-        Levels2Search.TemplateLevels(target, target.TemplateMinutes, _fragStartUnix, _fragEndUnix,
-            _templateLevels);
-        Levels2Search.TemplateExtremes(target, target.TemplateMinutes, _fragStartUnix, _fragEndUnix, _extremes);
+        Levels2Search.TemplateLevels(_tables, target.Minutes, _fragStartUnix, _fragEndUnix, _templateLevels);
+        Levels2Search.TemplateExtremes(_tables, target.Minutes, _fragStartUnix, _fragEndUnix, _extremes);
         _shownLevels.AddRange(_templateLevels);
-        RequiredPicker.Show(target.TemplateMinutes, _shownLevels, _extremes, _fragStartUnix, _fragEndUnix,
+        RequiredPicker.Show(target.Minutes, _shownLevels, _extremes, _fragStartUnix, _fragEndUnix,
             level => UseOf(RowOfLevel(target, level)),
             level => LevelsPickerView.LevelLabel(LevelText(target, level.Value), level),
             level => RowOfLevel(target, level)?.Seq?.Trim() ?? "");
@@ -334,7 +561,7 @@ public partial class SearchParamsWindow : Window
     };
 
     private static long LevelTime(Levels2FindTarget target, Level2 level) =>
-        target.TemplateMinutes is { } minutes && level.Index >= 0 && level.Index < minutes.Count
+        target.Minutes is { } minutes && level.Index >= 0 && level.Index < minutes.Count
             ? minutes[level.Index].MinuteUnixSeconds
             : 0;
 
@@ -439,7 +666,7 @@ public partial class SearchParamsWindow : Window
     {
         if (!_ready) return;
         RequiredGrid.CommitEdit(DataGridEditingUnit.Row, true);
-        string name = SelectedTemplate()?.Name ?? "";
+        string name = SelectedTemplate()?.Pair ?? "";
         if (name == _requiredSource) return;
         LoadTemplateLevels();
         if (_requiredEdited && _requiredRows.Count > 0)
@@ -447,6 +674,19 @@ public partial class SearchParamsWindow : Window
             _requiredSource = name;
             return;
         }
+        FillRequiredRows();
+    }
+
+    private void LevelParamsBtn_Click(object sender, RoutedEventArgs e)
+    {
+        RequiredGrid.CommitEdit(DataGridEditingUnit.Row, true);
+        var dlg = new LevelParamsWindow(_findLeft, _findRight) { Owner = this };
+        if (dlg.ShowDialog() != true) return;
+        _findLeft = dlg.LeftSteps;
+        _findRight = dlg.RightSteps;
+        _tables = Levels2Tables.Of(_findLeft, _findRight);
+        LevelParamsText.Text = LevelParamsWindow.Summary(_findLeft, _findRight);
+        LoadTemplateLevels();
         FillRequiredRows();
     }
 
@@ -480,8 +720,8 @@ public partial class SearchParamsWindow : Window
         {
             _requiredRows.Clear();
             var target = SelectedTemplate();
-            _requiredSource = target?.Name ?? "";
-            if (target?.TemplateMinutes == null) return;
+            _requiredSource = target?.Pair ?? "";
+            if (target?.Minutes == null) return;
             int left = ReadArmPips(RequiredLeftBox);
             int right = ReadArmPips(RequiredRightBox);
             double leftPoints = left * (double)DensityProfile.PipPoints;
@@ -578,6 +818,12 @@ public partial class SearchParamsWindow : Window
         StepPanel.Visibility = zig ? Visibility.Collapsed : Visibility.Visible;
         ToleranceLabel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
         TolerancePanel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
+        StretchLabel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
+        StretchPanel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
+        MinSpanLabel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
+        MinSpanPanel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
+        LevelParamsLabel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
+        LevelParamsPanel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
         PointsLabel.Visibility = zig ? Visibility.Visible : Visibility.Collapsed;
         PointsGrid.Visibility = zig ? Visibility.Visible : Visibility.Collapsed;
         RequiredLabel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
@@ -650,6 +896,19 @@ public partial class SearchParamsWindow : Window
         row.PipsDown = _defaultPipTol;
         row.MinLeft = _defaultMinTol;
         row.MinRight = _defaultMinTol;
+    }
+
+    private void UpdateStretchHint()
+    {
+        if (StretchHint == null) return;
+        if (!TryReadInt(StretchBox, out int percent) || percent < 0)
+        {
+            StretchHint.Text = "";
+            return;
+        }
+        double max = 1 + percent / 100.0;
+        StretchHint.Text = string.Format(CultureInfo.InvariantCulture,
+            "window {0:F2}x .. {1:F2}x of the selection", 1 / max, max);
     }
 
     private void UpdateZoomHint()
@@ -742,7 +1001,7 @@ public partial class SearchParamsWindow : Window
                 .ToList();
             AnchorUnix = rows[0].SourceUnix != 0 ? rows[0].SourceUnix : _fragStartUnix;
             Params = new SearchParams(_seedSmoothMinutes, zoom, _seedStepMinutes);
-            DialogResult = true;
+            Accept();
             return;
         }
         if (!TryReadInt(StepBox, out int stepMinutes) || stepMinutes < 1 || stepMinutes > 10080)
@@ -753,21 +1012,42 @@ public partial class SearchParamsWindow : Window
         if (IsLevels2Mode)
         {
             var levels2Names = _levels2Boxes.Where(b => b.IsChecked == true)
-                .Select(b => _levels2Targets[(int)b.Tag!].Name)
+                .Select(b => _levels2Targets[(int)b.Tag!].Pair)
                 .ToList();
             if (levels2Names.Count == 0)
             {
-                Warn("Pick at least one Levels2 indicator to search in.");
+                Warn("Pick at least one pair to search in.");
                 return;
             }
             if (Levels2TemplateBox.SelectedItem is not string templateName)
             {
-                Warn("Pick the template Levels2 indicator.");
+                Warn("Pick the template pair.");
                 return;
             }
             if (!TryReadInt(ToleranceBox, out int tolerance) || tolerance < 1 || tolerance > 100)
             {
                 Warn("Tolerance must be a whole number of pips between 1 and 100.");
+                return;
+            }
+            if (!TryReadInt(StretchBox, out int stretch) || stretch < 0 || stretch > 1000)
+            {
+                Warn("Time stretch must be a whole number of percent between 0 and 1000.");
+                return;
+            }
+            if (!TryReadInt(MinSpanBox, out int minSpan) || minSpan < 0)
+            {
+                Warn("Min span must be a whole number, 0 or more.");
+                return;
+            }
+            minSpan *= (MinSpanUnitBox.SelectedItem as string) switch
+            {
+                DaysLabel => 1440,
+                HoursLabel => 60,
+                _ => 1,
+            };
+            if (minSpan > 10_000_000)
+            {
+                Warn("Min span is too large.");
                 return;
             }
             if (!RequiredGrid.CommitEdit(DataGridEditingUnit.Row, true))
@@ -779,7 +1059,7 @@ public partial class SearchParamsWindow : Window
             var template = SelectedTemplate();
             if (template == null)
             {
-                Warn("Pick the template Levels2 indicator.");
+                Warn("Pick the template pair.");
                 return;
             }
             var rules = new List<Levels2LevelRule>();
@@ -814,7 +1094,7 @@ public partial class SearchParamsWindow : Window
                     return;
                 }
                 rules.Add(new Levels2LevelRule(points, row.Use != UsePreferred, row.TolUp, row.TolDown, seq,
-                    row.MinLeft, row.MinRight));
+                    row.MinLeft, row.MinRight, row.TimeUnix));
             }
             SearchType = FindSearchTypes.Levels2;
             Levels2TargetNames = levels2Names;
@@ -824,8 +1104,10 @@ public partial class SearchParamsWindow : Window
             RequiredMinLeftPips = minLeft;
             RequiredMinRightPips = minRight;
             RequiredPickOnChart = IsChartPickMode;
+            StretchPercent = stretch;
+            MinSpanMinutes = minSpan;
             Params = new SearchParams(_seedSmoothMinutes, zoom, stepMinutes);
-            DialogResult = true;
+            Accept();
             return;
         }
         var targets = _targetBoxes.Where(b => b.IsChecked == true).Select(b => (string)b.Tag!).ToList();
@@ -843,7 +1125,7 @@ public partial class SearchParamsWindow : Window
         SearchType = FindSearchTypes.Similarity;
         Targets = targets;
         Params = new SearchParams(smooth, zoom, stepMinutes);
-        DialogResult = true;
+        Accept();
     }
 
     private void CancelBtn_Click(object sender, RoutedEventArgs e) => Close();

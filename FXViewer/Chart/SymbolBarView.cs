@@ -82,7 +82,7 @@ public sealed class SymbolBarView : FrameworkElement
     public event Action? TiltedGridSettingsRequested;
     public event Action? TiltedGridResetRequested;
 
-    public Func<bool>? HasChartSelection { get; set; }
+    public Func<string, bool>? CanFind { get; set; }
     public Func<string, bool>? HasFindResults { get; set; }
     public Func<string, bool>? CanRefresh { get; set; }
     public Func<string, bool>? CanRebuild { get; set; }
@@ -186,7 +186,7 @@ public sealed class SymbolBarView : FrameworkElement
             }
             if (_shiftSymbols.Contains(symbol))
             {
-                var find = new MenuItem { Header = "Find", IsEnabled = HasChartSelection?.Invoke() == true };
+                var find = new MenuItem { Header = "Find", IsEnabled = CanFind?.Invoke(symbol) == true };
                 find.Click += (_, _) => FindRequested?.Invoke(symbol);
                 menu.Items.Add(find);
                 var show = new MenuItem

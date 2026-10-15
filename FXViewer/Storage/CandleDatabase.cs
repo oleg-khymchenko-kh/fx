@@ -71,6 +71,15 @@ public sealed class CandleDatabase : IDisposable
         GetFile(symbol, year).Write(minuteOfYear, min, max, avg, avgApprox, provisional, spreadCode, volume);
     }
 
+    public void ClearMinute(string symbol, DateTime minuteUtc)
+    {
+        var utc = AsUtc(minuteUtc);
+        int year = utc.Year;
+        if (!FileExists(symbol, year)) return;
+        long unix = ((DateTimeOffset)utc).ToUnixTimeSeconds();
+        GetFile(symbol, year).Clear((int)((unix - YearStartUnix(year)) / 60));
+    }
+
     public bool WriteSpread(string symbol, DateTime minuteUtc, int spreadCode)
     {
         var utc = AsUtc(minuteUtc);

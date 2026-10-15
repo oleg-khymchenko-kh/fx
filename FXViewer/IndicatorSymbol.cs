@@ -47,6 +47,11 @@ public sealed class IndicatorSymbol
     public int FindLevels2MinLeftPips { get; set; } = DefaultFindLevels2ArmPips;
     public int FindLevels2MinRightPips { get; set; } = DefaultFindLevels2ArmPips;
     public bool FindLevels2PickOnChart { get; set; }
+    public List<LevelStep> FindLevel2LeftSteps { get; set; } = new();
+    public List<LevelStep> FindLevel2RightSteps { get; set; } = new();
+    public int FindLevels2StretchPercent { get; set; } = DefaultFindLevels2StretchPercent;
+    public int FindLevels2MinSpanMinutes { get; set; }
+    public FindDialogState? FindLast { get; set; }
     public List<int> DensityPeriods { get; set; } = new();
     public List<string> DensityUnits { get; set; } = new();
     public List<int> DensityScalePercents { get; set; } = new();
@@ -76,6 +81,7 @@ public sealed class IndicatorSymbol
     public const int DefaultFindStepMinutes = 60;
     public const int DefaultFindLevelTolerancePips = 5;
     public const int DefaultFindLevels2ArmPips = 50;
+    public const int DefaultFindLevels2StretchPercent = 100;
     public const int DensityOptionCount = 9;
     public const int DensityAllOption = DensityOptionCount;
     public const int DefaultLevelLengthPx = 4;
@@ -105,6 +111,12 @@ public sealed class IndicatorSymbol
 
     public List<LevelStep> EffectiveLevel2RightSteps() =>
         Level2RightSteps.Count > 0 ? LevelStep.CopyOf(Level2RightSteps) : DefaultLevel2RightSteps();
+
+    public List<LevelStep> EffectiveFindLevel2LeftSteps() =>
+        FindLevel2LeftSteps.Count > 0 ? LevelStep.CopyOf(FindLevel2LeftSteps) : DefaultLevel2LeftSteps();
+
+    public List<LevelStep> EffectiveFindLevel2RightSteps() =>
+        FindLevel2RightSteps.Count > 0 ? LevelStep.CopyOf(FindLevel2RightSteps) : DefaultLevel2RightSteps();
     public const string DefaultLevelUnit = IndicatorUnits.Days;
     public const bool DefaultAverageTimeWindow = true;
     public const int DefaultBandCount = 40;
@@ -231,6 +243,11 @@ public sealed class IndicatorSymbol
         FindLevels2MinLeftPips = FindLevels2MinLeftPips,
         FindLevels2MinRightPips = FindLevels2MinRightPips,
         FindLevels2PickOnChart = FindLevels2PickOnChart,
+        FindLevel2LeftSteps = LevelStep.CopyOf(FindLevel2LeftSteps),
+        FindLevel2RightSteps = LevelStep.CopyOf(FindLevel2RightSteps),
+        FindLevels2StretchPercent = FindLevels2StretchPercent,
+        FindLevels2MinSpanMinutes = FindLevels2MinSpanMinutes,
+        FindLast = FindLast?.Clone(),
         DensityPeriods = new List<int>(DensityPeriods),
         DensityUnits = new List<string>(DensityUnits),
         DensityScalePercents = new List<int>(DensityScalePercents),
