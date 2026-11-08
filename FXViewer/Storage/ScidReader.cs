@@ -11,7 +11,6 @@ public static class ScidReader
     private const int MinRecordSize = 40;
     private const int VolumeFieldOffset = 28;
     private const int ReadRecords = 4096;
-    private const int PriceScale = 100000;
 
     public readonly record struct TailResult(
         long Offset, int Records, long NewestMinute, bool Restarted, string Error)
@@ -26,7 +25,7 @@ public static class ScidReader
     }
 
     public static TailResult ReadMinuteVolumes(string path, long fromOffset, Dictionary<long, long> into,
-        Dictionary<long, TickMinute>? ticksInto = null, bool reciprocal = false)
+        Dictionary<long, TickMinute>? ticksInto = null, bool reciprocal = false, int priceScale = 100000)
     {
         try
         {
@@ -79,7 +78,7 @@ public static class ScidReader
                         accum = new TickMinute();
                         ticksInto[minute] = accum;
                     }
-                    accum.Add(VolumeProfileStore.SpotPoints(close, reciprocal, PriceScale), volume,
+                    accum.Add(VolumeProfileStore.SpotPoints(close, reciprocal, priceScale), volume,
                         reciprocal ? ask : bid, reciprocal ? bid : ask);
                 }
                 offset += usable;

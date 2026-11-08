@@ -18,4 +18,8 @@
     <Protobuf Include="Protos\*.proto" ProtoRoot="Protos" GrpcServices="None" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\src\Fx.Consensus\Fx.Consensus.csproj" />
+  </ItemGroup>
+
 </Project>

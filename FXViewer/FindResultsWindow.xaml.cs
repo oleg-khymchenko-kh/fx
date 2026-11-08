@@ -11,9 +11,10 @@ public partial class FindResultsWindow : Window
 {
     public sealed record Row(
         string Rank, string Symbol, string Window, string Fit, string Sim, string Rho, string Zoom,
-        string Mirror, string Overlap, FindResult Result);
+        string Mirror, string Back, string Overlap, FindResult Result);
 
     private Action<FindResult>? _apply;
+    private Action<bool>? _keyPointsChanged;
     private bool _searching;
 
     public event Action? CancelRequested;
@@ -39,7 +40,18 @@ public partial class FindResultsWindow : Window
         ProgressBar.Value = 0;
         ProgressPanel.Visibility = Visibility.Visible;
         ResultsList.Visibility = Visibility.Collapsed;
+        KeyPointsBox.Visibility = Visibility.Collapsed;
     }
+
+    public void SetKeyPointsOption(bool isChecked, Action<bool> changed)
+    {
+        _keyPointsChanged = changed;
+        KeyPointsBox.IsChecked = isChecked;
+        KeyPointsBox.Visibility = Visibility.Visible;
+    }
+
+    private void KeyPointsBox_Click(object sender, RoutedEventArgs e) =>
+        _keyPointsChanged?.Invoke(KeyPointsBox.IsChecked == true);
 
     public void SetProgress(double p) => ProgressBar.Value = Math.Clamp(p * 100, 0, 100);
 
@@ -51,6 +63,7 @@ public partial class FindResultsWindow : Window
         ResultsList.Visibility = Visibility.Visible;
         bool zigzag = FindSearchTypes.IsZigZag(data.SearchType);
         bool levels2 = FindSearchTypes.IsLevels2(data.SearchType);
+        if (!levels2) KeyPointsBox.Visibility = Visibility.Collapsed;
         bool preferred = levels2 && data.Results.Any(r => r.PreferredTotal > 0);
         bool fit = zigzag || preferred;
         if (fit && !ResultsView.Columns.Contains(FitColumn)) ResultsView.Columns.Insert(3, FitColumn);
@@ -60,6 +73,10 @@ public partial class FindResultsWindow : Window
         if (!levels2 && !ResultsView.Columns.Contains(RhoColumn))
             ResultsView.Columns.Insert(simIndex + 1, RhoColumn);
         else if (levels2) ResultsView.Columns.Remove(RhoColumn);
+        bool hasBack = ResultsView.Columns.Contains(BackColumn);
+        if (levels2 && !hasBack)
+            ResultsView.Columns.Insert(ResultsView.Columns.IndexOf(OverlapColumn), BackColumn);
+        else if (!levels2 && hasBack) ResultsView.Columns.Remove(BackColumn);
         OverlapColumn.Header = levels2 ? "Levels" : "Overlap";
         string targets = data.Targets is { Count: > 0 } ? string.Join(", ", data.Targets) : data.Source;
         HeaderText.Text = $"{FragmentText(data)} - {data.Results.Count} matches in {targets}";
@@ -81,6 +98,7 @@ public partial class FindResultsWindow : Window
                 r.Rho.ToString("F3", CultureInfo.InvariantCulture),
                 r.Zoom.ToString("F2", CultureInfo.InvariantCulture),
                 r.Mirrored ? "M" : "",
+                r.Reversed ? "R" : "",
                 r.Overlap.ToString(CultureInfo.InvariantCulture),
                 r));
         }

@@ -15,217 +15,81 @@ public sealed record Levels2Tables(LevelSizeTable Left, LevelSizeTable Right)
 
 public sealed record Levels2LevelRule(
     double ValuePoints, bool Required, double TolUpPips, double TolDownPips, int Sequence,
-    double MinLeftPips, double MinRightPips, long TimeUnix = 0);
+    long TimeUnix = 0, bool? Top = null, long? MinGapSeconds = null, long? MaxGapSeconds = null);
 
 public sealed record Levels2SearchTarget(Levels2FindTarget Target, IReadOnlyList<Candle> Minutes);
 
 public static class Levels2Search
 {
     private const double ZoomStep = 1.15;
-    private const double SpanStep = 1.5;
-    private const int MinShiftPips = 20;
-    private const int MaxShiftPips = 150;
-    private const int Channels = 2;
-    private const int KernelStepsPerPip = 1;
-    private const int ExhaustiveShifts = 48;
+    private const int MaxGenericScan = 50_000;
+    private const int MaxNodesPerStart = 20_000;
 
-    private sealed class Marks
+    private sealed record Point(int Rule, double Level, bool Top, bool Required, double Up, double Down,
+        int Sequence, long TimeVirtual, long MinGap, long MaxGap);
+
+    private sealed class Series
     {
-        public int Count;
-        public double[] Row = new double[64];
-        public int[] Channel = new int[64];
-        public double[] Weight = new double[64];
-        public int[] Zoomed = new int[64];
-        public int[] Approach = new int[64];
-        public int[] Reversal = new int[64];
-        public int[] Time = new int[64];
-        public int[] Value = new int[64];
+        public required int[] High;
+        public required int[] Low;
+        public required long[] Virtual;
+        public required long[] Unix;
+        public required int[] NextHigher;
+        public required int[] NextLower;
 
-        public void Clear() => Count = 0;
-
-        public void Add(double row, int channel, double weight, int approach, int reversal, int time, int value)
-        {
-            if (Count == Row.Length)
-            {
-                Array.Resize(ref Row, Count * 2);
-                Array.Resize(ref Channel, Count * 2);
-                Array.Resize(ref Weight, Count * 2);
-                Array.Resize(ref Zoomed, Count * 2);
-                Array.Resize(ref Approach, Count * 2);
-                Array.Resize(ref Reversal, Count * 2);
-                Array.Resize(ref Time, Count * 2);
-                Array.Resize(ref Value, Count * 2);
-            }
-            Row[Count] = row;
-            Channel[Count] = channel;
-            Weight[Count] = weight;
-            Approach[Count] = approach;
-            Reversal[Count] = reversal;
-            Time[Count] = time;
-            Value[Count] = value;
-            Count++;
-        }
+        public int Count => High.Length;
     }
 
-    private sealed class Template
+    private sealed record Match(int Preferred, double Sim, double Pace, double Zoom, bool Mirrored,
+        double Offset, int[] Minutes, int[] Values, int[] Points);
+
+    private sealed class Pattern
     {
-        public required double[][] Dense;
-        public required int RowMin;
-        public required double Norm;
-        public required double MeanPips;
-        public required int ShiftPips;
-        public required double[] Kernel;
-        public required double Sigma;
-        public required int[] RuleRows;
-        public required int[] RuleUp;
-        public required int[] RuleDown;
-        public required double[] RuleApproach;
-        public required double[] RuleReversal;
-        public required bool[] RuleRequired;
-        public required int RequiredCount;
-        public required int PreferredCount;
-        public required int[] UnsequencedPreferred;
-        public required int[][] SequenceGroups;
-        public required int[] RuleSequence;
-        public required int[] RequiredSequenced;
-        public required bool HasRequiredChain;
+        public required Point[] Points;
+        public required bool[] OptionalAfter;
+        public required int FirstRequired;
+        public required int Anchor;
+        public required int PreferredTotal;
+        public required double[] Zooms;
         public required long MinSpanSeconds;
-        public required int AnchorRule;
-        public required long AnchorUnix;
-
-        public bool HasSequence => SequenceGroups.Length > 0;
     }
 
-    private sealed class RangeIndex
+    private sealed class Context
     {
-        private const int BlockShift = 6;
-        private readonly Candle[] _minutes;
-        private readonly int[] _blockMax;
-        private readonly int[] _blockMin;
+        public required Series Series;
+        public required Pattern Pattern;
+        public required int Limit;
+        public readonly List<int>[] Candidates;
+        public readonly int[] Minutes;
+        public readonly int[] Values;
+        public readonly int[] Points;
+        public readonly List<double> Logs = new();
+        public readonly List<Match> Found = new();
+        public int Depth;
+        public int Nodes;
+        public int Sign;
+        public double Zoom;
+        public Match? Best;
 
-        public RangeIndex(Candle[] minutes)
+        public Context(int pointCount)
         {
-            _minutes = minutes;
-            int blocks = (minutes.Length >> BlockShift) + 1;
-            _blockMax = new int[blocks];
-            _blockMin = new int[blocks];
-            Array.Fill(_blockMax, int.MinValue);
-            Array.Fill(_blockMin, int.MaxValue);
-            for (int i = 0; i < minutes.Length; i++)
-            {
-                int b = i >> BlockShift;
-                _blockMax[b] = Math.Max(_blockMax[b], minutes[i].Max);
-                _blockMin[b] = Math.Min(_blockMin[b], minutes[i].Min);
-            }
-        }
-
-        public bool Inside(int from, int to, int lo, int hi)
-        {
-            int i = Math.Max(0, from);
-            int end = Math.Min(_minutes.Length - 1, to);
-            while (i <= end)
-            {
-                if ((i & ((1 << BlockShift) - 1)) == 0 && i + (1 << BlockShift) - 1 <= end)
-                {
-                    int b = i >> BlockShift;
-                    if (_blockMax[b] > hi || _blockMin[b] < lo) return false;
-                    i += 1 << BlockShift;
-                    continue;
-                }
-                if (_minutes[i].Max > hi || _minutes[i].Min < lo) return false;
-                i++;
-            }
-            return true;
+            Candidates = new List<int>[pointCount + 1];
+            for (int i = 0; i < Candidates.Length; i++) Candidates[i] = new List<int>();
+            Minutes = new int[pointCount];
+            Values = new int[pointCount];
+            Points = new int[pointCount];
         }
     }
-
-    private readonly record struct Best(double Sim, double Zoom, double ShiftPips, bool Mirrored, int Preferred);
-
-    private readonly record struct Candidate(long AnchorVirtual, long WindowSec, Best Best, int Levels,
-        double MeanPips, int AlignIndex = -1);
-
-    private sealed class ScanPlan
-    {
-        public readonly long[] Spans;
-        public readonly long[] Firsts;
-        public readonly int[] Starts;
-        public readonly long StepSec;
-
-        public ScanPlan(long vHistory, long vStart, long stepSec, long[] spans)
-        {
-            Spans = spans;
-            StepSec = stepSec;
-            Firsts = new long[spans.Length];
-            Starts = new int[spans.Length + 1];
-            for (int s = 0; s < spans.Length; s++)
-            {
-                Firsts[s] = vHistory + spans[s];
-                int count = Firsts[s] <= vStart ? (int)((vStart - Firsts[s]) / stepSec) + 1 : 0;
-                Starts[s + 1] = Starts[s] + count;
-            }
-        }
-
-        public int Total => Starts[^1];
-
-        public void Resolve(int k, out long anchor, out long window)
-        {
-            int s = 0;
-            while (Starts[s + 1] <= k) s++;
-            window = Spans[s];
-            anchor = Firsts[s] + (k - Starts[s]) * StepSec;
-        }
-    }
-
-    private readonly record struct ShiftPick(int Shift, double Dot, int Preferred);
-
-    private sealed class Scratch
-    {
-        public readonly Levels2Index.Scratch Index = new();
-        public readonly List<Level2> Levels = new();
-        public readonly Marks Marks = new();
-        public int[] RequiredHits = Array.Empty<int>();
-        public int[] PreferredHits = Array.Empty<int>();
-        public int[] LastRule = Array.Empty<int>();
-        public List<(int After, int Count)> States = new();
-        public List<(int After, int Count)> NextStates = new();
-        public readonly List<int> PreferredTimes = new();
-        public int[] RuleStart = Array.Empty<int>();
-        public int[] RuleMarks = Array.Empty<int>();
-        public RangeIndex? Range;
-        public Candle[]? Minutes;
-        public byte[] InsideCache = Array.Empty<byte>();
-        public int InsideStride;
-        public int[] Pin = Array.Empty<int>();
-        public int[] ChosenMark = Array.Empty<int>();
-        public int Leaves;
-
-        public void EnsureShifts(int count)
-        {
-            if (RequiredHits.Length >= count) return;
-            RequiredHits = new int[count];
-            PreferredHits = new int[count];
-            LastRule = new int[count];
-        }
-    }
-
-    private static bool Better(int preferred, double sim, int bestPreferred, double bestSim) =>
-        preferred > bestPreferred || (preferred == bestPreferred && sim > bestSim);
 
     public static FindData Search(string template, Levels2FindTarget patternTarget,
-        IReadOnlyList<Candle> patternMinutes, IReadOnlyList<Levels2SearchTarget> targets, Levels2Tables tables,
-        long fragStartUnix, long fragEndUnix, int tolerancePips, int zoomPercent, int stepMinutes,
-        int stretchPercent, int minSpanMinutes, IReadOnlyList<Levels2LevelRule> rules,
-        IProgress<double>? progress, CancellationToken ct)
+        IReadOnlyList<Levels2SearchTarget> targets, long fragStartUnix, long fragEndUnix, int zoomPercent,
+        int minSpanMinutes, IReadOnlyList<Levels2LevelRule> rules, IProgress<double>? progress,
+        CancellationToken ct, bool searchReversed = true)
     {
-        if (patternMinutes.Count == 0)
-            throw new InvalidOperationException($"Template symbol {patternTarget.Pair} has no data");
         if (targets.Count == 0) throw new InvalidOperationException("Pick at least one pair to search in");
         foreach (var t in targets)
             if (t.Minutes.Count == 0)
                 throw new InvalidOperationException($"Target symbol {t.Target.Pair} has no data");
-        if (tables.Left.IsEmpty || tables.Right.IsEmpty)
-            throw new InvalidOperationException("The level tables need at least one row each");
-
         var w = WeekendCompressor.Instance;
         long vStart = SimilarSearch.FloorHour(w.ToVirtual(fragStartUnix));
         long vEnd = SimilarSearch.CeilHour(w.ToVirtual(fragEndUnix));
@@ -234,51 +98,474 @@ public static class Levels2Search
             throw new InvalidOperationException(
                 $"Selection covers {windowMinutes} min of trading time, " +
                 $"need at least {SimilarSearch.MinWindowMinutes} min");
-        long windowSec = windowMinutes * 60L;
-        double sigma = Math.Max(1, tolerancePips);
-
-        var scratch = new Scratch();
-        FindLevels(tables, patternMinutes, vStart, vEnd, scratch.Levels);
-        if (scratch.Levels.Count < 2)
-            throw new InvalidOperationException(
-                $"{patternTarget.Pair} has {scratch.Levels.Count} levels in the selection, need at least 2");
-        var pattern = BuildTemplate(scratch, patternTarget, tables, sigma, rules, minSpanMinutes);
-        ct.ThrowIfCancellationRequested();
-
-        var zooms = ZoomGrid(zoomPercent);
-        var spans = SpanGrid(windowSec, stretchPercent);
-        long stepSec = Math.Max(1, stepMinutes) * 60L;
+        var pattern = BuildPattern(rules, zoomPercent, minSpanMinutes, w);
         var results = new List<FindResult>();
         bool anyHistory = false;
+        int passes = searchReversed ? 2 : 1;
         for (int ti = 0; ti < targets.Count; ti++)
         {
             ct.ThrowIfCancellationRequested();
             var target = targets[ti];
             var minutes = target.Minutes as Candle[] ?? target.Minutes.ToArray();
             long vHistory = SimilarSearch.CeilHour(w.ToVirtual(minutes[0].MinuteUnixSeconds));
-            var plan = new ScanPlan(vHistory, vStart, stepSec, spans);
-            if (plan.Total <= 0) continue;
+            if (vHistory >= vStart) continue;
             anyHistory = true;
-            int targetIndex = ti;
-            var index = new Levels2Index(minutes, tables.Left.MinPoints, tables.Right.MinPoints);
-            var range = pattern.HasRequiredChain ? new RangeIndex(minutes) : null;
-            ct.ThrowIfCancellationRequested();
-            var candidates = Scan(index, range, minutes, tables, w, plan, pattern, zooms,
-                f => progress?.Report((targetIndex + f) / targets.Count), ct);
-            results.AddRange(Rank(candidates, minutes, target.Target, pattern, w));
+            long axis = vHistory + vStart;
+            for (int pass = 0; pass < passes; pass++)
+            {
+                bool reversed = pass == 1;
+                var scanMinutes = reversed ? ShiftedSymbol.Shift(minutes, axis - 60, true).ToArray() : minutes;
+                var series = Prepare(scanMinutes, w);
+                int step = ti * passes + pass;
+                var found = Scan(series, pattern, vHistory, vStart,
+                    f => progress?.Report((step + f) / (targets.Count * passes)), ct);
+                foreach (var r in Rank(found, series, pattern, target.Target.Pair))
+                    results.Add(reversed ? Unreverse(r, axis, w) : r);
+            }
         }
         if (!anyHistory) throw new InvalidOperationException("No history before the selection to search in");
-        results.Sort((a, b) => a.Preferred != b.Preferred
-            ? b.Preferred.CompareTo(a.Preferred)
-            : b.Sim.CompareTo(a.Sim));
+        results.Sort(ResultOrder);
         if (results.Count > SimilarSearch.MaxResults)
             results.RemoveRange(SimilarSearch.MaxResults, results.Count - SimilarSearch.MaxResults);
         progress?.Report(1.0);
+        long anchorUnix = pattern.Anchor < 0 ? 0 : rules[pattern.Points[pattern.Anchor].Rule].TimeUnix;
         return new FindData(FindStore.CurrentVersion, template, w.ToReal(vStart), w.ToRealEnd(vEnd),
             DateTimeOffset.UtcNow.ToUnixTimeSeconds(), windowMinutes, results,
-            targets.Select(t => t.Target.Pair).ToList(), 0, zoomPercent, stepMinutes,
-            FindSearchTypes.Levels2, patternTarget.Pair, tolerancePips, stretchPercent, pattern.AnchorUnix,
-            minSpanMinutes);
+            targets.Select(t => t.Target.Pair).ToList(), 0, zoomPercent, 0,
+            FindSearchTypes.Levels2, patternTarget.Pair, 0, 0, anchorUnix, minSpanMinutes);
+    }
+
+    private static int ResultOrder(FindResult a, FindResult b)
+    {
+        if (a.Preferred != b.Preferred) return b.Preferred.CompareTo(a.Preferred);
+        if (a.Sim != b.Sim) return b.Sim.CompareTo(a.Sim);
+        return b.Score.CompareTo(a.Score);
+    }
+
+    private static Pattern BuildPattern(IReadOnlyList<Levels2LevelRule> rules, int zoomPercent, int minSpanMinutes,
+        WeekendCompressor w)
+    {
+        var order = Enumerable.Range(0, rules.Count)
+            .OrderBy(i => rules[i].Sequence > 0 ? rules[i].Sequence : int.MaxValue)
+            .ThenBy(i => rules[i].TimeUnix > 0 ? rules[i].TimeUnix : long.MaxValue)
+            .ThenBy(i => i)
+            .ToArray();
+        if (order.Count(i => rules[i].Required) < 2)
+            throw new InvalidOperationException("Mark at least two levels as Required");
+        double pip = DensityProfile.PipPoints;
+        var points = new Point[order.Length];
+        for (int k = 0; k < order.Length; k++)
+        {
+            var rule = rules[order[k]];
+            double prev = k > 0 ? rules[order[k - 1]].ValuePoints : double.NaN;
+            double next = k + 1 < order.Length ? rules[order[k + 1]].ValuePoints : double.NaN;
+            points[k] = new Point(order[k], rule.ValuePoints, rule.Top ?? InferTop(prev, rule.ValuePoints, next),
+                rule.Required, Math.Max(0, rule.TolUpPips) * pip, Math.Max(0, rule.TolDownPips) * pip,
+                Math.Max(0, rule.Sequence), rule.TimeUnix > 0 ? w.ToVirtual(rule.TimeUnix) : -1,
+                Math.Max(0, rule.MinGapSeconds ?? 0),
+                rule.MaxGapSeconds is long max && max >= 0 ? max : long.MaxValue);
+        }
+        var optionalAfter = new bool[points.Length];
+        bool optional = true;
+        for (int k = points.Length - 1; k >= 0; k--)
+        {
+            optionalAfter[k] = optional;
+            if (points[k].Required) optional = false;
+        }
+        int anchor = -1;
+        for (int k = 0; k < points.Length; k++)
+            if (points[k].Required && points[k].TimeVirtual >= 0
+                && (anchor < 0 || points[k].TimeVirtual > points[anchor].TimeVirtual))
+                anchor = k;
+        return new Pattern
+        {
+            Points = points,
+            OptionalAfter = optionalAfter,
+            FirstRequired = Array.FindIndex(points, p => p.Required),
+            Anchor = anchor,
+            PreferredTotal = points.Count(p => !p.Required),
+            Zooms = ZoomGrid(zoomPercent),
+            MinSpanSeconds = Math.Max(0, minSpanMinutes) * 60L,
+        };
+    }
+
+    private static bool InferTop(double prev, double level, double next)
+    {
+        bool hasPrev = !double.IsNaN(prev);
+        bool hasNext = !double.IsNaN(next);
+        if (hasPrev && hasNext)
+        {
+            if (level >= prev && level >= next) return true;
+            if (level <= prev && level <= next) return false;
+            return next < level;
+        }
+        if (hasNext) return next < level;
+        if (hasPrev) return prev < level;
+        return true;
+    }
+
+    private static double[] ZoomGrid(int zoomPercent)
+    {
+        double maxZoom = 1 + Math.Max(0, zoomPercent) / 100.0;
+        int steps = maxZoom <= 1 ? 0 : (int)Math.Ceiling(Math.Log(maxZoom) / Math.Log(ZoomStep) - 1e-9);
+        var zooms = new double[2 * steps + 1];
+        for (int i = -steps; i <= steps; i++)
+            zooms[i + steps] = steps == 0 ? 1 : Math.Pow(maxZoom, (double)i / steps);
+        return zooms;
+    }
+
+    private static Series Prepare(Candle[] minutes, WeekendCompressor w)
+    {
+        int n = minutes.Length;
+        var high = new int[n];
+        var low = new int[n];
+        var virt = new long[n];
+        var unix = new long[n];
+        for (int i = 0; i < n; i++)
+        {
+            high[i] = minutes[i].Max;
+            low[i] = minutes[i].Min;
+            unix[i] = minutes[i].MinuteUnixSeconds;
+            virt[i] = w.ToVirtual(unix[i]);
+        }
+        var nextHigher = new int[n];
+        var nextLower = new int[n];
+        var stack = new int[n];
+        int top = 0;
+        for (int i = n - 1; i >= 0; i--)
+        {
+            while (top > 0 && high[stack[top - 1]] <= high[i]) top--;
+            nextHigher[i] = top > 0 ? stack[top - 1] : n;
+            stack[top++] = i;
+        }
+        top = 0;
+        for (int i = n - 1; i >= 0; i--)
+        {
+            while (top > 0 && low[stack[top - 1]] >= low[i]) top--;
+            nextLower[i] = top > 0 ? stack[top - 1] : n;
+            stack[top++] = i;
+        }
+        return new Series
+        {
+            High = high, Low = low, Virtual = virt, Unix = unix, NextHigher = nextHigher, NextLower = nextLower,
+        };
+    }
+
+    private static List<Match> Scan(Series series, Pattern pattern, long vHistory, long vStart, Action<double> report,
+        CancellationToken ct)
+    {
+        int first = LowerBound(series.Virtual, vHistory);
+        int limit = LowerBound(series.Virtual, vStart);
+        var all = new List<Match>();
+        if (first >= limit) return all;
+        int total = limit - first;
+        int done = 0;
+        int reportEvery = Math.Max(1, total / 200);
+        var po = new ParallelOptions { CancellationToken = ct };
+        Parallel.For(first, limit, po,
+            () => new Context(pattern.Points.Length) { Series = series, Pattern = pattern, Limit = limit },
+            (s, _, ctx) =>
+            {
+                ScanStart(ctx, s);
+                int d = Interlocked.Increment(ref done);
+                if (d % reportEvery == 0) report((double)d / total);
+                return ctx;
+            },
+            ctx =>
+            {
+                lock (all) all.AddRange(ctx.Found);
+            });
+        return all;
+    }
+
+    private static int LowerBound(long[] values, long value)
+    {
+        int lo = 0, hi = values.Length;
+        while (lo < hi)
+        {
+            int mid = (lo + hi) >>> 1;
+            if (values[mid] < value) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+
+    private static void ScanStart(Context ctx, int s)
+    {
+        var pattern = ctx.Pattern;
+        var points = pattern.Points;
+        ctx.Best = null;
+        ctx.Nodes = 0;
+        for (int sign = 1; sign >= -1; sign -= 2)
+        {
+            ctx.Sign = sign;
+            for (int k0 = 0; k0 <= pattern.FirstRequired; k0++)
+            {
+                var p = points[k0];
+                bool wantTop = sign > 0 ? p.Top : !p.Top;
+                int x = wantTop ? ctx.Series.High[s] : ctx.Series.Low[s];
+                if (!MayContinue(ctx, k0, s, x)) continue;
+                foreach (double zoom in pattern.Zooms)
+                {
+                    ctx.Zoom = zoom;
+                    double dLo = p.Level - p.Down - sign * zoom * x;
+                    double dHi = p.Level + p.Up - sign * zoom * x;
+                    ctx.Depth = 0;
+                    Push(ctx, k0, s, x);
+                    Extend(ctx, k0, s, x, dLo, dHi, p.Required ? 0 : 1);
+                    ctx.Depth = 0;
+                }
+            }
+        }
+        if (ctx.Best != null) ctx.Found.Add(ctx.Best);
+    }
+
+    private static bool MayContinue(Context ctx, int k, int t, int x)
+    {
+        var points = ctx.Pattern.Points;
+        var list = ctx.Candidates[^1];
+        for (int j = k + 1; j < points.Length; j++)
+        {
+            var p = points[j];
+            bool wantTop = ctx.Sign > 0 ? p.Top : !p.Top;
+            double bLo = double.MaxValue, bHi = double.MinValue;
+            foreach (double zoom in ctx.Pattern.Zooms)
+            {
+                var (lo, hi) = BandOf(ctx.Sign, zoom, p, points[k], x);
+                bLo = Math.Min(bLo, lo);
+                bHi = Math.Max(bHi, hi);
+            }
+            Collect(ctx.Series, t, x, wantTop, bLo, bHi, GapLimit(ctx, t, p), list);
+            foreach (int u in list)
+                if (ctx.Series.Virtual[u] - ctx.Series.Virtual[t] >= p.MinGap)
+                    return true;
+            if (p.Required) return false;
+        }
+        return true;
+    }
+
+    private static int GapLimit(Context ctx, int t, Point p)
+    {
+        if (p.MaxGap == long.MaxValue) return ctx.Limit;
+        long last = ctx.Series.Virtual[t] + p.MaxGap;
+        return Math.Min(ctx.Limit, LowerBound(ctx.Series.Virtual, last + 1));
+    }
+
+    private static (double Lo, double Hi) BandOf(int sign, double zoom, Point p, Point from, int x)
+    {
+        double dLo = from.Level - from.Down - sign * zoom * x;
+        double dHi = from.Level + from.Up - sign * zoom * x;
+        return Band(sign, zoom, p, dLo, dHi);
+    }
+
+    private static (double Lo, double Hi) Band(int sign, double zoom, Point p, double dLo, double dHi)
+    {
+        double lo = (p.Level - p.Down - dHi) / zoom;
+        double hi = (p.Level + p.Up - dLo) / zoom;
+        return sign > 0 ? (lo, hi) : (-hi, -lo);
+    }
+
+    private static void Push(Context ctx, int k, int minute, int value)
+    {
+        ctx.Points[ctx.Depth] = k;
+        ctx.Minutes[ctx.Depth] = minute;
+        ctx.Values[ctx.Depth] = value;
+        ctx.Depth++;
+    }
+
+    private static void Extend(Context ctx, int k, int t, int x, double dLo, double dHi, int preferred)
+    {
+        if (++ctx.Nodes > MaxNodesPerStart) return;
+        var pattern = ctx.Pattern;
+        var points = pattern.Points;
+        if (pattern.OptionalAfter[k]) Finish(ctx, dLo, dHi, preferred);
+        var series = ctx.Series;
+        for (int j = k + 1; j < points.Length; j++)
+        {
+            var p = points[j];
+            bool wantTop = ctx.Sign > 0 ? p.Top : !p.Top;
+            var (bLo, bHi) = Band(ctx.Sign, ctx.Zoom, p, dLo, dHi);
+            if (bLo <= bHi)
+            {
+                var list = ctx.Candidates[ctx.Depth];
+                Collect(series, t, x, wantTop, bLo, bHi, GapLimit(ctx, t, p), list);
+                int depth = ctx.Depth;
+                for (int c = 0; c < list.Count; c++)
+                {
+                    int u = list[c];
+                    if (series.Virtual[u] - series.Virtual[t] < p.MinGap) continue;
+                    int xu = wantTop ? series.High[u] : series.Low[u];
+                    double scaled = ctx.Sign * ctx.Zoom * xu;
+                    double nLo = Math.Max(dLo, p.Level - p.Down - scaled);
+                    double nHi = Math.Min(dHi, p.Level + p.Up - scaled);
+                    if (nLo > nHi + 1e-9) continue;
+                    ctx.Depth = depth;
+                    Push(ctx, j, u, xu);
+                    Extend(ctx, j, u, xu, nLo, nHi, preferred + (p.Required ? 0 : 1));
+                    if (ctx.Nodes > MaxNodesPerStart) break;
+                }
+                ctx.Depth = depth;
+            }
+            if (p.Required) break;
+        }
+    }
+
+    private static void Finish(Context ctx, double dLo, double dHi, int preferred)
+    {
+        var series = ctx.Series;
+        var pattern = ctx.Pattern;
+        int count = ctx.Depth;
+        long span = series.Virtual[ctx.Minutes[count - 1]] - series.Virtual[ctx.Minutes[0]];
+        if (span < pattern.MinSpanSeconds) return;
+        var (sim, pace) = TimeFit(ctx, count);
+        var best = ctx.Best;
+        if (best != null && (preferred < best.Preferred
+            || (preferred == best.Preferred && (sim < best.Sim || (sim == best.Sim && pace <= best.Pace)))))
+            return;
+        ctx.Best = new Match(preferred, sim, pace, ctx.Zoom, ctx.Sign < 0, (dLo + dHi) / 2,
+            ctx.Minutes.AsSpan(0, count).ToArray(), ctx.Values.AsSpan(0, count).ToArray(),
+            ctx.Points.AsSpan(0, count).ToArray());
+    }
+
+    private static (double Sim, double Pace) TimeFit(Context ctx, int count)
+    {
+        var logs = ctx.Logs;
+        logs.Clear();
+        var points = ctx.Pattern.Points;
+        var virt = ctx.Series.Virtual;
+        for (int i = 1; i < count; i++)
+        {
+            var a = points[ctx.Points[i - 1]];
+            var b = points[ctx.Points[i]];
+            if (a.TimeVirtual < 0 || b.TimeVirtual < 0) continue;
+            double template = b.TimeVirtual - a.TimeVirtual;
+            double found = virt[ctx.Minutes[i]] - virt[ctx.Minutes[i - 1]];
+            if (template <= 0 || found <= 0) continue;
+            logs.Add(Math.Log(found / template));
+        }
+        if (logs.Count == 0) return (1, 1);
+        double mean = logs.Average();
+        double sum = 0;
+        foreach (double l in logs) sum += (l - mean) * (l - mean);
+        return (Math.Exp(-Math.Sqrt(sum / logs.Count)), Math.Exp(-Math.Abs(mean)));
+    }
+
+    private static int FirstAbove(Series s, int t, int value)
+    {
+        if (value == s.High[t]) return s.NextHigher[t];
+        int c = t + 1;
+        while (c < s.Count && s.High[c] <= value) c = s.NextHigher[c];
+        return c;
+    }
+
+    private static int FirstBelow(Series s, int t, int value)
+    {
+        if (value == s.Low[t]) return s.NextLower[t];
+        int c = t + 1;
+        while (c < s.Count && s.Low[c] >= value) c = s.NextLower[c];
+        return c;
+    }
+
+    private static void Collect(Series s, int t, int x, bool wantTop, double bLo, double bHi, int limit,
+        List<int> output)
+    {
+        output.Clear();
+        var high = s.High;
+        var low = s.Low;
+        if (!wantTop && bHi <= x)
+        {
+            int exit = Math.Min(limit, FirstAbove(s, t, x));
+            for (int c = t + 1; c < exit; c = s.NextLower[c])
+            {
+                if (low[c] < bLo) return;
+                if (low[c] <= bHi) output.Add(c);
+            }
+            return;
+        }
+        if (wantTop && bLo >= x)
+        {
+            int exit = Math.Min(limit, FirstBelow(s, t, x));
+            for (int c = t + 1; c < exit; c = s.NextHigher[c])
+            {
+                if (high[c] > bHi) return;
+                if (high[c] >= bLo) output.Add(c);
+            }
+            return;
+        }
+        double envHi = Math.Max(x, bHi);
+        double envLo = Math.Min(x, bLo);
+        int runMax = int.MinValue;
+        int runMin = int.MaxValue;
+        int end = (int)Math.Min(limit, (long)t + 1 + MaxGenericScan);
+        for (int c = t + 1; c < end; c++)
+        {
+            int v = wantTop ? high[c] : low[c];
+            if (v >= bLo && v <= bHi && runMax <= Math.Max(x, v) && runMin >= Math.Min(x, v)) output.Add(c);
+            if (high[c] > runMax) runMax = high[c];
+            if (low[c] < runMin) runMin = low[c];
+            if (runMax > envHi || runMin < envLo) return;
+        }
+    }
+
+    private static List<FindResult> Rank(List<Match> found, Series series, Pattern pattern, string pair)
+    {
+        found.Sort((a, b) =>
+        {
+            if (a.Preferred != b.Preferred) return b.Preferred.CompareTo(a.Preferred);
+            if (a.Sim != b.Sim) return b.Sim.CompareTo(a.Sim);
+            return b.Pace.CompareTo(a.Pace);
+        });
+        var results = new List<FindResult>();
+        var kept = new List<(long First, long Last)>();
+        foreach (var m in found)
+        {
+            if (results.Count >= SimilarSearch.MaxResults) break;
+            long first = series.Virtual[m.Minutes[0]];
+            long last = series.Virtual[m.Minutes[^1]] + 60;
+            bool dup = false;
+            foreach (var (kf, kl) in kept)
+            {
+                long overlap = Math.Min(last, kl) - Math.Max(first, kf);
+                if (overlap * 2 > Math.Min(last - first, kl - kf))
+                {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup) continue;
+            kept.Add((first, last));
+            var keyPoints = new List<FindKeyPoint>(m.Minutes.Length);
+            long alignUnix = 0;
+            for (int i = 0; i < m.Minutes.Length; i++)
+            {
+                var p = pattern.Points[m.Points[i]];
+                bool top = m.Mirrored ? !p.Top : p.Top;
+                keyPoints.Add(new FindKeyPoint(series.Unix[m.Minutes[i]], m.Values[i], top, p.Required,
+                    p.Sequence, p.Rule));
+                if (m.Points[i] == pattern.Anchor) alignUnix = series.Unix[m.Minutes[i]];
+            }
+            results.Add(new FindResult(series.Unix[m.Minutes[0]], m.Sim, m.Pace, 0, m.Zoom, m.Mirrored,
+                m.Minutes.Length, m.Offset, 0, pair,
+                Preferred: m.Preferred, PreferredTotal: pattern.PreferredTotal,
+                WindowMinutes: (int)((last - first) / 60), AlignUnix: alignUnix, KeyPoints: keyPoints));
+        }
+        return results;
+    }
+
+    private static FindResult Unreverse(FindResult r, long axis, WeekendCompressor w)
+    {
+        long windowSec = r.WindowMinutes * 60L;
+        long Minute(long unix) => w.ToReal(axis - 60 - w.ToVirtual(unix));
+        return r with
+        {
+            SourceUnix = w.ToReal(axis - w.ToVirtual(r.SourceUnix) - windowSec),
+            AlignUnix = r.AlignUnix > 0 ? Minute(r.AlignUnix) : 0,
+            KeyPoints = r.KeyPoints?
+                .Select(p => p with { Unix = Minute(p.Unix) })
+                .OrderBy(p => p.Unix)
+                .ToList(),
+            Reversed = true,
+        };
     }
 
     public static bool TemplateLevels(Levels2Tables tables, IReadOnlyList<Candle> minutes,
@@ -307,20 +594,6 @@ public static class Levels2Search
         return true;
     }
 
-    public static long[] SpanGrid(long windowSec, int stretchPercent)
-    {
-        double max = 1 + Math.Max(0, stretchPercent) / 100.0;
-        int steps = max <= 1 ? 0 : (int)Math.Ceiling(Math.Log(max) / Math.Log(SpanStep) - 1e-9);
-        var spans = new List<long>();
-        for (int i = -steps; i <= steps; i++)
-        {
-            double factor = steps == 0 ? 1 : Math.Pow(max, (double)i / steps);
-            long span = Math.Max(3600, (long)Math.Round(windowSec * factor / 3600) * 3600);
-            if (!spans.Contains(span)) spans.Add(span);
-        }
-        return spans.ToArray();
-    }
-
     private static void FindLevels(Levels2Tables tables, IReadOnlyList<Candle> minutes,
         long vStart, long vEnd, List<Level2> output, double? minApproach = null, double? minReversal = null)
     {
@@ -329,577 +602,5 @@ public static class Levels2Search
         finder.Find(MinuteSequence.Of(minutes as Candle[] ?? minutes.ToArray()),
             w.ToReal(vStart), w.ToReal(vEnd) - 1, minApproach ?? tables.Left.MinPoints,
             minReversal ?? tables.Right.MinPoints, tables.Left.MaxPoints, output);
-    }
-
-    private static double CollectMarks(Scratch scratch, Levels2Tables tables)
-    {
-        scratch.Marks.Clear();
-        double sum = 0;
-        foreach (var level in scratch.Levels) sum += level.Value;
-        double mean = sum / scratch.Levels.Count;
-        foreach (var level in scratch.Levels)
-        {
-            double row = (level.Value - mean) / DensityProfile.PipPoints;
-            double weight = tables.Left.PixelsAt(level.ApproachPoints)
-                + tables.Right.PixelsAt(level.ReversalPoints);
-            scratch.Marks.Add(row, level.Top ? 0 : 1, weight, level.ApproachPoints, level.ReversalPoints,
-                level.Index, level.Value);
-        }
-        return mean / DensityProfile.PipPoints;
-    }
-
-    private static double Kernel(double delta, double sigma) => Math.Exp(-delta * delta / (4 * sigma * sigma));
-
-    private static double KernelAt(double[] table, int delta)
-    {
-        int i = Math.Abs(delta) * KernelStepsPerPip;
-        return i < table.Length ? table[i] : 0;
-    }
-
-    private static double[] KernelTable(double sigma)
-    {
-        int count = (int)Math.Ceiling(4 * sigma * Math.Sqrt(2) * KernelStepsPerPip) + 1;
-        var table = new double[count];
-        for (int i = 0; i < count; i++) table[i] = Kernel((double)i / KernelStepsPerPip, sigma);
-        return table;
-    }
-
-    private static void ZoomRows(Marks marks, double zoom)
-    {
-        for (int i = 0; i < marks.Count; i++) marks.Zoomed[i] = (int)Math.Round(zoom * marks.Row[i]);
-    }
-
-    private static double Norm(Marks marks, double[] kernel)
-    {
-        double total = 0;
-        for (int i = 0; i < marks.Count; i++)
-        {
-            double wi = marks.Weight[i];
-            total += wi * wi;
-            for (int j = i + 1; j < marks.Count; j++)
-            {
-                if (marks.Channel[i] != marks.Channel[j]) continue;
-                total += 2 * wi * marks.Weight[j] * KernelAt(kernel, marks.Zoomed[i] - marks.Zoomed[j]);
-            }
-        }
-        return Math.Sqrt(total);
-    }
-
-    private static Template BuildTemplate(Scratch scratch, Levels2FindTarget target, Levels2Tables tables,
-        double sigma, IReadOnlyList<Levels2LevelRule> rules, int minSpanMinutes)
-    {
-        double meanPips = CollectMarks(scratch, tables);
-        var marks = scratch.Marks;
-        if (marks.Count == 0 || marks.Weight.Take(marks.Count).All(x => x <= 0))
-            throw new InvalidOperationException($"{target.Pair} levels in the selection draw no pixels");
-        int n = rules.Count;
-        var ruleRows = new int[n];
-        var ruleUp = new int[n];
-        var ruleDown = new int[n];
-        var ruleApproach = new double[n];
-        var ruleReversal = new double[n];
-        var ruleRequired = new bool[n];
-        for (int i = 0; i < n; i++)
-        {
-            var rule = rules[i];
-            ruleRows[i] = (int)Math.Round(rule.ValuePoints / DensityProfile.PipPoints - meanPips);
-            ruleUp[i] = (int)Math.Round(Math.Max(0, rule.TolUpPips));
-            ruleDown[i] = (int)Math.Round(Math.Max(0, rule.TolDownPips));
-            ruleApproach[i] = Math.Max(0, rule.MinLeftPips) * DensityProfile.PipPoints;
-            ruleReversal[i] = Math.Max(0, rule.MinRightPips) * DensityProfile.PipPoints;
-            ruleRequired[i] = rule.Required;
-        }
-        var groups = Enumerable.Range(0, n)
-            .Where(i => rules[i].Sequence > 0)
-            .GroupBy(i => rules[i].Sequence)
-            .OrderBy(g => g.Key)
-            .Select(g => g.ToArray())
-            .ToArray();
-        var ruleSequence = rules.Select(r => Math.Max(0, r.Sequence)).ToArray();
-        var requiredSequenced = Enumerable.Range(0, n)
-            .Where(i => ruleRequired[i] && ruleSequence[i] > 0)
-            .OrderBy(i => ruleSequence[i])
-            .ToArray();
-        bool hasRequiredChain = requiredSequenced.Length >= 2;
-        int anchorRule = -1;
-        for (int i = 0; i < n; i++)
-            if (rules[i].Required && rules[i].TimeUnix > 0
-                && (anchorRule < 0 || rules[i].TimeUnix > rules[anchorRule].TimeUnix))
-                anchorRule = i;
-        ZoomRows(marks, 1);
-        int minRow = marks.Zoomed.Take(marks.Count).Min();
-        int maxRow = marks.Zoomed.Take(marks.Count).Max();
-        int pad = (int)Math.Ceiling(4 * sigma * Math.Sqrt(2));
-        int rowMin = minRow - pad;
-        int rowMax = maxRow + pad;
-        var kernel = KernelTable(sigma);
-        var dense = new double[Channels][];
-        for (int c = 0; c < Channels; c++) dense[c] = new double[rowMax - rowMin + 1];
-        for (int i = 0; i < marks.Count; i++)
-        {
-            var row = dense[marks.Channel[i]];
-            for (int r = 0; r < row.Length; r++)
-                row[r] += marks.Weight[i] * KernelAt(kernel, r + rowMin - marks.Zoomed[i]);
-        }
-        int shift = Math.Clamp((int)Math.Ceiling((maxRow - minRow) / 2.0), MinShiftPips, MaxShiftPips);
-        return new Template
-        {
-            Dense = dense,
-            RowMin = rowMin,
-            Norm = Norm(marks, kernel),
-            MeanPips = meanPips,
-            ShiftPips = shift,
-            Kernel = kernel,
-            Sigma = sigma,
-            RuleRows = ruleRows,
-            RuleUp = ruleUp,
-            RuleDown = ruleDown,
-            RuleApproach = ruleApproach,
-            RuleReversal = ruleReversal,
-            RuleRequired = ruleRequired,
-            RequiredCount = ruleRequired.Count(r => r),
-            PreferredCount = ruleRequired.Count(r => !r),
-            UnsequencedPreferred = Enumerable.Range(0, n)
-                .Where(i => !ruleRequired[i] && rules[i].Sequence <= 0)
-                .ToArray(),
-            SequenceGroups = groups,
-            RuleSequence = ruleSequence,
-            RequiredSequenced = requiredSequenced,
-            HasRequiredChain = hasRequiredChain,
-            MinSpanSeconds = Math.Max(0, minSpanMinutes) * 60L,
-            AnchorRule = anchorRule,
-            AnchorUnix = anchorRule < 0 ? 0 : rules[anchorRule].TimeUnix,
-        };
-    }
-
-    private static double[] ZoomGrid(int zoomPercent)
-    {
-        double maxZoom = 1 + Math.Max(0, zoomPercent) / 100.0;
-        int steps = maxZoom <= 1 ? 0 : (int)Math.Ceiling(Math.Log(maxZoom) / Math.Log(ZoomStep) - 1e-9);
-        var zooms = new double[2 * steps + 1];
-        for (int i = -steps; i <= steps; i++)
-            zooms[i + steps] = steps == 0 ? 1 : Math.Pow(maxZoom, (double)i / steps);
-        return zooms;
-    }
-
-    private static Candidate[] Scan(Levels2Index index, RangeIndex? range, Candle[] minutes, Levels2Tables tables,
-        WeekendCompressor w, ScanPlan plan, Template pattern, double[] zooms, Action<double> report,
-        CancellationToken ct)
-    {
-        int candCount = plan.Total;
-        var candidates = new Candidate[candCount];
-        int done = 0;
-        int reportEvery = Math.Max(1, candCount / 200);
-        var po = new ParallelOptions { CancellationToken = ct };
-        Parallel.For(0, candCount, po, () => new Scratch { Range = range, Minutes = minutes }, (k, _, scratch) =>
-        {
-            plan.Resolve(k, out long anchor, out long windowSec);
-            index.Levels(w.ToReal(anchor - windowSec), w.ToReal(anchor) - 1, scratch.Index, scratch.Levels);
-            candidates[k] = Score(scratch, tables, anchor, windowSec, pattern, zooms);
-            int d = Interlocked.Increment(ref done);
-            if (d % reportEvery == 0) report((double)d / candCount);
-            return scratch;
-        }, _ => { });
-        return candidates;
-    }
-
-    private static Candidate Score(Scratch scratch, Levels2Tables tables, long anchor, long windowSec,
-        Template pattern, double[] zooms)
-    {
-        if (scratch.Levels.Count == 0) return new Candidate(anchor, windowSec, default, 0, 0);
-        double meanPips = CollectMarks(scratch, tables);
-        var marks = scratch.Marks;
-        if (marks.Count == 0) return new Candidate(anchor, windowSec, default, scratch.Levels.Count, meanPips);
-        bool rules = pattern.RuleRows.Length > 0;
-        if (rules && !CollectRuleMarks(scratch, marks, pattern))
-            return new Candidate(anchor, windowSec, default, scratch.Levels.Count, meanPips);
-        if (rules && scratch.Range != null)
-        {
-            scratch.InsideStride = marks.Count;
-            int cells = marks.Count * marks.Count;
-            if (scratch.InsideCache.Length < cells) scratch.InsideCache = new byte[cells];
-            else Array.Clear(scratch.InsideCache, 0, cells);
-        }
-        int coarse = Math.Max(1, (int)Math.Round(pattern.Sigma / 2));
-        scratch.EnsureShifts(2 * pattern.ShiftPips + 1);
-        var best = new Best(0, 1, 0, false, 0);
-        foreach (double zoom in zooms)
-        {
-            ZoomRows(marks, zoom);
-            double norm = Norm(marks, pattern.Kernel);
-            if (norm <= 0) continue;
-            double scale = 1 / (norm * pattern.Norm);
-            for (int mirror = 0; mirror < 2; mirror++)
-            {
-                bool m = mirror == 1;
-                if (rules && !StampRules(scratch, marks, m, pattern)) continue;
-                var floor = new ShiftPick(0, best.Sim / scale, best.Preferred);
-                if (!BestShift(scratch, marks, m, pattern, coarse, rules, floor, out var pick)) continue;
-                double sim = pick.Dot * scale;
-                if (Better(pick.Preferred, sim, best.Preferred, best.Sim))
-                    best = new Best(sim, zoom, pick.Shift, m, pick.Preferred);
-            }
-        }
-        return new Candidate(anchor, windowSec, best, scratch.Levels.Count, meanPips,
-            AlignIndex(marks, pattern, best));
-    }
-
-    private static int AlignIndex(Marks marks, Template pattern, Best best)
-    {
-        if (pattern.AnchorRule < 0 || best.Sim <= 0) return -1;
-        ZoomRows(marks, best.Zoom);
-        int sign = best.Mirrored ? -1 : 1;
-        int shift = (int)Math.Round(best.ShiftPips);
-        int latest = -1;
-        for (int i = 0; i < marks.Count; i++)
-        {
-            if (!QualifiesFor(marks, i, pattern, pattern.AnchorRule)) continue;
-            if (!InBand(marks, i, pattern, pattern.AnchorRule, sign, shift)) continue;
-            if (marks.Time[i] > latest) latest = marks.Time[i];
-        }
-        return latest;
-    }
-
-    private static bool QualifiesFor(Marks marks, int i, Template pattern, int rule) =>
-        marks.Approach[i] >= pattern.RuleApproach[rule]
-        && marks.Reversal[i] >= pattern.RuleReversal[rule];
-
-    private static bool InBand(Marks marks, int i, Template pattern, int rule, int sign, int shift)
-    {
-        int row = sign * marks.Zoomed[i] + shift;
-        int target = pattern.RuleRows[rule];
-        return row >= target - pattern.RuleDown[rule] && row <= target + pattern.RuleUp[rule];
-    }
-
-    private static bool CollectRuleMarks(Scratch scratch, Marks marks, Template pattern)
-    {
-        int rules = pattern.RuleRows.Length;
-        if (scratch.RuleStart.Length < rules + 1) scratch.RuleStart = new int[rules + 1];
-        if (scratch.RuleMarks.Length < rules * marks.Count)
-            scratch.RuleMarks = new int[Math.Max(rules * marks.Count, 2 * scratch.RuleMarks.Length)];
-        var list = scratch.RuleMarks;
-        var time = marks.Time;
-        int n = 0;
-        for (int j = 0; j < rules; j++)
-        {
-            scratch.RuleStart[j] = n;
-            int from = n;
-            for (int i = 0; i < marks.Count; i++)
-            {
-                if (!QualifiesFor(marks, i, pattern, j)) continue;
-                int k = n++;
-                while (k > from && time[list[k - 1]] > time[i])
-                {
-                    list[k] = list[k - 1];
-                    k--;
-                }
-                list[k] = i;
-            }
-            if (n == from && pattern.RuleRequired[j]) return false;
-        }
-        scratch.RuleStart[rules] = n;
-        return true;
-    }
-
-    private static bool StampRules(Scratch scratch, Marks marks, bool mirror, Template pattern)
-    {
-        int shiftCount = 2 * pattern.ShiftPips + 1;
-        Array.Clear(scratch.RequiredHits, 0, shiftCount);
-        Array.Clear(scratch.PreferredHits, 0, shiftCount);
-        Array.Fill(scratch.LastRule, -1, 0, shiftCount);
-        var lastRule = scratch.LastRule;
-        var list = scratch.RuleMarks;
-        int sign = mirror ? -1 : 1;
-        for (int j = 0; j < pattern.RuleRows.Length; j++)
-        {
-            var hits = pattern.RuleRequired[j] ? scratch.RequiredHits : scratch.PreferredHits;
-            int target = pattern.RuleRows[j];
-            for (int k = scratch.RuleStart[j]; k < scratch.RuleStart[j + 1]; k++)
-            {
-                int center = target - sign * marks.Zoomed[list[k]] + pattern.ShiftPips;
-                int from = Math.Max(0, center - pattern.RuleDown[j]);
-                int to = Math.Min(shiftCount - 1, center + pattern.RuleUp[j]);
-                for (int d = from; d <= to; d++)
-                {
-                    if (lastRule[d] == j) continue;
-                    lastRule[d] = j;
-                    hits[d]++;
-                }
-            }
-        }
-        if (pattern.RequiredCount == 0) return true;
-        for (int d = 0; d < shiftCount; d++)
-            if (scratch.RequiredHits[d] == pattern.RequiredCount)
-                return true;
-        return false;
-    }
-
-    private static bool InLevel(Scratch scratch, Template pattern, bool rules, int d, int level)
-    {
-        if (!rules) return level == 0;
-        if (pattern.RequiredCount > 0 && scratch.RequiredHits[d] != pattern.RequiredCount) return false;
-        return scratch.PreferredHits[d] == level;
-    }
-
-    private static bool BestShift(Scratch scratch, Marks marks, bool mirror, Template pattern, int coarse,
-        bool rules, ShiftPick floor, out ShiftPick best)
-    {
-        int shiftCount = 2 * pattern.ShiftPips + 1;
-        int maxLevel = 0;
-        if (rules)
-            for (int d = 0; d < shiftCount; d++)
-                if (pattern.RequiredCount == 0 || scratch.RequiredHits[d] == pattern.RequiredCount)
-                    maxLevel = Math.Max(maxLevel, scratch.PreferredHits[d]);
-        best = floor;
-        bool found = false;
-        for (int level = maxLevel; level >= best.Preferred; level--)
-        {
-            int count = 0;
-            for (int d = 0; d < shiftCount; d++)
-                if (InLevel(scratch, pattern, rules, d, level))
-                    count++;
-            if (count == 0) continue;
-            bool exact = pattern.HasSequence && (level > 0 || pattern.RequiredCount > 0);
-            bool sparse = !exact && count > ExhaustiveShifts;
-            var before = best;
-            for (int d = 0; d < shiftCount; d++)
-            {
-                if (!InLevel(scratch, pattern, rules, d, level)) continue;
-                if (sparse && (d - pattern.ShiftPips) % coarse != 0) continue;
-                found |= Consider(scratch, marks, mirror, pattern, d, level, exact, ref best);
-            }
-            if (sparse && best != before)
-            {
-                int center = best.Shift + pattern.ShiftPips;
-                for (int d = Math.Max(0, center - coarse + 1); d < Math.Min(shiftCount, center + coarse); d++)
-                {
-                    if (d == center || !InLevel(scratch, pattern, rules, d, level)) continue;
-                    found |= Consider(scratch, marks, mirror, pattern, d, level, exact, ref best);
-                }
-            }
-        }
-        return found;
-    }
-
-    private static bool Consider(Scratch scratch, Marks marks, bool mirror, Template pattern, int d, int level,
-        bool exact, ref ShiftPick best)
-    {
-        if (level < best.Preferred) return false;
-        int shift = d - pattern.ShiftPips;
-        double dot = Dot(marks, mirror, shift, pattern);
-        if (level == best.Preferred && dot <= best.Dot) return false;
-        int preferred = level;
-        if (exact && !Assign(scratch, marks, mirror, pattern, shift, level, out preferred)) return false;
-        if (!Better(preferred, dot, best.Preferred, best.Dot)) return false;
-        best = new ShiftPick(shift, dot, preferred);
-        return true;
-    }
-
-    private static int Earliest(Scratch scratch, Marks marks, Template pattern, int rule, int sign, int shift,
-        int after)
-    {
-        var list = scratch.RuleMarks;
-        for (int k = scratch.RuleStart[rule]; k < scratch.RuleStart[rule + 1]; k++)
-        {
-            int i = list[k];
-            if (marks.Time[i] <= after) continue;
-            if (InBand(marks, i, pattern, rule, sign, shift)) return marks.Time[i];
-        }
-        return int.MaxValue;
-    }
-
-    private const int MaxRangeLeaves = 4096;
-
-    private static bool Assign(Scratch scratch, Marks marks, bool mirror, Template pattern, int shift, int cap,
-        out int preferred)
-    {
-        if (!pattern.HasRequiredChain) return AssignOrdered(scratch, marks, mirror, pattern, shift, false, out preferred);
-        int rules = pattern.RuleRows.Length;
-        if (scratch.Pin.Length < rules) scratch.Pin = new int[rules];
-        if (scratch.ChosenMark.Length < rules) scratch.ChosenMark = new int[rules];
-        scratch.Leaves = 0;
-        int best = -1;
-        PinRequired(scratch, marks, mirror, pattern, shift, 0, cap, ref best);
-        preferred = Math.Max(0, best);
-        return best >= 0;
-    }
-
-    private static void PinRequired(Scratch scratch, Marks marks, bool mirror, Template pattern, int shift,
-        int position, int cap, ref int best)
-    {
-        var order = pattern.RequiredSequenced;
-        if (position == order.Length)
-        {
-            scratch.Leaves++;
-            if (!SpanAllowed(scratch, pattern)) return;
-            if (AssignOrdered(scratch, marks, mirror, pattern, shift, true, out int found) && found > best)
-                best = found;
-            return;
-        }
-        int rule = order[position];
-        int sign = mirror ? -1 : 1;
-        var list = scratch.RuleMarks;
-        int prevMark = position > 0 ? scratch.ChosenMark[order[position - 1]] : -1;
-        int prevTime = prevMark >= 0 ? marks.Time[prevMark] : int.MinValue;
-        for (int k = scratch.RuleStart[rule]; k < scratch.RuleStart[rule + 1]; k++)
-        {
-            if (best >= cap || scratch.Leaves >= MaxRangeLeaves) return;
-            int i = list[k];
-            int time = marks.Time[i];
-            if (time <= prevTime) continue;
-            if (!InBand(marks, i, pattern, rule, sign, shift)) continue;
-            if (prevMark >= 0 && scratch.Range != null && !InsideCached(scratch, marks, prevMark, i)) continue;
-            scratch.ChosenMark[rule] = i;
-            scratch.Pin[rule] = time;
-            PinRequired(scratch, marks, mirror, pattern, shift, position + 1, cap, ref best);
-        }
-    }
-
-    private static bool InsideCached(Scratch scratch, Marks marks, int prevMark, int mark)
-    {
-        int cell = prevMark * scratch.InsideStride + mark;
-        byte known = scratch.InsideCache[cell];
-        if (known != 0) return known == 1;
-        int lo = Math.Min(marks.Value[prevMark], marks.Value[mark]);
-        int hi = Math.Max(marks.Value[prevMark], marks.Value[mark]);
-        bool inside = scratch.Range!.Inside(marks.Time[prevMark] + 1, marks.Time[mark] - 1, lo, hi);
-        scratch.InsideCache[cell] = inside ? (byte)1 : (byte)2;
-        return inside;
-    }
-
-    private static bool SpanAllowed(Scratch scratch, Template pattern)
-    {
-        var order = pattern.RequiredSequenced;
-        if (pattern.MinSpanSeconds <= 0 || order.Length < 2 || scratch.Minutes == null) return true;
-        var w = WeekendCompressor.Instance;
-        long first = w.ToVirtual(scratch.Minutes[scratch.Pin[order[0]]].MinuteUnixSeconds);
-        long last = w.ToVirtual(scratch.Minutes[scratch.Pin[order[^1]]].MinuteUnixSeconds);
-        return last - first >= pattern.MinSpanSeconds;
-    }
-
-    private static bool AssignOrdered(Scratch scratch, Marks marks, bool mirror, Template pattern, int shift,
-        bool pinned, out int preferred)
-    {
-        preferred = 0;
-        int sign = mirror ? -1 : 1;
-        foreach (int j in pattern.UnsequencedPreferred)
-            if (Earliest(scratch, marks, pattern, j, sign, shift, int.MinValue) != int.MaxValue)
-                preferred++;
-        var states = scratch.States;
-        var next = scratch.NextStates;
-        var times = scratch.PreferredTimes;
-        states.Clear();
-        states.Add((int.MinValue, 0));
-        foreach (var group in pattern.SequenceGroups)
-        {
-            next.Clear();
-            foreach (var (after, count) in states)
-            {
-                int floor = after;
-                bool dead = false;
-                times.Clear();
-                foreach (int j in group)
-                {
-                    int e = pinned && pattern.RuleRequired[j]
-                        ? scratch.Pin[j] > after ? scratch.Pin[j] : int.MaxValue
-                        : Earliest(scratch, marks, pattern, j, sign, shift, after);
-                    if (pattern.RuleRequired[j])
-                    {
-                        if (e == int.MaxValue)
-                        {
-                            dead = true;
-                            break;
-                        }
-                        floor = Math.Max(floor, e);
-                    }
-                    else if (e != int.MaxValue) times.Add(e);
-                }
-                if (dead) continue;
-                times.Sort();
-                int k = 0;
-                while (k < times.Count && times[k] <= floor) k++;
-                next.Add((floor, count + k));
-                for (int t = k; t < times.Count; t++) next.Add((times[t], count + t + 1));
-            }
-            if (next.Count == 0) return false;
-            next.Sort(StateOrder);
-            states.Clear();
-            int bestCount = -1;
-            foreach (var state in next)
-            {
-                if (state.Count <= bestCount) continue;
-                states.Add(state);
-                bestCount = state.Count;
-            }
-        }
-        int top = 0;
-        foreach (var state in states) top = Math.Max(top, state.Count);
-        preferred += top;
-        return true;
-    }
-
-    private static readonly Comparison<(int After, int Count)> StateOrder = (a, b) =>
-        a.After != b.After ? a.After.CompareTo(b.After) : b.Count.CompareTo(a.Count);
-
-    private static double Dot(Marks marks, bool mirror, int shift, Template pattern)
-    {
-        double total = 0;
-        var zoomed = marks.Zoomed;
-        var channels = marks.Channel;
-        var weights = marks.Weight;
-        var dense = pattern.Dense;
-        int channelFlip = mirror ? 1 : 0;
-        int sign = mirror ? -1 : 1;
-        int offset = shift - pattern.RowMin;
-        for (int i = 0; i < marks.Count; i++)
-        {
-            int r = sign * zoomed[i] + offset;
-            var row = dense[channels[i] ^ channelFlip];
-            if ((uint)r < (uint)row.Length) total += weights[i] * row[r];
-        }
-        return total;
-    }
-
-    private static bool Overlapping(Candidate a, Candidate b)
-    {
-        long overlap = Math.Min(a.AnchorVirtual, b.AnchorVirtual)
-            - Math.Max(a.AnchorVirtual - a.WindowSec, b.AnchorVirtual - b.WindowSec);
-        return overlap * 2 > Math.Min(a.WindowSec, b.WindowSec);
-    }
-
-    private static List<FindResult> Rank(Candidate[] candidates, Candle[] minutes, Levels2FindTarget target,
-        Template pattern, WeekendCompressor w)
-    {
-        var order = Enumerable.Range(0, candidates.Length)
-            .Where(k => candidates[k].Best.Sim > 0)
-            .OrderByDescending(k => candidates[k].Best.Preferred)
-            .ThenByDescending(k => candidates[k].Best.Sim)
-            .ToArray();
-        var results = new List<FindResult>();
-        var kept = new List<Candidate>();
-        foreach (var k in order)
-        {
-            if (results.Count >= SimilarSearch.MaxResults) break;
-            var c = candidates[k];
-            bool dup = false;
-            foreach (var q in kept)
-                if (Overlapping(c, q))
-                {
-                    dup = true;
-                    break;
-                }
-            if (dup) continue;
-            kept.Add(c);
-            double meanA = pattern.MeanPips * DensityProfile.PipPoints;
-            double shiftPoints = c.Best.ShiftPips * DensityProfile.PipPoints;
-            double meanC = c.MeanPips * DensityProfile.PipPoints;
-            double meanB = c.Best.Mirrored ? meanC + shiftPoints : meanC - shiftPoints;
-            results.Add(new FindResult(w.ToReal(c.AnchorVirtual - c.WindowSec), c.Best.Sim, c.Best.Sim, 0,
-                c.Best.Zoom, c.Best.Mirrored, c.Levels, meanA, meanB, target.Pair,
-                Preferred: c.Best.Preferred, PreferredTotal: pattern.PreferredCount,
-                WindowMinutes: (int)(c.WindowSec / 60),
-                AlignUnix: c.AlignIndex >= 0 ? minutes[c.AlignIndex].MinuteUnixSeconds : 0));
-        }
-        return results;
     }
 }

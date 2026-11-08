@@ -153,6 +153,20 @@
             <TextBox x:Name="TakeProfitBox" Width="60" Height="26" VerticalContentAlignment="Center" />
         </StackPanel>
 
+        <StackPanel x:Name="SentimentParams" Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,10">
+            <TextBlock Text="Height, px" VerticalAlignment="Center" Margin="0,0,10,0" />
+            <TextBox x:Name="SentimentHeightBox" Width="60" Height="26" VerticalContentAlignment="Center" />
+            <TextBlock Text="whole panel, 50% line in the middle" VerticalAlignment="Center"
+                       Margin="14,0,0,0" Foreground="Gray" />
+        </StackPanel>
+
+        <StackPanel x:Name="BigPlayersParams" Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,10">
+            <TextBlock Text="Min lots" VerticalAlignment="Center" Margin="0,0,10,0" />
+            <TextBox x:Name="BigMinLotsBox" Width="60" Height="26" VerticalContentAlignment="Center" />
+            <TextBlock Text="Height, px" VerticalAlignment="Center" Margin="14,0,10,0" />
+            <TextBox x:Name="BigHeightBox" Width="60" Height="26" VerticalContentAlignment="Center" />
+        </StackPanel>
+
         <Grid x:Name="ShiftParams" Grid.Row="3" Grid.Column="1" Margin="0,0,0,10">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
@@ -164,10 +178,14 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="3" Grid.Column="0" Text="Target" VerticalAlignment="Center" Margin="0,8,8,0" />
             <ComboBox x:Name="TargetBox" Grid.Row="3" Grid.Column="1" Width="115" Height="26"
                       VerticalContentAlignment="Center" Margin="0,8,8,0" />
+            <TextBlock Grid.Row="4" Grid.Column="0" Text="Zoom, %" VerticalAlignment="Center" Margin="0,8,8,0" />
+            <TextBox x:Name="ShiftZoomBox" Grid.Row="4" Grid.Column="1" Width="60" Height="26"
+                     HorizontalAlignment="Left" VerticalContentAlignment="Center" Margin="0,8,8,0" />
             <TextBlock Grid.Row="0" Grid.Column="0" Text="Source time" VerticalAlignment="Center" Margin="0,0,8,6" />
             <DatePicker x:Name="SourceDate" Grid.Row="0" Grid.Column="1" Width="115" Height="26" Margin="0,0,8,6" />
             <TextBox x:Name="SourceTimeBox" Grid.Row="0" Grid.Column="2" Width="60" Height="26"
@@ -176,8 +194,13 @@
             <DatePicker x:Name="ChartDate" Grid.Row="1" Grid.Column="1" Width="115" Height="26" Margin="0,0,8,0" />
             <TextBox x:Name="ChartTimeBox" Grid.Row="1" Grid.Column="2" Width="60" Height="26"
                      VerticalContentAlignment="Center" />
-            <CheckBox x:Name="FlipBox" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3"
-                      Content="Flip vertically (min up, max down)" Margin="0,8,0,0" />
+            <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3">
+                <CheckBox x:Name="FlipBox" Content="Flip vertically (min up, max down)" Margin="0,8,0,0" />
+                <CheckBox x:Name="ReverseTimeBox" Content="Mirror in time (minutes run right to left)"
+                          Margin="0,6,0,0" />
+                <CheckBox x:Name="KeyPointsBox" Content="Show key points of a Levels2 result"
+                          Margin="0,6,0,0" />
+            </StackPanel>
         </Grid>
 
         <Grid x:Name="IndexParams" Grid.Row="3" Grid.Column="1" Margin="0,0,0,10">
@@ -198,10 +221,13 @@
             <DatePicker x:Name="IndexStartDate" Grid.Row="0" Grid.Column="1" Width="115" Height="26" Margin="0,0,8,6" />
             <TextBox x:Name="IndexStartTimeBox" Grid.Row="0" Grid.Column="2" Width="60" Height="26"
                      VerticalContentAlignment="Center" Margin="0,0,0,6" />
-            <TextBlock Grid.Row="1" Grid.Column="0" Text="End" VerticalAlignment="Center" Margin="0,0,8,6" />
-            <DatePicker x:Name="IndexEndDate" Grid.Row="1" Grid.Column="1" Width="115" Height="26" Margin="0,0,8,6" />
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="History end" VerticalAlignment="Center" Margin="0,0,8,6"
+                       ToolTip="Minutes after this time (UTC) do not exist for the index and do not change it. Empty = no limit." />
+            <DatePicker x:Name="IndexEndDate" Grid.Row="1" Grid.Column="1" Width="115" Height="26" Margin="0,0,8,6"
+                        ToolTip="Minutes after this time (UTC) do not exist for the index and do not change it. Empty = no limit." />
             <TextBox x:Name="IndexEndTimeBox" Grid.Row="1" Grid.Column="2" Width="60" Height="26"
-                     VerticalContentAlignment="Center" Margin="0,0,0,6" />
+                     VerticalContentAlignment="Center" Margin="0,0,0,6"
+                     ToolTip="Minutes after this time (UTC) do not exist for the index and do not change it. Empty = no limit." />
             <TextBlock Grid.Row="2" Grid.Column="0" Text="Method" VerticalAlignment="Center" Margin="0,0,8,6" />
             <ComboBox x:Name="MethodBox" Grid.Row="2" Grid.Column="1" Width="115" Height="26"
                       VerticalContentAlignment="Center" Margin="0,0,0,6" />
@@ -216,6 +242,16 @@
             <CheckBox x:Name="IndexMirrorBox" Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="3"
                       Content="Mirror (min up, max down)" Margin="0,8,0,0" />
         </Grid>
+
+        <StackPanel x:Name="FlattenParams" Grid.Row="3" Grid.Column="1" Margin="0,0,0,10">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock VerticalAlignment="Center" Margin="0,0,10,0"><Run Text="Base" /><Run Text=" *" Foreground="#D32F2F" /></TextBlock>
+                <ComboBox x:Name="FlattenBaseBox" Width="160" Height="26" VerticalContentAlignment="Center" />
+            </StackPanel>
+            <TextBlock Text="Source is drawn so that Base becomes a horizontal line (dashed)."
+                       Foreground="Gray" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="360"
+                       HorizontalAlignment="Left" />
+        </StackPanel>
 
         <StackPanel x:Name="CurrencyParams" Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,10">
             <TextBlock Text="Pair" VerticalAlignment="Center" Margin="0,0,10,0" />

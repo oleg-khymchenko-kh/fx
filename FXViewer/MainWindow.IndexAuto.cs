@@ -93,12 +93,12 @@ public partial class MainWindow
             {
                 var index = job.Index;
                 var indexTail = DollarIndexSymbol.Tail(db, index.Name, index.IndexPairs, index.EndTimeUnix,
-                    index.IndexMethod, index.IndexAlgorithm, SourcePipPoints, live);
+                    index.IndexMethod, index.IndexAlgorithm, SourcePipPoints, live, index.StartTimeUnix);
                 result.Add((index.Name, index.Flip, indexTail));
                 foreach (var c in job.Currencies)
-                    result.Add((c.Name, index.Flip, CurrencyIndexSymbol.Tail(db, c.Name, index.Name,
-                        c.IndexPair, index.IndexAlgorithm, SourcePipPoints(c.IndexPair), indexTail,
-                        live.GetValueOrDefault(c.IndexPair))));
+                    if (CurrencyIndexSymbol.SpecOf(c.Name) is { } spec)
+                        result.Add((c.Name, false,
+                            CurrencyIndexSymbol.Tail(db, spec, indexTail, live.GetValueOrDefault(c.IndexPair))));
             }
             return result;
         });
@@ -116,14 +116,15 @@ public partial class MainWindow
             if (result.ContainsKey(pair) || !_live.TryGetValue(pair, out var s)) continue;
             var minutes = new List<Candle>(s.Closed.Count + 1);
             foreach (var c in s.Closed)
-                if (!WideSpreadRule.Hidden(pair, c.MinuteUnixSeconds, c.HasSpread, c.SpreadCode))
-                    minutes.Add(c);
+                minutes.Add(WideSpreadRule.IsWide(pair, c.MinuteUnixSeconds, c.HasSpread, c.SpreadCode)
+                    ? c with { WideSpread = true }
+                    : c);
             if (s.MinuteUnix != long.MinValue)
             {
                 bool hasSpread = s.MaxSpreadTenths >= 0;
                 int code = hasSpread ? SpreadCodes.FromTenths(s.MaxSpreadTenths) : 0;
-                if (!WideSpreadRule.Hidden(pair, s.MinuteUnix, hasSpread, code))
-                    minutes.Add(new Candle(s.MinuteUnix, s.Low, s.High, LiveAvg(s), true, hasSpread, code));
+                minutes.Add(new Candle(s.MinuteUnix, s.Low, s.High, LiveAvg(s), true, hasSpread, code,
+                    WideSpread: WideSpreadRule.IsWide(pair, s.MinuteUnix, hasSpread, code)));
             }
             result[pair] = minutes.ToArray();
         }
@@ -152,33 +153,22 @@ public partial class MainWindow
         var db = GetDb();
         var sw = Stopwatch.StartNew();
         var ends = jobs
-            .Select(j => (
-                Index: ConfirmedEndUnix(DollarIndexSymbol.Effective(j.Index.IndexPairs), j.Index.EndTimeUnix),
-                Currencies: j.Currencies.Select(c => ConfirmedEndUnix(new[] { c.IndexPair }, 0)).ToArray()))
+            .Select(j => ConfirmedEndUnix(DollarIndexSymbol.Effective(j.Index.IndexPairs), j.Index.EndTimeUnix))
             .ToArray();
         var computed = await Task.Run(() =>
         {
             var result = new List<(Candle[] Values, FlatSeriesSync.Plan Plan, bool Swap)>();
-            void Add(string name, Candle[] values)
-            {
-                var plan = FlatSeriesSync.Diff(db, name, values);
-                bool swap = values.Length > 0
-                    && plan.Writes.Length + plan.Clears.Length > IndexInPlaceWriteLimit;
-                if (swap) FlatSeriesSync.Replace(db, IndexTempName(name), values);
-                result.Add((values, plan, swap));
-            }
             for (int i = 0; i < jobs.Count; i++)
             {
                 var index = jobs[i].Index;
-                var indexValues = DollarIndexSymbol.Compute(db, index.IndexPairs, index.StartTimeUnix,
-                    ends[i].Index, index.IndexMethod, index.IndexAlgorithm, SourcePipPoints, ct);
-                Add(index.Name, indexValues);
-                for (int k = 0; k < jobs[i].Currencies.Length; k++)
-                {
-                    var c = jobs[i].Currencies[k];
-                    Add(c.Name, CurrencyIndexSymbol.Compute(db, indexValues, c.IndexPair,
-                        index.IndexAlgorithm, SourcePipPoints(c.IndexPair), ends[i].Currencies[k], ct));
-                }
+                var values = DollarIndexSymbol.Compute(db, index.IndexPairs, index.StartTimeUnix,
+                    ends[i], index.IndexMethod, index.IndexAlgorithm, SourcePipPoints, ct,
+                    m => Dispatcher.BeginInvoke(() => AppendLog(m)), index.Name);
+                var plan = FlatSeriesSync.Diff(db, index.Name, values);
+                bool swap = values.Length > 0
+                    && plan.Writes.Length + plan.Clears.Length > IndexInPlaceWriteLimit;
+                if (swap) FlatSeriesSync.Replace(db, IndexTempName(index.Name), values);
+                result.Add((values, plan, swap));
             }
             return result;
         }, ct);
@@ -212,28 +202,40 @@ public partial class MainWindow
             _dbBusy = true;
             try
             {
-                applied = await Task.Run(() => computed
-                    .Select(x =>
-                    {
-                        if (x.Swap)
+                applied = await Task.Run(() =>
+                {
+                    var plans = computed
+                        .Select(x =>
                         {
-                            db.RenameSymbol(IndexTempName(x.Plan.Symbol), x.Plan.Symbol);
-                            return x.Plan;
-                        }
-                        var plan = FlatSeriesSync.StillMatches(db, x.Plan)
-                            ? x.Plan
-                            : FlatSeriesSync.Diff(db, x.Plan.Symbol, x.Values);
-                        FlatSeriesSync.Write(db, plan);
-                        return plan;
-                    })
-                    .ToList());
+                            if (x.Swap)
+                            {
+                                db.RenameSymbol(IndexTempName(x.Plan.Symbol), x.Plan.Symbol);
+                                return x.Plan;
+                            }
+                            var plan = FlatSeriesSync.StillMatches(db, x.Plan)
+                                ? x.Plan
+                                : FlatSeriesSync.Diff(db, x.Plan.Symbol, x.Values);
+                            FlatSeriesSync.Write(db, plan);
+                            return plan;
+                        })
+                        .ToList();
+                    for (int i = 0; i < jobs.Count; i++)
+                        if (computed[i].Values.Length > 0)
+                            DollarIndexSymbol.MarkStored(db, jobs[i].Index.Name, jobs[i].Index.IndexPairs,
+                                jobs[i].Index.StartTimeUnix, jobs[i].Index.IndexMethod, jobs[i].Index.IndexAlgorithm);
+                    return plans;
+                });
             }
             finally
             {
                 _dbBusy = false;
             }
             long writeMs = swWrite.ElapsedMilliseconds;
-            await ReloadIndexSeriesAsync(applied.Where(p => !p.Empty).Select(p => p.Symbol).ToArray());
+            var changed = applied.Where(p => !p.Empty).Select(p => p.Symbol).ToList();
+            foreach (var job in jobs)
+                if (changed.Any(n => SymbolNameEquals(n, job.Index.Name)))
+                    changed.AddRange(job.Currencies.Select(c => c.Name));
+            await ReloadIndexSeriesAsync(changed);
             AppendLog($"USD index auto rebuild: {string.Join(", ", names)} - " +
                 $"{computed.Sum(x => x.Values.Length):N0} minutes computed in {computeMs} ms, " +
                 $"{applied.Sum(p => p.Writes.Length):N0} written, {applied.Sum(p => p.Clears.Length):N0} " +

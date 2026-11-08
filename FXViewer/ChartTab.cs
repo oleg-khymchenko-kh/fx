@@ -32,6 +32,8 @@ public sealed class ShiftPlacement
     public long SourceTimeUnix { get; set; }
     public long ChartTimeUnix { get; set; }
     public bool Flip { get; set; }
+    public double ZoomPercent { get; set; } = ShiftedSymbol.DefaultZoomPercent;
+    public bool ReverseTime { get; set; }
 
     public static ShiftPlacement From(IndicatorSymbol ind) => new()
     {
@@ -41,6 +43,8 @@ public sealed class ShiftPlacement
         SourceTimeUnix = ind.SourceTimeUnix,
         ChartTimeUnix = ind.ChartTimeUnix,
         Flip = ind.Flip,
+        ZoomPercent = ind.ZoomPercent,
+        ReverseTime = ind.ReverseTime,
     };
 
     public ShiftPlacement Clone() => new()
@@ -51,6 +55,8 @@ public sealed class ShiftPlacement
         SourceTimeUnix = SourceTimeUnix,
         ChartTimeUnix = ChartTimeUnix,
         Flip = Flip,
+        ZoomPercent = ZoomPercent,
+        ReverseTime = ReverseTime,
     };
 
     public string Target() => TargetSymbol.Length > 0 ? TargetSymbol : Source;
@@ -59,7 +65,7 @@ public sealed class ShiftPlacement
     {
         if (!ShiftedSymbol.AnchorsBroken(SourceTimeUnix, ChartTimeUnix)) return false;
         (SourceTimeUnix, ChartTimeUnix) =
-            ShiftedSymbol.Rebase(SourceTimeUnix, ChartTimeUnix, anchorUnix);
+            ShiftedSymbol.Rebase(SourceTimeUnix, ChartTimeUnix, anchorUnix, ReverseTime);
         return true;
     }
 
@@ -68,7 +74,9 @@ public sealed class ShiftPlacement
         && IndicatorSymbol.NameKey(TargetSymbol) == IndicatorSymbol.NameKey(ind.TargetSymbol)
         && SourceTimeUnix == ind.SourceTimeUnix
         && ChartTimeUnix == ind.ChartTimeUnix
-        && Flip == ind.Flip;
+        && Flip == ind.Flip
+        && ZoomPercent == ind.ZoomPercent
+        && ReverseTime == ind.ReverseTime;
 
     public void ApplyTo(IndicatorSymbol ind)
     {
@@ -77,5 +85,7 @@ public sealed class ShiftPlacement
         ind.SourceTimeUnix = SourceTimeUnix;
         ind.ChartTimeUnix = ChartTimeUnix;
         ind.Flip = Flip;
+        ind.ZoomPercent = ZoomPercent;
+        ind.ReverseTime = ReverseTime;
     }
 }

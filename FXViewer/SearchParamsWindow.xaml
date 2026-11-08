@@ -90,23 +90,6 @@
                        Foreground="Gray" Margin="10,0,0,0" />
         </StackPanel>
 
-        <TextBlock x:Name="ToleranceLabel" Grid.Row="7" Grid.Column="0" Text="Tolerance, pips"
-                   VerticalAlignment="Center" Margin="0,0,10,10" Visibility="Collapsed" />
-        <StackPanel x:Name="TolerancePanel" Grid.Row="7" Grid.Column="1" Orientation="Horizontal"
-                    Margin="0,0,0,10" Visibility="Collapsed">
-            <TextBox x:Name="ToleranceBox" Width="60" Height="26" VerticalContentAlignment="Center" />
-            <TextBlock Text="how far a level may sit from the template level"
-                       VerticalAlignment="Center" Foreground="Gray" Margin="10,0,0,0" />
-        </StackPanel>
-
-        <TextBlock x:Name="StretchLabel" Grid.Row="8" Grid.Column="0" Text="Time stretch, %"
-                   VerticalAlignment="Center" Margin="0,0,10,10" Visibility="Collapsed" />
-        <StackPanel x:Name="StretchPanel" Grid.Row="8" Grid.Column="1" Orientation="Horizontal"
-                    Margin="0,0,0,10" Visibility="Collapsed">
-            <TextBox x:Name="StretchBox" Width="60" Height="26" VerticalContentAlignment="Center" />
-            <TextBlock x:Name="StretchHint" VerticalAlignment="Center" Foreground="Gray" Margin="10,0,0,0" />
-        </StackPanel>
-
         <TextBlock x:Name="MinSpanLabel" Grid.Row="9" Grid.Column="0" Text="Min span"
                    VerticalAlignment="Center" Margin="0,0,10,10" Visibility="Collapsed" />
         <StackPanel x:Name="MinSpanPanel" Grid.Row="9" Grid.Column="1" Orientation="Horizontal"
@@ -114,32 +97,15 @@
             <TextBox x:Name="MinSpanBox" Width="60" Height="26" VerticalContentAlignment="Center" />
             <ComboBox x:Name="MinSpanUnitBox" Width="90" Height="26" VerticalContentAlignment="Center"
                       Margin="8,0,0,0" />
-            <TextBlock Text="trading time from the first to the last required level, 0 = any"
+            <TextBlock Text="trading time from the first to the last point, 0 = any"
                        VerticalAlignment="Center" Foreground="Gray" Margin="10,0,0,0" />
         </StackPanel>
 
-        <TextBlock x:Name="LevelParamsLabel" Grid.Row="10" Grid.Column="0" Text="Level tables"
-                   VerticalAlignment="Center" Margin="0,0,10,10" Visibility="Collapsed" />
-        <DockPanel x:Name="LevelParamsPanel" Grid.Row="10" Grid.Column="1" Margin="0,0,0,10"
-                   Visibility="Collapsed" LastChildFill="True">
-            <Button x:Name="LevelParamsBtn" DockPanel.Dock="Left" Content="Edit..." Width="70" Height="26"
-                    Click="LevelParamsBtn_Click" />
-            <TextBlock x:Name="LevelParamsText" VerticalAlignment="Center" Foreground="Gray"
-                       Margin="10,0,0,0" TextWrapping="Wrap" />
-        </DockPanel>
-
-        <TextBlock x:Name="RequiredLabel" Grid.Row="11" Grid.Column="0" Text="Levels"
+        <TextBlock x:Name="RequiredLabel" Grid.Row="11" Grid.Column="0" Text="Points"
                    VerticalAlignment="Center" Margin="0,0,10,10" Visibility="Collapsed" />
         <StackPanel x:Name="RequiredPanel" Grid.Row="11" Grid.Column="1" Orientation="Horizontal"
                     Margin="0,0,0,10" Visibility="Collapsed">
-            <TextBlock Text="Min left, pips" VerticalAlignment="Center" Foreground="Gray" />
-            <TextBox x:Name="RequiredLeftBox" Width="50" Height="26" VerticalContentAlignment="Center"
-                     Margin="6,0,0,0" />
-            <TextBlock Text="Min right, pips" VerticalAlignment="Center" Foreground="Gray"
-                       Margin="12,0,0,0" />
-            <TextBox x:Name="RequiredRightBox" Width="50" Height="26" VerticalContentAlignment="Center"
-                     Margin="6,0,0,0" />
-            <Button x:Name="RequiredFillBtn" Content="Generate" Width="80" Height="26" Margin="12,0,0,0"
+            <Button x:Name="RequiredFillBtn" Content="Generate" Width="80" Height="26"
                     Click="RequiredFillBtn_Click" />
             <Button x:Name="RequiredDeleteBtn" Content="Delete" Width="70" Height="26" Margin="8,0,0,0"
                     Click="RequiredDeleteBtn_Click" />
@@ -165,12 +131,18 @@
                                     Binding="{Binding TolDown, Converter={StaticResource CellConv},
                                               ConverterParameter=F0}" />
                 <DataGridTextColumn x:Name="SeqColumn" Header="Seq" Width="40" Binding="{Binding Seq}" />
-                <DataGridTextColumn Header="Min left" Width="58"
-                                    Binding="{Binding MinLeft, Converter={StaticResource CellConv},
-                                              ConverterParameter=F0}" />
-                <DataGridTextColumn Header="Min right" Width="64"
-                                    Binding="{Binding MinRight, Converter={StaticResource CellConv},
-                                              ConverterParameter=F0}" />
+                <DataGridTextColumn Width="62" Binding="{Binding MinGap}">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="Gap min"
+                                   ToolTip="Shortest trading time from the previous point to this one: 30m, 4h, 2d (a plain number is hours). Empty = any." />
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
+                <DataGridTextColumn Width="64" Binding="{Binding MaxGap}">
+                    <DataGridTextColumn.Header>
+                        <TextBlock Text="Gap max"
+                                   ToolTip="Longest trading time from the previous point to this one: 30m, 4h, 2d (a plain number is hours). Empty = any." />
+                    </DataGridTextColumn.Header>
+                </DataGridTextColumn>
             </DataGrid.Columns>
         </DataGrid>
 

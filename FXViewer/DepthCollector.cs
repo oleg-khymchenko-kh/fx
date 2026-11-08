@@ -55,10 +55,10 @@ public sealed class DepthCollector
         }
         if (_firstPass) _log($"depth: reading Sierra depth from {_folder}");
 
-        foreach (var (pair, root) in VolumeCollector.Futures)
+        foreach (var (pair, root, exchange) in VolumeCollector.Futures)
         {
             var contract = _liveContract(pair) ?? VolumeCollector.FrontContract(root, utcNow);
-            var name = $"{contract}-CME.{utcNow:yyyy-MM-dd}.depth";
+            var name = $"{contract}-{exchange}.{utcNow:yyyy-MM-dd}.depth";
             var path = Path.Combine(_folder, name);
             if (!_state.TryGetValue(pair, out var st))
             {

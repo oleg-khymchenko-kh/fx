@@ -10,7 +10,7 @@ public sealed class SeriesDataLoader : IDisposable
 {
     public sealed record SeriesInit(string Symbol, string ReadSymbol, bool Mirror, int PipPoints,
         bool IsShift, long ShiftDelta, int MinYear, int MaxYear,
-        int? LoadedFromYear, int? LoadedToYear, long MirrorBase);
+        int? LoadedFromYear, int? LoadedToYear, long MirrorBase, double Zoom = 1, bool Reverse = false);
 
     private sealed class SeriesState
     {
@@ -22,6 +22,8 @@ public sealed class SeriesDataLoader : IDisposable
         public required int MinYear { get; set; }
         public required int MaxYear { get; set; }
         public long ShiftDelta;
+        public double Zoom = 1;
+        public bool Reverse;
         public bool HasLoaded;
         public int LoadedLo;
         public int LoadedHi;
@@ -75,6 +77,8 @@ public sealed class SeriesDataLoader : IDisposable
                 MinYear = s.MinYear,
                 MaxYear = s.MaxYear,
                 ShiftDelta = s.ShiftDelta,
+                Zoom = s.Zoom,
+                Reverse = s.Reverse,
                 MirrorBase = s.MirrorBase,
             };
             if (s.LoadedFromYear != null && s.LoadedToYear != null)
@@ -100,8 +104,10 @@ public sealed class SeriesDataLoader : IDisposable
                 long hi = realHi;
                 if (st.IsShift)
                 {
-                    lo = ChartToSource(lo, st.ShiftDelta);
-                    hi = ChartToSource(hi, st.ShiftDelta);
+                    long a = ShiftedSymbol.ChartToSource(realLo, st.ShiftDelta, st.Reverse);
+                    long b = ShiftedSymbol.ChartToSource(realHi, st.ShiftDelta, st.Reverse);
+                    lo = Math.Min(a, b);
+                    hi = Math.Max(a, b);
                 }
                 int ylo = Math.Max(st.MinYear, YearOfUnix(lo));
                 int yhi = Math.Min(st.MaxYear, YearOfUnix(hi));
@@ -202,8 +208,16 @@ public sealed class SeriesDataLoader : IDisposable
         }
     }
 
+    public void SetShiftZoom(string symbol, double zoom)
+    {
+        lock (_sync)
+        {
+            if (_series.TryGetValue(symbol, out var st)) st.Zoom = zoom;
+        }
+    }
+
     public void MarkShiftApplied(string symbol, string targetSymbol, long newDelta, bool mirror,
-        long mirrorBase, int pipPoints)
+        long mirrorBase, int pipPoints, double zoom, bool reverse)
     {
         lock (_sync)
         {
@@ -218,6 +232,8 @@ public sealed class SeriesDataLoader : IDisposable
             st.MirrorBase = mirrorBase;
             st.PipPoints = pipPoints;
             st.ShiftDelta = newDelta;
+            st.Zoom = zoom;
+            st.Reverse = reverse;
             st.HasLoaded = true;
             st.LoadedLo = st.MinYear;
             st.LoadedHi = st.MaxYear;
@@ -225,7 +241,7 @@ public sealed class SeriesDataLoader : IDisposable
     }
 
     public void MarkShiftRetargeted(string symbol, string targetSymbol, long newDelta, bool mirror,
-        long mirrorBase, int pipPoints)
+        long mirrorBase, int pipPoints, double zoom, bool reverse)
     {
         lock (_sync)
         {
@@ -243,6 +259,8 @@ public sealed class SeriesDataLoader : IDisposable
             st.MirrorBase = mirrorBase;
             st.PipPoints = pipPoints;
             st.ShiftDelta = newDelta;
+            st.Zoom = zoom;
+            st.Reverse = reverse;
         }
     }
 
@@ -395,10 +413,11 @@ public sealed class SeriesDataLoader : IDisposable
         {
             ct.ThrowIfCancellationRequested();
             SetProgress(job, y.ToString());
-            raw.AddRange(_db.ReadRange(st.ReadSymbol, YearStart(y), YearEnd(y), includeWide: true));
+            raw.AddRange(ReadYears(_db, st.ReadSymbol, y, y));
         }
         raw = AskViewRule.ToAsk(raw, st.ReadSymbol);
-        if (st.IsShift) raw = ShiftedSymbol.Shift(raw, st.ShiftDelta);
+        bool reverse = st.IsShift && st.Reverse;
+        if (st.IsShift) raw = ShiftedSymbol.Shift(raw, st.ShiftDelta, reverse);
         var (minutes, rawHidden) = SplitHidden(raw);
         raw = minutes;
         SetProgress(job, "merge");
@@ -418,7 +437,7 @@ public sealed class SeriesDataLoader : IDisposable
                 chunk = raw;
                 hiddenChunk = rawHidden;
             }
-            else if (side == Side.Prepend || side == Side.Init)
+            else if (side == Side.Init || (side == Side.Prepend) != reverse)
             {
                 long first = snap.History.Minutes[0].MinuteUnixSeconds;
                 chunk = raw.Where(c => c.MinuteUnixSeconds < first).ToList();
@@ -438,7 +457,9 @@ public sealed class SeriesDataLoader : IDisposable
                 return;
             }
             long? fixedBase = st.Mirror && st.MirrorBase != 0 ? st.MirrorBase : null;
+            double zoom = st.Zoom;
             var transformed = CandleTransforms.Transform(chunk, st.PipPoints, st.Mirror, out long mb, fixedBase);
+            ShiftedSymbol.Zoom(transformed, zoom);
             bool newBase = st.Mirror && fixedBase == null;
             bool prepend = snap.History.Minutes.Length > 0
                 && transformed[^1].MinuteUnixSeconds < snap.History.Minutes[0].MinuteUnixSeconds;
@@ -449,9 +470,10 @@ public sealed class SeriesDataLoader : IDisposable
             newHistory.SetHiddenSpreads(prepend
                 ? CandleHistory.MergeMarks(hiddenMarks, snap.History.HiddenSpreads)
                 : CandleHistory.MergeMarks(snap.History.HiddenSpreads, hiddenMarks));
-            newHistory.SetHiddenMinutes(CandleHistory.MergeByTime(snap.History.HiddenMinutes,
-                CandleTransforms.TransformWith(hiddenChunk, st.PipPoints, st.Mirror, mb)));
-            var newTransform = newBase ? new SeriesTransform(true, mb, st.PipPoints) : null;
+            var hiddenTransformed = CandleTransforms.TransformWith(hiddenChunk, st.PipPoints, st.Mirror, mb);
+            ShiftedSymbol.Zoom(hiddenTransformed, zoom);
+            newHistory.SetHiddenMinutes(CandleHistory.MergeByTime(snap.History.HiddenMinutes, hiddenTransformed));
+            var newTransform = newBase ? new SeriesTransform(true, mb, st.PipPoints, zoom) : null;
             ct.ThrowIfCancellationRequested();
             SetProgress(job, "averages");
             var avgWatch = Stopwatch.StartNew();
@@ -521,7 +543,14 @@ public sealed class SeriesDataLoader : IDisposable
     }
 
     internal static List<Candle> ReadYears(CandleDatabase db, string symbol, int yearLo, int yearHi) =>
-        db.ReadRange(symbol, YearStart(yearLo), YearEnd(yearHi), includeWide: true);
+        CurrencyIndexSymbol.SpecOf(symbol) is { } spec
+            ? CurrencyIndexSymbol.ReadRange(db, spec, YearStart(yearLo), YearEnd(yearHi))
+            : db.ReadRange(symbol, YearStart(yearLo), YearEnd(yearHi), includeWide: true);
+
+    internal static IReadOnlyList<int> ExistingYears(CandleDatabase db, string symbol) =>
+        CurrencyIndexSymbol.SpecOf(symbol) is { } spec
+            ? CurrencyIndexSymbol.ExistingYears(db, spec)
+            : db.ExistingYears(symbol);
 
     internal static (List<Candle> Minutes, List<Candle> Hidden) SplitHidden(List<Candle> candles)
     {
@@ -534,12 +563,6 @@ public sealed class SeriesDataLoader : IDisposable
             else minutes.Add(c);
         }
         return (minutes, hidden);
-    }
-
-    internal static long ChartToSource(long chartUnix, long shiftDelta)
-    {
-        var w = WeekendCompressor.Instance;
-        return w.ToReal(w.ToVirtual(chartUnix) - shiftDelta);
     }
 
     internal static int YearOfUnix(long unixSeconds)

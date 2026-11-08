@@ -36,6 +36,7 @@ internal sealed class PuzzleView : FrameworkElement
     private readonly List<CardVisual> _cards = new();
     private readonly Dictionary<DependencyObject, CardVisual> _byVisual = new();
     private readonly DispatcherTimer _blink = new() { Interval = TimeSpan.FromMilliseconds(220) };
+    private HashSet<DateTime> _filledDays = new();
     private PuzzleBoard _board = new(Array.Empty<PuzzleCard>());
     private double _zoom = 1;
     private Point _last;
@@ -68,6 +69,23 @@ internal sealed class PuzzleView : FrameworkElement
     public bool MarksShown { get; private set; }
 
     public int Hints { get; private set; }
+
+    public byte[] RenderViewPng()
+    {
+        if (ActualWidth <= 0 || ActualHeight <= 0) throw new InvalidOperationException("the Weeks tab is not on screen");
+        var visual = new DrawingVisual();
+        using (var dc = visual.RenderOpen())
+            dc.DrawRectangle(new VisualBrush(this), null, new Rect(0, 0, ActualWidth, ActualHeight));
+        return DayView.Png(visual, ActualWidth, ActualHeight, 1);
+    }
+
+    public void SetFilledDays(IEnumerable<DateTime> days)
+    {
+        var filled = days.Select(d => d.Date).ToHashSet();
+        if (filled.SetEquals(_filledDays)) return;
+        _filledDays = filled;
+        RenderCards();
+    }
 
     protected override int VisualChildrenCount => _children.Count;
 
@@ -320,7 +338,7 @@ internal sealed class PuzzleView : FrameworkElement
             : cv == _hint && _blinkPhase % 2 == 0 ? CardState.Hint
             : CardState.Normal;
         using var dc = cv.Visual.RenderOpen();
-        CardArt.Draw(dc, cv.Shape, cv.Bars, cv.Line, _zoom, state);
+        CardArt.Draw(dc, cv.Shape, cv.Bars, cv.Line, _zoom, state, _filledDays);
     }
 
     private void DrawMarks()

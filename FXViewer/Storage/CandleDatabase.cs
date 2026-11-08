@@ -100,7 +100,7 @@ public sealed class CandleDatabase : IDisposable
         return GetFile(symbol, year).WriteVolume(minuteOfYear, volume);
     }
 
-    public VolumeProfileWriter ProfileWriter(string symbol, int pipPoints, Action<string> log)
+    public VolumeProfileWriter ProfileWriter(string symbol, ProfileScale scale, Action<string> log)
     {
         lock (_lock)
         {
@@ -108,7 +108,8 @@ public sealed class CandleDatabase : IDisposable
             var key = Sanitize(symbol);
             if (!_profileWriters.TryGetValue(key, out var writer))
             {
-                writer = new VolumeProfileWriter(SymbolDirectory(symbol), key, pipPoints, 100000, log);
+                writer = new VolumeProfileWriter(SymbolDirectory(symbol), key, scale.PipPoints,
+                    scale.PriceScale, log);
                 _profileWriters[key] = writer;
             }
             return writer;

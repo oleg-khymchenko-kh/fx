@@ -2,7 +2,10 @@
 
 Status: implemented, v1 plus the hint menu and the Sort button (separate
 WPF app `src/Fx.WeekPuzzle`, 2026-09-26), 100 pip grid (2026-09-27), lines
-from a Drawing indicator instead of the ZigZag (2026-09-30).
+from a Drawing indicator instead of the ZigZag (2026-09-30). Since
+2026-10-26 the puzzle is the `Weeks` tab of the window; the second tab
+`Days` is the day card grouping game with an HTTP API, see
+`docs/day-cards.md`.
 
 ## Goal
 
@@ -112,6 +115,30 @@ when the right side of the clicked card is free, otherwise the previous
 week when the left side is free. A card with both sides taken gives no
 hint. The blinking card is not scrolled into view; press `F` when it is
 off screen. Hints are counted in the status line, like checks.
+
+## Day fill
+
+User request 2026-10-26: mark on the week cards the days of one group of
+the Days tab (`docs/day-cards.md`). First red dots, then (2026-10-27) a
+filled day, then a green fill plus the dots again.
+
+- The whole day is filled with a pale green background (`#D9F2D9`), the
+  full card height, between its dashed day lines (day = previous US close
+  to US close, the same window as a day card). Grid, bars and line are
+  drawn over it.
+- A red dot (`#E00000`, radius 5, at least 2 screen pixels) sits in the
+  top margin in the middle of the day, drawn on top of everything.
+- Toolbar: `Mark days` check box turns fill and dots on and off, the box next to it
+  picks the day group. Default: on, the first group of the Days tab
+  (group 1). Both are saved in `day-puzzle.json` (`weekDayFill`,
+  `weekDayFillGroup`). If the saved group is gone, the first group is used.
+- Days of the group that are not loaded on the Days tab (`absent` ids)
+  are filled too.
+- The fill follows the group: it is read again every time the Weeks tab
+  is shown.
+- API: `POST /api/weekfill {"show":true,"group":"A"}` (both optional),
+  `GET /api/weeks.png` (the Weeks tab as on screen), `weekFill` in
+  `GET /api/state`.
 
 ## Sort
 

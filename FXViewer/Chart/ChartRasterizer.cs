@@ -296,6 +296,102 @@ public static class ChartRasterizer
         }
     }
 
+    public const int SentimentMidLineArgb = unchecked((int)0xFFBDBDBD);
+    public const int SentimentPositionsArgb = unchecked((int)0xFF424242);
+
+    public static int SentimentBarMaxPx(int panelHeightPx) => Math.Max(1, (panelHeightPx - 1) / 2);
+
+    public static int SentimentPanelHeightPx(int panelHeightPx) => 2 * SentimentBarMaxPx(panelHeightPx) + 1;
+
+    public static int SentimentBarHeightPx(float longShare, int barMaxPx) =>
+        (int)Math.Round(Math.Abs(longShare - 0.5) * 2 * barMaxPx);
+
+    public static void DrawSentimentPanel(int[] buffer, int width, int height, SentimentColumn[] columns,
+        int bottomRow, int panelHeightPx, int longArgb, int shortArgb)
+    {
+        int barMax = SentimentBarMaxPx(panelHeightPx);
+        int top = bottomRow - SentimentPanelHeightPx(panelHeightPx) + 1;
+        if (bottomRow >= height) return;
+        if (top < 0) top = 0;
+        int midRow = bottomRow - barMax;
+        if (midRow < 0) return;
+        for (int x = 0; x < width; x++)
+        {
+            buffer[midRow * width + x] = SentimentMidLineArgb;
+            var col = x < columns.Length ? columns[x] : SentimentColumn.None;
+            if (!col.HasData) continue;
+            int h = SentimentBarHeightPx(col.Lots, barMax);
+            if (col.Lots >= 0.5f)
+                for (int row = Math.Max(top, midRow - h); row < midRow; row++)
+                    buffer[row * width + x] = longArgb;
+            else
+                for (int row = midRow + 1; row <= midRow + h; row++)
+                    buffer[row * width + x] = shortArgb;
+            if (float.IsNaN(col.Positions)) continue;
+            int dy = (int)Math.Round((col.Positions - 0.5) * 2 * barMax);
+            int posRow = Math.Clamp(midRow - dy, top, bottomRow);
+            buffer[posRow * width + x] = SentimentPositionsArgb;
+        }
+    }
+
+    public const int BigPlayersClosePercentWhite = 55;
+
+    public static int MixWithWhite(int argb, int percent)
+    {
+        int r = (argb >> 16) & 0xFF;
+        int g = (argb >> 8) & 0xFF;
+        int b = argb & 0xFF;
+        r += (255 - r) * percent / 100;
+        g += (255 - g) * percent / 100;
+        b += (255 - b) * percent / 100;
+        return unchecked((int)0xFF000000) | (r << 16) | (g << 8) | b;
+    }
+
+    public static double DrawBigPlayersPanel(int[] buffer, int width, int height, BigPlayersColumn[] columns,
+        int bottomRow, int panelHeightPx, int buyArgb, int sellArgb, double unit)
+    {
+        int barMax = SentimentBarMaxPx(panelHeightPx);
+        int top = bottomRow - SentimentPanelHeightPx(panelHeightPx) + 1;
+        if (bottomRow >= height) return 0;
+        if (top < 0) top = 0;
+        int midRow = bottomRow - barMax;
+        if (midRow < 0) return 0;
+        for (int x = 0; x < width; x++) buffer[midRow * width + x] = SentimentMidLineArgb;
+        if (!(unit > 0))
+        {
+            for (int x = 0; x < width && x < columns.Length; x++)
+            {
+                if (columns[x].Buy > unit) unit = columns[x].Buy;
+                if (columns[x].Sell > unit) unit = columns[x].Sell;
+            }
+            if (!(unit > 0)) return 0;
+        }
+        double pxPerLot = barMax / unit;
+        int buyCloseArgb = MixWithWhite(buyArgb, BigPlayersClosePercentWhite);
+        int sellCloseArgb = MixWithWhite(sellArgb, BigPlayersClosePercentWhite);
+        for (int x = 0; x < width && x < columns.Length; x++)
+        {
+            var col = columns[x];
+            if (col.Buy > 0)
+            {
+                int total = Math.Max(1, (int)Math.Round(col.Buy * pxPerLot));
+                int open = Math.Min(total, (int)Math.Round(col.BuyOpen * pxPerLot));
+                int stop = Math.Max(top, midRow - total);
+                for (int row = midRow - 1; row >= stop; row--)
+                    buffer[row * width + x] = row >= midRow - open ? buyArgb : buyCloseArgb;
+            }
+            if (col.Sell > 0)
+            {
+                int total = Math.Max(1, (int)Math.Round(col.Sell * pxPerLot));
+                int open = Math.Min(total, (int)Math.Round(col.SellOpen * pxPerLot));
+                int stop = Math.Min(bottomRow, midRow + total);
+                for (int row = midRow + 1; row <= stop; row++)
+                    buffer[row * width + x] = row <= midRow + open ? sellArgb : sellCloseArgb;
+            }
+        }
+        return unit;
+    }
+
     public const int VolumeBarMaxPx = 40;
     public const int VolumePanelHeightPx = VolumeBarMaxPx;
 

@@ -9,10 +9,12 @@ internal enum PointKind { High, Low, Close, Edge }
 
 internal sealed record WeekPoint(long Unix, double Value, PointKind Kind);
 
+internal sealed record WeekDay(DateTime Date, double X0, double X1);
+
 internal sealed record CardShape(
     DateTime Monday, double Width, double Height, double LeftTick, double RightTick, double PrevClose, WeekCandle Candle,
     IReadOnlyList<IReadOnlyList<Point>> Lines, double[] BarTop, double[] BarBottom, double WeekLine,
-    IReadOnlyList<double> DayLines, IReadOnlyList<double> GridLines)
+    IReadOnlyList<double> DayLines, IReadOnlyList<double> GridLines, IReadOnlyList<WeekDay> Days)
 {
     public double Close => Candle.Close;
 }
@@ -86,7 +88,7 @@ internal static class WeekCards
             {
                 ZigZagLine(all, zigzag, kinds, monday, prevClose, weekEnd).Select(p => ((double)comp.ToVirtual(p.Unix), p.Value)).ToList(),
             }
-            : ClipLines(drawing, comp, vFrom, vTo);
+            : ClipLines(drawing, unix => comp.ToVirtual(unix), vFrom, vTo);
 
         double weekHigh = double.MinValue, weekLow = double.MaxValue;
         for (int i = ws; i < we; i++)
@@ -143,11 +145,15 @@ internal static class WeekCards
         for (long g = (long)Math.Ceiling(bottomPrice / step) * step; g <= topPrice; g += step)
             gridLines.Add(Math.Round(Y(g)) + 0.5);
         var candle = new WeekCandle(all[ws].Avg, weekHigh, weekLow, closes[^1].Value);
+        var days = Enumerable.Range(0, 5)
+            .Select(d => monday.AddDays(d))
+            .Select(day => new WeekDay(day, Math.Clamp(X(DayEnd(day.AddDays(-1))), left, right), Math.Clamp(X(DayEnd(day)), left, right)))
+            .ToList();
         return new CardShape(monday, Width, height, Y(prevClose.Value), Y(candle.Close), prevClose.Value, candle,
-            shapes, barTop, barBottom, weekLine, dayLines, gridLines);
+            shapes, barTop, barBottom, weekLine, dayLines, gridLines, days);
     }
 
-    private static List<List<(double V, double Value)>> ClipLines(PivotPoint[][] drawing, WeekendCompressor comp,
+    public static List<List<(double V, double Value)>> ClipLines(PivotPoint[][] drawing, Func<long, double> axis,
         double vFrom, double vTo)
     {
         var result = new List<List<(double V, double Value)>>();
@@ -161,8 +167,8 @@ internal static class WeekCards
             }
             for (int i = 1; i < line.Length; i++)
             {
-                double va = comp.ToVirtual(line[i - 1].UnixSeconds);
-                double vb = comp.ToVirtual(line[i].UnixSeconds);
+                double va = axis(line[i - 1].UnixSeconds);
+                double vb = axis(line[i].UnixSeconds);
                 double ya = line[i - 1].Value;
                 double yb = line[i].Value;
                 double t0 = 0, t1 = 1;

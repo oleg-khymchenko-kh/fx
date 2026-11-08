@@ -38,7 +38,10 @@ public sealed class SymbolBarView : FrameworkElement
     private readonly HashSet<string> _indicatorSymbols = new();
     private readonly HashSet<string> _drawingSymbols = new();
     private readonly HashSet<string> _shiftSymbols = new();
+    private readonly Dictionary<string, string> _labelNotes = new();
     private readonly HashSet<string> _spreadSymbols = new();
+    private readonly Dictionary<string, (double Lots, double Positions)> _sentimentLast = new();
+    private readonly HashSet<string> _bigPlayersSymbols = new();
     private readonly Dictionary<string, (int GroupMinutes, bool Locked)> _volumeGroups = new();
     private readonly HashSet<string> _densitySymbols = new();
     private readonly Dictionary<string, int> _averageWindows = new();
@@ -57,6 +60,7 @@ public sealed class SymbolBarView : FrameworkElement
 
     public event Action<string, int>? PriceOffsetWheel;
     public event Action<string, int, bool>? TimeShiftWheel;
+    public event Action<string, int>? ShiftZoomWheel;
     public event Action<string, int>? VolumeScaleWheel;
     public event Action<string, int>? VolumeGroupWheel;
     public event Action<string, int>? DensityScaleWheel;
@@ -78,6 +82,7 @@ public sealed class SymbolBarView : FrameworkElement
     public event Action<string>? ShowResultsRequested;
     public event Action<string>? PresetsRequested;
     public event Action? UnflattenClick;
+    public event Action<string>? FlattenAverageRequested;
     public event Action<bool, int>? TiltedGridSelected;
     public event Action? TiltedGridSettingsRequested;
     public event Action? TiltedGridResetRequested;
@@ -87,6 +92,7 @@ public sealed class SymbolBarView : FrameworkElement
     public Func<string, bool>? CanRefresh { get; set; }
     public Func<string, bool>? CanRebuild { get; set; }
     public Func<string, bool>? IsAlignedToSource { get; set; }
+    public Func<string, bool>? IsFlattenAverage { get; set; }
 
     public SymbolBarView()
     {
@@ -95,6 +101,13 @@ public sealed class SymbolBarView : FrameworkElement
             var symbol = SymbolLabelAt(e.GetPosition(this));
             if (symbol == null) return;
             e.Handled = true;
+            if ((Keyboard.Modifiers & ModifierKeys.Alt) != 0
+                && (Keyboard.Modifiers & ModifierKeys.Shift) != 0
+                && _shiftSymbols.Contains(symbol))
+            {
+                ShiftZoomWheel?.Invoke(symbol, e.Delta);
+                return;
+            }
             if ((Keyboard.Modifiers & ModifierKeys.Alt) != 0 && _shiftSymbols.Contains(symbol))
             {
                 TimeShiftWheel?.Invoke(
@@ -221,6 +234,17 @@ public sealed class SymbolBarView : FrameworkElement
                     alignAll.Click += (_, _) => AlignIndicatorsToSource?.Invoke(targets);
                     menu.Items.Add(alignAll);
                 }
+            }
+            else
+            {
+                bool flat = IsFlattenAverage?.Invoke(symbol) == true;
+                var flatten = new MenuItem { Header = flat ? UnflattenLabel : "Flatten by avg" };
+                flatten.Click += (_, _) =>
+                {
+                    if (flat) UnflattenClick?.Invoke();
+                    else FlattenAverageRequested?.Invoke(symbol);
+                };
+                menu.Items.Add(flatten);
             }
             if (menu.Items.Count > 0) menu.Items.Add(new Separator());
             bool isIndicator = _indicatorSymbols.Contains(symbol);
@@ -506,6 +530,30 @@ public sealed class SymbolBarView : FrameworkElement
         InvalidateVisual();
     }
 
+    public void SetSentimentSymbols(IEnumerable<(string Symbol, double Lots, double Positions)> symbols)
+    {
+        _sentimentLast.Clear();
+        foreach (var (symbol, lots, positions) in symbols) _sentimentLast[symbol] = (lots, positions);
+        InvalidateMeasure();
+        InvalidateVisual();
+    }
+
+    public void SetBigPlayersSymbols(IEnumerable<string> symbols)
+    {
+        _bigPlayersSymbols.Clear();
+        foreach (var s in symbols) _bigPlayersSymbols.Add(s);
+        InvalidateMeasure();
+        InvalidateVisual();
+    }
+
+    public void SetSentimentLast(string symbol, double lots, double positions)
+    {
+        if (!_sentimentLast.ContainsKey(symbol)) return;
+        _sentimentLast[symbol] = (lots, positions);
+        if (_cursorPrices != null) return;
+        InvalidateVisual();
+    }
+
     public void SetDensitySymbols(IEnumerable<string> symbols)
     {
         _densitySymbols.Clear();
@@ -603,6 +651,8 @@ public sealed class SymbolBarView : FrameworkElement
         : minutes + "m";
 
     private const string SpreadWidest = "00.0";
+    private const string SentimentWidest = "100% / 100%";
+    private const string BigPlayersWidest = "+0,000 / -0,000";
     private const string VolumeWidest = "0,000,000  +0,000,000";
 
     private static string PriceWidest(string format) => new('0', format.Length + 3);
@@ -622,8 +672,31 @@ public sealed class SymbolBarView : FrameworkElement
                 string spreadText = double.IsNaN(pips)
                     ? "-"
                     : pips.ToString("0.0", CultureInfo.InvariantCulture);
-                yield return (prefix + e.Symbol + ": " + spreadText,
-                    prefix + e.Symbol + ": " + SpreadWidest, brush,
+                yield return (prefix + LabelOf(e.Symbol) + ": " + spreadText,
+                    prefix + LabelOf(e.Symbol) + ": " + SpreadWidest, brush,
+                    _groupSymbols.Contains(e.Symbol), _collapsedSources.Contains(e.Symbol));
+                continue;
+            }
+            if (_bigPlayersSymbols.Contains(e.Symbol))
+            {
+                double buy = _cursorPrices != null && i < _cursorPrices.Length ? _cursorPrices[i] : double.NaN;
+                double sell = _cursorDeltas != null && i < _cursorDeltas.Length ? _cursorDeltas[i] : double.NaN;
+                yield return (prefix + LabelOf(e.Symbol) + ": " + FormatBigPlayers(buy, sell),
+                    prefix + LabelOf(e.Symbol) + ": " + BigPlayersWidest, brush,
+                    _groupSymbols.Contains(e.Symbol), _collapsedSources.Contains(e.Symbol));
+                continue;
+            }
+            if (_sentimentLast.TryGetValue(e.Symbol, out var sentimentLast))
+            {
+                bool hovering = _cursorPrices != null;
+                double lots = hovering
+                    ? i < _cursorPrices!.Length ? _cursorPrices[i] : double.NaN
+                    : sentimentLast.Lots;
+                double positions = hovering
+                    ? _cursorDeltas != null && i < _cursorDeltas.Length ? _cursorDeltas[i] : double.NaN
+                    : sentimentLast.Positions;
+                yield return (prefix + LabelOf(e.Symbol) + ": " + FormatSentiment(lots, positions),
+                    prefix + LabelOf(e.Symbol) + ": " + SentimentWidest, brush,
                     _groupSymbols.Contains(e.Symbol), _collapsedSources.Contains(e.Symbol));
                 continue;
             }
@@ -646,8 +719,8 @@ public sealed class SymbolBarView : FrameworkElement
                 }
                 string groupText = FormatVolumeGroup(volumeGroup.GroupMinutes)
                     + (volumeGroup.Locked ? "*" : "");
-                yield return (prefix + e.Symbol + " " + groupText + ": " + volumeText,
-                    prefix + e.Symbol + " " + groupText + ": " + VolumeWidest, brush,
+                yield return (prefix + LabelOf(e.Symbol) + " " + groupText + ": " + volumeText,
+                    prefix + LabelOf(e.Symbol) + " " + groupText + ": " + VolumeWidest, brush,
                     _groupSymbols.Contains(e.Symbol), _collapsedSources.Contains(e.Symbol));
                 continue;
             }
@@ -657,15 +730,44 @@ public sealed class SymbolBarView : FrameworkElement
             if (_averageWindows.TryGetValue(e.Symbol, out var window))
             {
                 string windowText = FormatAverageWindow(window);
-                yield return (prefix + e.Symbol + " " + windowText + ": " + Price(points, e.Format, e.PriceMul),
-                    prefix + e.Symbol + " " + windowText + ": " + PriceWidest(e.Format), brush,
+                yield return (prefix + LabelOf(e.Symbol) + " " + windowText + ": " + Price(points, e.Format, e.PriceMul),
+                    prefix + LabelOf(e.Symbol) + " " + windowText + ": " + PriceWidest(e.Format), brush,
                     _groupSymbols.Contains(e.Symbol), _collapsedSources.Contains(e.Symbol));
                 continue;
             }
-            yield return (prefix + e.Symbol + ": " + Price(points, e.Format, e.PriceMul),
-                prefix + e.Symbol + ": " + PriceWidest(e.Format), brush,
+            yield return (prefix + LabelOf(e.Symbol) + ": " + Price(points, e.Format, e.PriceMul),
+                prefix + LabelOf(e.Symbol) + ": " + PriceWidest(e.Format), brush,
                 _groupSymbols.Contains(e.Symbol), _collapsedSources.Contains(e.Symbol));
         }
+    }
+
+    private static string FormatBigPlayers(double buy, double sell)
+    {
+        if (double.IsNaN(buy)) return "-";
+        return "+" + Math.Round(buy).ToString("N0", CultureInfo.InvariantCulture)
+            + " / -" + Math.Round(double.IsNaN(sell) ? 0 : sell).ToString("N0", CultureInfo.InvariantCulture);
+    }
+
+    private static string FormatSentiment(double lots, double positions)
+    {
+        if (double.IsNaN(lots)) return "-";
+        string text = Math.Round(lots).ToString("0", CultureInfo.InvariantCulture) + "%";
+        if (!double.IsNaN(positions))
+            text += " / " + Math.Round(positions).ToString("0", CultureInfo.InvariantCulture) + "%";
+        return text;
+    }
+
+    private string LabelOf(string symbol) =>
+        _labelNotes.TryGetValue(symbol, out var note) ? symbol + " (" + note + ")" : symbol;
+
+    public void SetLabelNote(string symbol, string? note)
+    {
+        _labelNotes.TryGetValue(symbol, out var current);
+        if (current == note) return;
+        if (note == null) _labelNotes.Remove(symbol);
+        else _labelNotes[symbol] = note;
+        InvalidateMeasure();
+        InvalidateVisual();
     }
 
     private static string FormatAverageWindow(int minutes)

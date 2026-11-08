@@ -8,7 +8,8 @@ namespace FXViewer;
 
 public partial class ShiftPresetsWindow : Window
 {
-    public sealed record Row(int Index, string Name, string Target, string SourceTime, string ChartTime, string Flip);
+    public sealed record Row(int Index, string Name, string Target, string SourceTime, string ChartTime, string Flip,
+        string Reverse, string Zoom);
 
     private readonly string _indicatorName;
     private readonly List<ShiftPreset> _presets;
@@ -79,7 +80,8 @@ public partial class ShiftPresetsWindow : Window
 
     private static Row ToRow(int index, ShiftPreset preset) => new(
         index, preset.Name, preset.Target(),
-        TimeText(preset.SourceTimeUnix), TimeText(preset.ChartTimeUnix), preset.Flip ? "M" : "");
+        TimeText(preset.SourceTimeUnix), TimeText(preset.ChartTimeUnix), preset.Flip ? "M" : "",
+        preset.ReverseTime ? "R" : "", preset.ZoomPercent.ToString("0.##", CultureInfo.InvariantCulture) + "%");
 
     private static string TimeText(long unix) => unix <= 0
         ? ""

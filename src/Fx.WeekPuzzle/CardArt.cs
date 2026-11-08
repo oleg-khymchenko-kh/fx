@@ -20,13 +20,17 @@ internal static class CardArt
     private static readonly Brush HintFill = Hex("#40F09300");
     public static readonly Brush Good = Hex("#A02E7D32");
     public static readonly Brush Bad = Hex("#B0D32F2F");
+    private static readonly Brush DayFill = Hex("#D9F2D9");
+    private static readonly Brush Dot = Hex("#E00000");
+    private const double DotRadius = 5;
+    private const double DotScreenRadius = 2;
 
-    public static StreamGeometry BarGeometry(CardShape shape)
+    public static StreamGeometry BarGeometry(CardShape shape) =>
+        BarGeometry(shape.BarTop, shape.BarBottom, WeekCards.Margin, 1);
+
+    public static StreamGeometry BarGeometry(double[] top, double[] bottom, double left, double column)
     {
         var geometry = new StreamGeometry { FillRule = FillRule.Nonzero };
-        double left = WeekCards.Margin;
-        var top = shape.BarTop;
-        var bottom = shape.BarBottom;
         using (var ctx = geometry.Open())
         {
             int c = 0;
@@ -40,16 +44,16 @@ internal static class CardArt
                 int start = c;
                 c++;
                 while (c < top.Length && !double.IsNaN(top[c]) && top[c] < bottom[c - 1] && bottom[c] > top[c - 1]) c++;
-                ctx.BeginFigure(new Point(left + start, top[start]), true, true);
+                ctx.BeginFigure(new Point(left + start * column, top[start]), true, true);
                 for (int k = start; k < c; k++)
                 {
-                    ctx.LineTo(new Point(left + k, top[k]), false, false);
-                    ctx.LineTo(new Point(left + k + 1, top[k]), false, false);
+                    ctx.LineTo(new Point(left + k * column, top[k]), false, false);
+                    ctx.LineTo(new Point(left + (k + 1) * column, top[k]), false, false);
                 }
                 for (int k = c - 1; k >= start; k--)
                 {
-                    ctx.LineTo(new Point(left + k + 1, bottom[k]), false, false);
-                    ctx.LineTo(new Point(left + k, bottom[k]), false, false);
+                    ctx.LineTo(new Point(left + (k + 1) * column, bottom[k]), false, false);
+                    ctx.LineTo(new Point(left + k * column, bottom[k]), false, false);
                 }
             }
         }
@@ -57,11 +61,13 @@ internal static class CardArt
         return geometry;
     }
 
-    public static StreamGeometry LineGeometry(CardShape shape)
+    public static StreamGeometry LineGeometry(CardShape shape) => LineGeometry(shape.Lines);
+
+    public static StreamGeometry LineGeometry(IReadOnlyList<IReadOnlyList<Point>> lines)
     {
         var geometry = new StreamGeometry();
         using (var ctx = geometry.Open())
-            foreach (var line in shape.Lines)
+            foreach (var line in lines)
             {
                 ctx.BeginFigure(line[0], false, false);
                 for (int i = 1; i < line.Count; i++) ctx.LineTo(line[i], true, true);
@@ -70,11 +76,15 @@ internal static class CardArt
         return geometry;
     }
 
-    public static void Draw(DrawingContext dc, CardShape shape, StreamGeometry bars, StreamGeometry line, double zoom, CardState state)
+    public static void Draw(DrawingContext dc, CardShape shape, StreamGeometry bars, StreamGeometry line, double zoom, CardState state,
+        IReadOnlySet<DateTime> filledDays)
     {
         double px = 1 / zoom;
         double margin = WeekCards.Margin;
         dc.DrawRectangle(Paper, null, new Rect(0, 0, shape.Width, shape.Height));
+        foreach (var day in shape.Days)
+            if (filledDays.Contains(day.Date))
+                dc.DrawRectangle(DayFill, null, new Rect(day.X0, 0, day.X1 - day.X0, shape.Height));
         var grid = Frozen(Pen(Grid, Math.Max(1, px)));
         foreach (double y in shape.GridLines)
             dc.DrawLine(grid, new Point(0, y), new Point(shape.Width, y));
@@ -89,13 +99,20 @@ internal static class CardArt
         var tick = Frozen(Pen(Edge, Math.Max(3, 2.5 * px)));
         dc.DrawLine(tick, new Point(0, shape.LeftTick), new Point(margin - 4, shape.LeftTick));
         dc.DrawLine(tick, new Point(shape.Width - margin + 4, shape.RightTick), new Point(shape.Width, shape.RightTick));
-        var zig = Pen(Zig, Math.Max(1.3, px));
-        zig.LineJoin = PenLineJoin.Round;
-        zig.StartLineCap = PenLineCap.Round;
-        zig.EndLineCap = PenLineCap.Round;
-        zig.Freeze();
-        dc.DrawGeometry(null, zig, line);
-        if (state == CardState.Hint) dc.DrawRectangle(HintFill, null, new Rect(0, 0, shape.Width, shape.Height));
+        dc.DrawGeometry(null, LinePen(Math.Max(1.3, px)), line);
+        DrawState(dc, shape.Width, shape.Height, zoom, state);
+        if (filledDays.Count == 0) return;
+        double radius = Math.Max(DotRadius, DotScreenRadius * px);
+        double dotY = Math.Max(margin / 2, radius);
+        foreach (var day in shape.Days)
+            if (filledDays.Contains(day.Date))
+                dc.DrawEllipse(Dot, null, new Point((day.X0 + day.X1) / 2, dotY), radius, radius);
+    }
+
+    public static void DrawState(DrawingContext dc, double width, double height, double zoom, CardState state)
+    {
+        double px = 1 / zoom;
+        if (state == CardState.Hint) dc.DrawRectangle(HintFill, null, new Rect(0, 0, width, height));
         double frame = state switch
         {
             CardState.Dragging => Math.Max(3, 3 * px),
@@ -109,10 +126,22 @@ internal static class CardArt
             _ => Frame,
         };
         dc.DrawRectangle(null, Frozen(Pen(frameBrush, frame)),
-            new Rect(frame / 2, frame / 2, shape.Width - frame, shape.Height - frame));
+            new Rect(frame / 2, frame / 2, width - frame, height - frame));
     }
 
-    private static Brush BarBrush(double zoom)
+    public static Pen LinePen(double thickness) => LinePen(thickness, Zig);
+
+    public static Pen LinePen(double thickness, Brush brush)
+    {
+        var zig = Pen(brush, thickness);
+        zig.LineJoin = PenLineJoin.Round;
+        zig.StartLineCap = PenLineCap.Round;
+        zig.EndLineCap = PenLineCap.Round;
+        zig.Freeze();
+        return zig;
+    }
+
+    public static Brush BarBrush(double zoom)
     {
         double alpha = Math.Clamp(BarAlpha * Math.Sqrt(0.5 / zoom), BarAlpha, BarAlphaZoomedOut);
         var brush = new SolidColorBrush(Color.FromArgb((byte)Math.Round(alpha * 255), BarColor.R, BarColor.G, BarColor.B));

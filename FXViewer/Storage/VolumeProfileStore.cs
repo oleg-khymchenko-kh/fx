@@ -48,53 +48,88 @@ public sealed class TickMinute
 
 public sealed class ProfileSet
 {
+    private sealed class Tail
+    {
+        public int Records;
+        public int Cells;
+    }
+
+    private const int SpareRecords = 4096;
+    private const int SpareCells = 32768;
+
     public readonly long[] MinuteUnix;
     public readonly int[] BasePip;
     public readonly int[] Start;
     public readonly int[] Bid;
     public readonly int[] Ask;
 
-    private ProfileSet(long[] minuteUnix, int[] basePip, int[] start, int[] bid, int[] ask)
+    private readonly Tail _tail;
+
+    private ProfileSet(long[] minuteUnix, int[] basePip, int[] start, int[] bid, int[] ask, int count, Tail tail)
     {
         MinuteUnix = minuteUnix;
         BasePip = basePip;
         Start = start;
         Bid = bid;
         Ask = ask;
+        Count = count;
+        _tail = tail;
     }
 
-    public int Count => MinuteUnix.Length;
+    public int Count { get; }
 
     public static readonly ProfileSet Empty = new(
-        Array.Empty<long>(), Array.Empty<int>(), new int[1], Array.Empty<int>(), Array.Empty<int>());
+        Array.Empty<long>(), Array.Empty<int>(), new int[1], Array.Empty<int>(), Array.Empty<int>(), 0,
+        new Tail());
+
+    private static ProfileSet Allocate(int records, int cells, int spareRecords, int spareCells) =>
+        new(new long[records + spareRecords], new int[records + spareRecords], new int[records + spareRecords + 1],
+            new int[cells + spareCells], new int[cells + spareCells], records,
+            new Tail { Records = records, Cells = cells });
 
     public static ProfileSet FromRecords(IReadOnlyList<ProfileRecord> records)
     {
-        int n = records.Count;
-        var minute = new long[n];
-        var basePip = new int[n];
-        var start = new int[n + 1];
         int cells = 0;
-        for (int i = 0; i < n; i++) cells += records[i].Span;
-        var bid = new int[cells];
-        var ask = new int[cells];
+        for (int i = 0; i < records.Count; i++) cells += records[i].Span;
+        var set = Allocate(records.Count, cells, 0, 0);
         int offset = 0;
-        for (int i = 0; i < n; i++)
-        {
-            var r = records[i];
-            minute[i] = r.MinuteUnix;
-            basePip[i] = r.BasePip;
-            start[i] = offset;
-            for (int j = 0; j < r.Span; j++)
-            {
-                bid[offset + j] = r.Bid[j];
-                ask[offset + j] = r.Ask[j];
-            }
-            offset += r.Span;
-        }
-        start[n] = offset;
-        return new ProfileSet(minute, basePip, start, bid, ask);
+        for (int i = 0; i < records.Count; i++)
+            offset = set.Put(i, offset, records[i]);
+        return set;
     }
+
+    public static ProfileSet Build(ProfileSet head, IReadOnlyList<ProfileYear> years)
+    {
+        int records = head.Count;
+        int cells = head.Start[head.Count];
+        foreach (var year in years)
+        {
+            records += year.Records;
+            cells += year.Cells;
+        }
+        var set = Allocate(records, cells, SpareRecords, SpareCells);
+        int outRecord = 0;
+        int outCell = 0;
+        set.CopyFrom(head, 0, head.Count, ref outRecord, ref outCell);
+        foreach (var year in years)
+        {
+            if (year.Sorted != null)
+            {
+                foreach (var r in year.Sorted)
+                    outCell = set.Put(outRecord++, outCell, r);
+            }
+            else if (year.Bytes != null)
+            {
+                int offset = VolumeProfileStore.HeaderSize;
+                for (int k = 0; k < year.Records; k++)
+                    outCell = set.PutEncoded(outRecord++, outCell, year.Bytes, ref offset);
+            }
+        }
+        return set;
+    }
+
+    public ProfileSet Before(long minuteUnix) =>
+        new(MinuteUnix, BasePip, Start, Bid, Ask, LowerBound(minuteUnix), new Tail { Records = -1 });
 
     public ProfileSet Merge(IReadOnlyList<ProfileRecord> fresh)
     {
@@ -106,58 +141,125 @@ public sealed class ProfileSet
             if (deduped.Count > 0 && deduped[^1].MinuteUnix == r.MinuteUnix) deduped[^1] = r;
             else deduped.Add(r);
         }
-        int n = Count;
-        int m = deduped.Count;
-        var minute = new List<long>(n + m);
-        var basePip = new List<int>(n + m);
-        var start = new List<int>(n + m + 1);
-        var bid = new List<int>(Bid.Length + m * 4);
-        var ask = new List<int>(Ask.Length + m * 4);
-        int i2 = 0;
-        int j2 = 0;
-        void TakeOld(int idx)
+        return Count == 0 || deduped[0].MinuteUnix > MinuteUnix[Count - 1]
+            ? Append(deduped)
+            : Rebuild(deduped);
+    }
+
+    private ProfileSet Append(List<ProfileRecord> fresh)
+    {
+        int records = Count + fresh.Count;
+        int cells = Start[Count];
+        foreach (var r in fresh) cells += r.Span;
+        bool inPlace;
+        lock (_tail)
         {
-            minute.Add(MinuteUnix[idx]);
-            basePip.Add(BasePip[idx]);
-            start.Add(bid.Count);
-            for (int c = Start[idx]; c < Start[idx + 1]; c++)
+            inPlace = _tail.Records == Count && _tail.Cells == Start[Count]
+                && MinuteUnix.Length >= records && Bid.Length >= cells;
+            if (inPlace)
             {
-                bid.Add(Bid[c]);
-                ask.Add(Ask[c]);
+                _tail.Records = records;
+                _tail.Cells = cells;
             }
         }
-        void TakeFresh(ProfileRecord r)
+        var set = inPlace
+            ? new ProfileSet(MinuteUnix, BasePip, Start, Bid, Ask, records, _tail)
+            : Allocate(records, cells, records / 8 + SpareRecords, cells / 8 + SpareCells);
+        int outRecord = 0;
+        int outCell = 0;
+        if (inPlace)
         {
-            minute.Add(r.MinuteUnix);
-            basePip.Add(r.BasePip);
-            start.Add(bid.Count);
-            for (int c = 0; c < r.Span; c++)
-            {
-                bid.Add(r.Bid[c]);
-                ask.Add(r.Ask[c]);
-            }
+            outRecord = Count;
+            outCell = Start[Count];
         }
-        while (i2 < n || j2 < m)
+        else
         {
-            if (j2 >= m) TakeOld(i2++);
-            else if (i2 >= n) TakeFresh(deduped[j2++]);
-            else if (MinuteUnix[i2] < deduped[j2].MinuteUnix) TakeOld(i2++);
-            else if (MinuteUnix[i2] > deduped[j2].MinuteUnix) TakeFresh(deduped[j2++]);
-            else
-            {
-                TakeFresh(deduped[j2++]);
-                i2++;
-            }
+            set.CopyFrom(this, 0, Count, ref outRecord, ref outCell);
         }
-        start.Add(bid.Count);
-        return new ProfileSet(minute.ToArray(), basePip.ToArray(), start.ToArray(),
-            bid.ToArray(), ask.ToArray());
+        foreach (var r in fresh)
+            outCell = set.Put(outRecord++, outCell, r);
+        return set;
+    }
+
+    private ProfileSet Rebuild(List<ProfileRecord> fresh)
+    {
+        var at = new int[fresh.Count];
+        var replaces = new bool[fresh.Count];
+        int records = Count;
+        int cells = Start[Count];
+        for (int k = 0; k < fresh.Count; k++)
+        {
+            int i = LowerBound(fresh[k].MinuteUnix);
+            at[k] = i;
+            replaces[k] = i < Count && MinuteUnix[i] == fresh[k].MinuteUnix;
+            cells += fresh[k].Span;
+            if (replaces[k]) cells -= Start[i + 1] - Start[i];
+            else records++;
+        }
+        var set = Allocate(records, cells, records / 8 + SpareRecords, cells / 8 + SpareCells);
+        int outRecord = 0;
+        int outCell = 0;
+        int old = 0;
+        for (int k = 0; k < fresh.Count; k++)
+        {
+            set.CopyFrom(this, old, at[k], ref outRecord, ref outCell);
+            outCell = set.Put(outRecord++, outCell, fresh[k]);
+            old = replaces[k] ? at[k] + 1 : at[k];
+        }
+        set.CopyFrom(this, old, Count, ref outRecord, ref outCell);
+        return set;
+    }
+
+    private int Put(int index, int cell, in ProfileRecord r)
+    {
+        MinuteUnix[index] = r.MinuteUnix;
+        BasePip[index] = r.BasePip;
+        Start[index] = cell;
+        for (int j = 0; j < r.Span; j++)
+        {
+            Bid[cell + j] = r.Bid[j];
+            Ask[cell + j] = r.Ask[j];
+        }
+        Start[index + 1] = cell + r.Span;
+        return cell + r.Span;
+    }
+
+    private int PutEncoded(int index, int cell, byte[] bytes, ref int offset)
+    {
+        var record = bytes.AsSpan(offset);
+        MinuteUnix[index] = BinaryPrimitives.ReadInt64LittleEndian(record);
+        BasePip[index] = BinaryPrimitives.ReadInt32LittleEndian(record.Slice(8));
+        int span = BinaryPrimitives.ReadUInt16LittleEndian(record.Slice(14));
+        Start[index] = cell;
+        for (int j = 0; j < span; j++)
+        {
+            Bid[cell + j] = BinaryPrimitives.ReadUInt16LittleEndian(record.Slice(16 + j * 4));
+            Ask[cell + j] = BinaryPrimitives.ReadUInt16LittleEndian(record.Slice(18 + j * 4));
+        }
+        Start[index + 1] = cell + span;
+        offset += VolumeProfileStore.FixedRecordBytes + span * 4 + 4;
+        return cell + span;
+    }
+
+    private void CopyFrom(ProfileSet source, int from, int to, ref int outRecord, ref int outCell)
+    {
+        if (to <= from) return;
+        int records = to - from;
+        Array.Copy(source.MinuteUnix, from, MinuteUnix, outRecord, records);
+        Array.Copy(source.BasePip, from, BasePip, outRecord, records);
+        int shift = outCell - source.Start[from];
+        for (int i = 0; i <= records; i++) Start[outRecord + i] = source.Start[from + i] + shift;
+        int cells = source.Start[to] - source.Start[from];
+        Array.Copy(source.Bid, source.Start[from], Bid, outCell, cells);
+        Array.Copy(source.Ask, source.Start[from], Ask, outCell, cells);
+        outRecord += records;
+        outCell += cells;
     }
 
     public int LowerBound(long minuteUnix)
     {
         int lo = 0;
-        int hi = MinuteUnix.Length;
+        int hi = Count;
         while (lo < hi)
         {
             int mid = (lo + hi) >> 1;
@@ -194,6 +296,8 @@ internal static class Crc32
     }
 }
 
+public readonly record struct ProfileScale(int PipPoints, int PriceScale);
+
 public static class VolumeProfileStore
 {
     public const uint Magic = 0x41565846;
@@ -202,8 +306,17 @@ public static class VolumeProfileStore
     public const int FixedRecordBytes = 16;
     public const int MaxSpan = 1024;
 
-    public static readonly HashSet<string> SupportedPairs =
-        new(StringComparer.OrdinalIgnoreCase) { "EURUSD", "GBPUSD", "USDCHF" };
+    public static readonly Dictionary<string, ProfileScale> SupportedPairs =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["EURUSD"] = new(10, 100000),
+            ["GBPUSD"] = new(10, 100000),
+            ["USDCHF"] = new(10, 100000),
+            ["GER40"] = new(100, 100),
+        };
+
+    public static ProfileScale? ScaleOf(string? pair) =>
+        pair != null && SupportedPairs.TryGetValue(pair, out var scale) ? scale : null;
 
     public static readonly HashSet<string> ReciprocalPairs =
         new(StringComparer.OrdinalIgnoreCase) { "USDCHF", "USDJPY", "USDCAD" };
@@ -343,54 +456,184 @@ public static class VolumeProfileStore
             bidCells, askCells);
     }
 
-    public static List<ProfileRecord> ReadAll(string symbolDirectory, string symbol, int pipPoints,
-        int priceScale, out int duplicates, Action<string>? log = null)
+    public static List<int> Years(string symbolDirectory)
     {
-        duplicates = 0;
-        var byMinute = new Dictionary<long, ProfileRecord>();
-        var dir = Directory(symbolDirectory);
-        if (!System.IO.Directory.Exists(dir)) return new List<ProfileRecord>();
         var years = new List<int>();
+        var dir = Directory(symbolDirectory);
+        if (!System.IO.Directory.Exists(dir)) return years;
         foreach (var path in System.IO.Directory.GetFiles(dir, "*.vap"))
             if (int.TryParse(Path.GetFileNameWithoutExtension(path), NumberStyles.Integer,
                     CultureInfo.InvariantCulture, out var y))
                 years.Add(y);
         years.Sort();
-        foreach (var year in years)
+        return years;
+    }
+
+    public static List<ProfileRecord> ReadAll(string symbolDirectory, string symbol, int pipPoints,
+        int priceScale, out int duplicates, Action<string>? log = null)
+    {
+        duplicates = 0;
+        var result = new List<ProfileRecord>();
+        foreach (var year in Years(symbolDirectory))
         {
-            byte[] bytes;
-            try
-            {
-                using var fs = new FileStream(YearPath(symbolDirectory, year), FileMode.Open,
-                    FileAccess.Read, FileShare.ReadWrite);
-                bytes = new byte[fs.Length];
-                fs.ReadExactly(bytes);
-            }
-            catch (Exception ex)
-            {
-                log?.Invoke($"profile {symbol} {year}: read failed: {ex.Message}");
-                continue;
-            }
-            if (!ValidateHeader(bytes, symbol, year, pipPoints, priceScale, out var error))
-            {
-                log?.Invoke($"profile {symbol} {year}: {error}, skipped");
-                continue;
-            }
-            long yearStart = YearStartUnix(year);
-            long yearEnd = YearStartUnix(year + 1);
-            int offset = HeaderSize;
-            while (ValidateRecord(bytes, offset, bytes.Length, yearStart, yearEnd, out var minute, out var length))
-            {
-                if (byMinute.ContainsKey(minute)) duplicates++;
-                byMinute[minute] = Decode(bytes, offset);
-                offset += length;
-            }
-            if (offset < bytes.Length)
-                log?.Invoke($"profile {symbol} {year}: stopped at byte {offset} of {bytes.Length}");
+            result.AddRange(ReadYear(symbolDirectory, symbol, year, pipPoints, priceScale, out int dup, log));
+            duplicates += dup;
         }
-        var result = byMinute.Values.ToList();
-        result.Sort((a, b) => a.MinuteUnix.CompareTo(b.MinuteUnix));
         return result;
+    }
+
+    public static List<ProfileRecord> ReadYear(string symbolDirectory, string symbol, int year, int pipPoints,
+        int priceScale, out int duplicates, Action<string>? log = null)
+    {
+        var scan = ScanYear(symbolDirectory, symbol, year, pipPoints, priceScale, log);
+        duplicates = scan.Duplicates;
+        if (scan.Sorted != null) return scan.Sorted;
+        var records = new List<ProfileRecord>(scan.Records);
+        int offset = HeaderSize;
+        for (int k = 0; k < scan.Records; k++)
+        {
+            var r = Decode(scan.Bytes!, offset);
+            records.Add(r);
+            offset += EncodedLength(r);
+        }
+        return records;
+    }
+
+    public static ProfileYear ScanYear(string symbolDirectory, string symbol, int year, int pipPoints,
+        int priceScale, Action<string>? log = null)
+    {
+        byte[] bytes;
+        try
+        {
+            using var fs = new FileStream(YearPath(symbolDirectory, year), FileMode.Open,
+                FileAccess.Read, FileShare.ReadWrite);
+            bytes = new byte[fs.Length];
+            fs.ReadExactly(bytes);
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke($"profile {symbol} {year}: read failed: {ex.Message}");
+            return default;
+        }
+        if (!ValidateHeader(bytes, symbol, year, pipPoints, priceScale, out var error))
+        {
+            log?.Invoke($"profile {symbol} {year}: {error}, skipped");
+            return default;
+        }
+        long yearStart = YearStartUnix(year);
+        long yearEnd = YearStartUnix(year + 1);
+        int records = 0;
+        int cells = 0;
+        bool ordered = true;
+        long previous = long.MinValue;
+        int offset = HeaderSize;
+        while (ValidateRecord(bytes, offset, bytes.Length, yearStart, yearEnd, out var minute, out var length))
+        {
+            if (minute <= previous) ordered = false;
+            previous = minute;
+            records++;
+            cells += (length - FixedRecordBytes - 4) / 4;
+            offset += length;
+        }
+        if (offset < bytes.Length)
+            log?.Invoke($"profile {symbol} {year}: stopped at byte {offset} of {bytes.Length}");
+        if (ordered) return new ProfileYear(bytes, records, cells, null, 0);
+        var byMinute = new Dictionary<long, ProfileRecord>(records);
+        int duplicates = 0;
+        offset = HeaderSize;
+        for (int k = 0; k < records; k++)
+        {
+            var r = Decode(bytes, offset);
+            if (byMinute.ContainsKey(r.MinuteUnix)) duplicates++;
+            byMinute[r.MinuteUnix] = r;
+            offset += EncodedLength(r);
+        }
+        var sorted = byMinute.Values.ToList();
+        sorted.Sort((a, b) => a.MinuteUnix.CompareTo(b.MinuteUnix));
+        return new ProfileYear(null, sorted.Count, sorted.Sum(r => r.Span), sorted, duplicates);
+    }
+}
+
+public readonly record struct ProfileYear(
+    byte[]? Bytes, int Records, int Cells, List<ProfileRecord>? Sorted, int Duplicates);
+
+public sealed class VolumeProfileCache
+{
+    private sealed class Entry
+    {
+        public Dictionary<int, string> Stamps = new();
+        public ProfileSet? Set;
+    }
+
+    public readonly record struct LoadResult(ProfileSet? Set, int YearsRead, int RecordsRead, int Duplicates);
+
+    private readonly Dictionary<string, Entry> _entries = new(StringComparer.OrdinalIgnoreCase);
+
+    public LoadResult Load(string symbolDirectory, string symbol, ProfileScale scale, Action<string>? log = null)
+    {
+        Entry entry;
+        lock (_entries)
+        {
+            var key = $"{symbolDirectory}|{symbol}|{scale.PipPoints}|{scale.PriceScale}";
+            if (!_entries.TryGetValue(key, out entry!))
+            {
+                entry = new Entry();
+                _entries[key] = entry;
+            }
+        }
+        lock (entry)
+        {
+            var stamps = new Dictionary<int, string>();
+            foreach (var year in VolumeProfileStore.Years(symbolDirectory))
+                stamps[year] = Stamp(VolumeProfileStore.YearPath(symbolDirectory, year));
+            if (stamps.Count == 0)
+            {
+                entry.Stamps = stamps;
+                entry.Set = null;
+                return new LoadResult(null, 0, 0, 0);
+            }
+            int firstChanged = int.MaxValue;
+            foreach (var (year, stamp) in stamps)
+                if (!entry.Stamps.TryGetValue(year, out var had) || had != stamp)
+                    firstChanged = Math.Min(firstChanged, year);
+            foreach (var year in entry.Stamps.Keys)
+                if (!stamps.ContainsKey(year)) firstChanged = Math.Min(firstChanged, year);
+            if (entry.Set == null) firstChanged = int.MinValue;
+            if (firstChanged == int.MaxValue) return new LoadResult(entry.Set, 0, 0, 0);
+
+            var head = entry.Set != null && firstChanged != int.MinValue
+                ? entry.Set.Before(VolumeProfileStore.YearStartUnix(firstChanged))
+                : ProfileSet.Empty;
+            var years = new List<ProfileYear>();
+            int recordsRead = 0;
+            int duplicates = 0;
+            foreach (var year in stamps.Keys.Where(y => y >= firstChanged).OrderBy(y => y))
+            {
+                var scan = VolumeProfileStore.ScanYear(symbolDirectory, symbol, year,
+                    scale.PipPoints, scale.PriceScale, log);
+                years.Add(scan);
+                recordsRead += scan.Records;
+                duplicates += scan.Duplicates;
+            }
+            int yearsRead = years.Count;
+            var set = ProfileSet.Build(head, years);
+            entry.Stamps = stamps;
+            entry.Set = set.Count > 0 ? set : null;
+            return new LoadResult(entry.Set, yearsRead, recordsRead, duplicates);
+        }
+    }
+
+    private static string Stamp(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            return $"{info.Length}:{info.LastWriteTimeUtc.Ticks}";
+        }
+        catch
+        {
+            return "";
+        }
     }
 }
 

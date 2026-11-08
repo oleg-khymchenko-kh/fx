@@ -83,7 +83,7 @@ public static class DensityProfile
     }
 
     public static int StoredPipToDisplay(SeriesTransform? transform, int storedPip) =>
-        transform == null ? storedPip : PipLevel(transform.ToDisplay(storedPip * PipPoints));
+        transform == null ? storedPip : PipLevel(transform.ToDisplay(storedPip * transform.PipPoints));
 
     private static DensityHistogram Profiled(MinuteSequence minutes, ProfileSet profiles, int start, int end,
         SeriesTransform? transform)
@@ -251,6 +251,33 @@ public static class DensityProfile
             ask = ask * max / sides;
         }
         return new DensityRowValue(max, bid, ask);
+    }
+
+    public static DensityHistogram Clip(DensityHistogram histogram, int loPip, int hiPip)
+    {
+        int from = Math.Max(loPip - histogram.LoPip, 0);
+        int to = Math.Min(hiPip - histogram.LoPip, histogram.Counts.Length - 1);
+        if (from > to) return new DensityHistogram(0, Array.Empty<double>(), 0, -1);
+        var counts = histogram.Counts[from..(to + 1)];
+        double max = counts.Max();
+        if (max <= 0) return new DensityHistogram(0, Array.Empty<double>(), 0, -1);
+        return new DensityHistogram(histogram.LoPip + from, counts, max, histogram.AnchorIndex)
+        {
+            BidCounts = histogram.BidCounts?[from..(to + 1)],
+            AskCounts = histogram.AskCounts?[from..(to + 1)],
+        };
+    }
+
+    public static double? WeightedMeanPip(DensityHistogram histogram)
+    {
+        double total = 0;
+        double weighted = 0;
+        for (int i = 0; i < histogram.Counts.Length; i++)
+        {
+            total += histogram.Counts[i];
+            weighted += histogram.Counts[i] * i;
+        }
+        return total > 0 ? histogram.LoPip + weighted / total : null;
     }
 
     public static int PipLevel(int points) => (points + PipPoints / 2) / PipPoints;

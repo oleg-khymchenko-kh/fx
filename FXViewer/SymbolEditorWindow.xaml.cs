@@ -45,6 +45,7 @@ public partial class SymbolEditorWindow : Window
     private readonly IReadOnlyList<string> _indexSources;
     private readonly IReadOnlyList<string> _zigzagSources;
     private readonly IReadOnlyList<string> _candleSources;
+    private readonly IReadOnlyList<string> _lineSources;
     private readonly string _wantedSource;
 
     public SymbolEditorWindow(
@@ -57,7 +58,8 @@ public partial class SymbolEditorWindow : Window
         IReadOnlyList<string>? indexPairs = null,
         IReadOnlyList<string>? indexSources = null,
         IReadOnlyList<string>? zigzagSources = null,
-        IReadOnlyList<string>? shiftSources = null)
+        IReadOnlyList<string>? shiftSources = null,
+        IReadOnlyList<string>? lineSources = null)
     {
         InitializeComponent();
         _editing = editing;
@@ -76,8 +78,10 @@ public partial class SymbolEditorWindow : Window
         _indexSources = indexSources ?? Array.Empty<string>();
         _zigzagSources = zigzagSources ?? Array.Empty<string>();
         _candleSources = sources.Concat(shiftSources ?? Array.Empty<string>()).ToList();
+        _lineSources = lineSources ?? sources;
         _wantedSource = editing?.Source ?? sourcePrefill ?? "";
         foreach (var s in sources) SourceBox.Items.Add(s);
+        foreach (var s in _lineSources) FlattenBaseBox.Items.Add(s);
         foreach (var p in indexPairs ?? Array.Empty<string>()) CurrencyPairBox.Items.Add(p);
         TargetBox.Items.Add(SameAsSourceLabel);
         foreach (var p in indexPairs ?? Array.Empty<string>()) TargetBox.Items.Add(p);
@@ -131,6 +135,9 @@ public partial class SymbolEditorWindow : Window
             PeriodBox.Text = editing.Period.ToString(CultureInfo.InvariantCulture);
             StopLossBox.Text = editing.StopLossPips.ToString(CultureInfo.InvariantCulture);
             TakeProfitBox.Text = editing.TakeProfitPips.ToString(CultureInfo.InvariantCulture);
+            SentimentHeightBox.Text = editing.EffectiveSentimentHeightPx().ToString(CultureInfo.InvariantCulture);
+            BigMinLotsBox.Text = editing.BigMinLots.ToString("0.##", CultureInfo.InvariantCulture);
+            BigHeightBox.Text = editing.EffectiveSentimentHeightPx().ToString(CultureInfo.InvariantCulture);
             UnitBox.SelectedItem = IndicatorUnits.All.FirstOrDefault(
                 u => string.Equals(u, editing.Unit, StringComparison.OrdinalIgnoreCase)) ?? IndicatorUnits.Minutes;
             DirectionBox.SelectedItem = editing.FromFuture ? FutureLabel : PastLabel;
@@ -179,14 +186,19 @@ public partial class SymbolEditorWindow : Window
             if (IndicatorTypes.IsShift(editing.Type)
                 && ShiftedSymbol.AnchorsBroken(shiftSource, shiftChart))
                 (shiftSource, shiftChart) = ShiftedSymbol.Rebase(
-                    shiftSource, shiftChart, ShiftedSymbol.DefaultAnchorUnix());
+                    shiftSource, shiftChart, ShiftedSymbol.DefaultAnchorUnix(), editing.ReverseTime);
             SetAnchor(SourceDate, SourceTimeBox, shiftSource, DefaultSourceTime);
             SetAnchor(ChartDate, ChartTimeBox, shiftChart, DefaultChartTime);
             FlipBox.IsChecked = editing.Flip;
+            ReverseTimeBox.IsChecked = editing.ReverseTime;
+            KeyPointsBox.IsChecked = editing.ShowFindKeyPoints;
+            ShiftZoomBox.Text = ZoomText(editing.ZoomPercent);
             TargetBox.SelectedItem = TargetBox.Items.Cast<string>().FirstOrDefault(
                 p => p != SameAsSourceLabel
                      && IndicatorSymbol.NameKey(p) == IndicatorSymbol.NameKey(editing.TargetSymbol))
                 ?? SameAsSourceLabel;
+            FlattenBaseBox.SelectedItem = _lineSources.FirstOrDefault(
+                s => IndicatorSymbol.NameKey(s) == IndicatorSymbol.NameKey(editing.BaseSymbol));
             IndexMirrorBox.IsChecked = editing.Flip;
             SetAnchor(IndexStartDate, IndexStartTimeBox, editing.StartTimeUnix, DefaultSourceTime);
             SetOptionalAnchor(IndexEndDate, IndexEndTimeBox, editing.EndTimeUnix);
@@ -233,6 +245,9 @@ public partial class SymbolEditorWindow : Window
             PeriodBox.Text = "20";
             StopLossBox.Text = IndicatorSymbol.DefaultStopLossPips.ToString(CultureInfo.InvariantCulture);
             TakeProfitBox.Text = IndicatorSymbol.DefaultTakeProfitPips.ToString(CultureInfo.InvariantCulture);
+            SentimentHeightBox.Text = IndicatorSymbol.DefaultSentimentHeightPx.ToString(CultureInfo.InvariantCulture);
+            BigMinLotsBox.Text = IndicatorSymbol.DefaultBigMinLots.ToString("0.##", CultureInfo.InvariantCulture);
+            BigHeightBox.Text = IndicatorSymbol.DefaultSentimentHeightPx.ToString(CultureInfo.InvariantCulture);
             UnitBox.SelectedItem = IndicatorUnits.Minutes;
             DirectionBox.SelectedItem = PastLabel;
             WeightedBox.IsChecked = false;
@@ -258,6 +273,8 @@ public partial class SymbolEditorWindow : Window
             FillLevel2Rows(Level2RightRows, IndicatorSymbol.DefaultLevel2RightSteps());
             SetAnchor(SourceDate, SourceTimeBox, 0, DefaultSourceTime);
             SetAnchor(ChartDate, ChartTimeBox, 0, DefaultChartTime);
+            ShiftZoomBox.Text = ZoomText(ShiftedSymbol.DefaultZoomPercent);
+            KeyPointsBox.IsChecked = true;
             TargetBox.SelectedItem = SameAsSourceLabel;
             SetAnchor(IndexStartDate, IndexStartTimeBox, 0, DefaultSourceTime);
             SetOptionalAnchor(IndexEndDate, IndexEndTimeBox, 0);
@@ -368,6 +385,10 @@ public partial class SymbolEditorWindow : Window
         }
     }
 
+    private static string ZoomText(double percent) =>
+        (percent > 0 && double.IsFinite(percent) ? percent : ShiftedSymbol.DefaultZoomPercent)
+        .ToString("0.######", CultureInfo.InvariantCulture);
+
     private static DateTime DefaultChartTime =>
         new(DateTime.UtcNow.Year, DateTime.UtcNow.Month, DateTime.UtcNow.Day, 0, 0, 0, DateTimeKind.Utc);
 
@@ -434,6 +455,7 @@ public partial class SymbolEditorWindow : Window
             : IndicatorTypes.SourceIsIndex(type) ? _indexSources
             : IndicatorTypes.SourceIsZigZag(type) ? _zigzagSources
             : IndicatorTypes.SourceMayBeShift(type) ? _candleSources
+            : IndicatorTypes.IsFlattenBy(type) ? _lineSources
             : _allSources;
         if (SourceBox.Items.Count == wanted.Count
             && SourceBox.Items.Cast<string>().SequenceEqual(wanted))
@@ -475,9 +497,18 @@ public partial class SymbolEditorWindow : Window
         if (CurrencyParams != null)
             CurrencyParams.Visibility =
                 type == IndicatorTypes.Currency ? Visibility.Visible : Visibility.Collapsed;
+        if (FlattenParams != null)
+            FlattenParams.Visibility =
+                type == IndicatorTypes.FlattenBy ? Visibility.Visible : Visibility.Collapsed;
         if (EntryParams != null)
             EntryParams.Visibility =
                 type == IndicatorTypes.EntryPoints ? Visibility.Visible : Visibility.Collapsed;
+        if (SentimentParams != null)
+            SentimentParams.Visibility =
+                type == IndicatorTypes.Sentiment ? Visibility.Visible : Visibility.Collapsed;
+        if (BigPlayersParams != null)
+            BigPlayersParams.Visibility =
+                type == IndicatorTypes.BigPlayers ? Visibility.Visible : Visibility.Collapsed;
         if (LevelsParams != null)
             LevelsParams.Visibility =
                 type == IndicatorTypes.Levels ? Visibility.Visible : Visibility.Collapsed;
@@ -505,17 +536,21 @@ public partial class SymbolEditorWindow : Window
             bool volume = type == IndicatorTypes.Volume;
             bool levels = type == IndicatorTypes.Levels;
             bool levels2 = type == IndicatorTypes.Levels2;
-            SellColorBlock.Visibility = orderBook || volume || levels || levels2
+            bool sentiment = type == IndicatorTypes.Sentiment;
+            bool bigPlayers = type == IndicatorTypes.BigPlayers;
+            SellColorBlock.Visibility = orderBook || volume || levels || levels2 || sentiment || bigPlayers
                 ? Visibility.Visible
                 : Visibility.Collapsed;
             if (NeutralColorBlock != null)
                 NeutralColorBlock.Visibility = volume ? Visibility.Visible : Visibility.Collapsed;
-            ColorLabel.Text = orderBook || volume ? "Buy color"
+            ColorLabel.Text = orderBook || volume || bigPlayers ? "Buy color"
                 : levels ? "From below"
-                : levels2 ? "Price rose" : "Color";
+                : levels2 ? "Price rose"
+                : sentiment ? "Long color" : "Color";
             if (SellColorLabel != null)
                 SellColorLabel.Text = levels ? "From above"
-                    : levels2 ? "Price fell" : "Sell color";
+                    : levels2 ? "Price fell"
+                    : sentiment ? "Short color" : "Sell color";
             if (levels2 && !_levels2ColorsPicked && _swatches.Count > 0)
             {
                 _levels2ColorsPicked = true;
@@ -599,6 +634,9 @@ public partial class SymbolEditorWindow : Window
         long sourceTime = _editing?.SourceTimeUnix ?? 0;
         long chartTime = _editing?.ChartTimeUnix ?? 0;
         bool flip = _editing?.Flip ?? false;
+        double zoomPercent = _editing?.ZoomPercent ?? ShiftedSymbol.DefaultZoomPercent;
+        bool reverseTime = _editing?.ReverseTime ?? false;
+        bool showKeyPoints = _editing?.ShowFindKeyPoints ?? true;
         long startTime = _editing?.StartTimeUnix ?? 0;
         long endTime = _editing?.EndTimeUnix ?? 0;
         string indexMethod = _editing?.IndexMethod ?? IndexMethods.Median;
@@ -607,8 +645,12 @@ public partial class SymbolEditorWindow : Window
         string indexPair = _editing?.IndexPair ?? "";
         int stopLoss = _editing?.StopLossPips ?? IndicatorSymbol.DefaultStopLossPips;
         int takeProfit = _editing?.TakeProfitPips ?? IndicatorSymbol.DefaultTakeProfitPips;
+        int sentimentHeight = _editing?.EffectiveSentimentHeightPx() ?? IndicatorSymbol.DefaultSentimentHeightPx;
+        double bigMinLots = _editing?.BigMinLots ?? IndicatorSymbol.DefaultBigMinLots;
         string dealsFile = _editing?.DealsFile ?? "";
         string targetSymbol = _editing?.TargetSymbol ?? "";
+        string baseSymbol = _editing?.BaseSymbol ?? "";
+        double? flattenLevel = _editing?.FlattenLevel;
         var densityPeriods = new List<int>(_editing?.DensityPeriods ?? new List<int>());
         var densityUnits = new List<string>(_editing?.DensityUnits ?? new List<string>());
         var densityPercents = new List<int>(_editing?.DensityScalePercents ?? new List<int>());
@@ -700,9 +742,19 @@ public partial class SymbolEditorWindow : Window
                 return null;
             }
             flip = FlipBox.IsChecked == true;
+            reverseTime = ReverseTimeBox.IsChecked == true;
+            showKeyPoints = KeyPointsBox.IsChecked == true;
             targetSymbol = TargetBox.SelectedItem is string picked && picked != SameAsSourceLabel
                 ? picked
                 : "";
+            if (!TryReadNumber(ShiftZoomBox, out zoomPercent)
+                || zoomPercent < ShiftedSymbol.MinZoomPercent || zoomPercent > ShiftedSymbol.MaxZoomPercent)
+            {
+                Warn($"Zoom must be a number of percent, {ShiftedSymbol.MinZoomPercent:0} to " +
+                    $"{ShiftedSymbol.MaxZoomPercent:0}. 100 shows the pips as they are.");
+                return null;
+            }
+            zoomPercent = Math.Round(zoomPercent, 6);
         }
         else if (type == IndicatorTypes.Index)
         {
@@ -713,12 +765,12 @@ public partial class SymbolEditorWindow : Window
             }
             if (!TryReadOptionalAnchor(IndexEndDate, IndexEndTimeBox, out endTime))
             {
-                Warn("End needs a date and a time as HH:mm, or leave both empty.");
+                Warn("History end needs a date and a time as HH:mm, or leave both empty.");
                 return null;
             }
             if (endTime != 0 && endTime <= startTime)
             {
-                Warn("End must be after the start.");
+                Warn("History end must be after the start.");
                 return null;
             }
             indexMethod = (MethodBox.SelectedItem as string) ?? IndexMethods.Median;
@@ -731,6 +783,20 @@ public partial class SymbolEditorWindow : Window
                 return null;
             }
             flip = IndexMirrorBox.IsChecked == true;
+        }
+        else if (type == IndicatorTypes.FlattenBy)
+        {
+            if (FlattenBaseBox.SelectedItem is not string picked)
+            {
+                Warn("Pick a base symbol: it becomes the horizontal line.");
+                return null;
+            }
+            if (IndicatorSymbol.NameKey(picked) == IndicatorSymbol.NameKey(name))
+            {
+                Warn("Name must differ from the base symbol.");
+                return null;
+            }
+            baseSymbol = picked;
         }
         else if (type == IndicatorTypes.Currency)
         {
@@ -783,6 +849,36 @@ public partial class SymbolEditorWindow : Window
                     out takeProfit) || takeProfit <= 0)
             {
                 Warn("Take profit must be a positive whole number of pips.");
+                return null;
+            }
+        }
+        else if (type == IndicatorTypes.Sentiment)
+        {
+            if (!int.TryParse(SentimentHeightBox.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture,
+                    out sentimentHeight)
+                || sentimentHeight < IndicatorSymbol.MinSentimentHeightPx
+                || sentimentHeight > IndicatorSymbol.MaxSentimentHeightPx)
+            {
+                Warn($"Height must be a whole number of pixels from {IndicatorSymbol.MinSentimentHeightPx} " +
+                     $"to {IndicatorSymbol.MaxSentimentHeightPx}.");
+                return null;
+            }
+        }
+        else if (type == IndicatorTypes.BigPlayers)
+        {
+            if (!double.TryParse(BigMinLotsBox.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture,
+                    out bigMinLots) || bigMinLots < 0 || double.IsNaN(bigMinLots))
+            {
+                Warn("Min lots must be a number of lots, 0 or more.");
+                return null;
+            }
+            if (!int.TryParse(BigHeightBox.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture,
+                    out sentimentHeight)
+                || sentimentHeight < IndicatorSymbol.MinSentimentHeightPx
+                || sentimentHeight > IndicatorSymbol.MaxSentimentHeightPx)
+            {
+                Warn($"Height must be a whole number of pixels from {IndicatorSymbol.MinSentimentHeightPx} " +
+                     $"to {IndicatorSymbol.MaxSentimentHeightPx}.");
                 return null;
             }
         }
@@ -860,6 +956,10 @@ public partial class SymbolEditorWindow : Window
             SourceTimeUnix = sourceTime,
             ChartTimeUnix = chartTime,
             Flip = flip,
+            ZoomPercent = zoomPercent,
+            ReverseTime = reverseTime,
+            ShowFindKeyPoints = showKeyPoints,
+            FindKeyPoints = _editing?.FindKeyPoints?.Clone(),
             StartTimeUnix = startTime,
             EndTimeUnix = endTime,
             IndexMethod = indexMethod,
@@ -868,8 +968,12 @@ public partial class SymbolEditorWindow : Window
             IndexPair = indexPair,
             StopLossPips = stopLoss,
             TakeProfitPips = takeProfit,
+            SentimentHeightPx = sentimentHeight,
+            BigMinLots = bigMinLots,
             DealsFile = dealsFile,
             TargetSymbol = targetSymbol,
+            BaseSymbol = baseSymbol,
+            FlattenLevel = flattenLevel,
             FindSmoothMinutes = _editing?.FindSmoothMinutes ?? IndicatorSymbol.DefaultFindSmoothMinutes,
             FindZoomPercent = _editing?.FindZoomPercent ?? IndicatorSymbol.DefaultFindZoomPercent,
             FindStepMinutes = _editing?.FindStepMinutes ?? IndicatorSymbol.DefaultFindStepMinutes,
@@ -878,15 +982,7 @@ public partial class SymbolEditorWindow : Window
             FindZigZagTargets = new List<string>(_editing?.FindZigZagTargets ?? new List<string>()),
             FindLevels2Targets = new List<string>(_editing?.FindLevels2Targets ?? new List<string>()),
             FindLevels2Template = _editing?.FindLevels2Template ?? "",
-            FindLevelTolerancePips = _editing?.FindLevelTolerancePips
-                ?? IndicatorSymbol.DefaultFindLevelTolerancePips,
-            FindLevels2MinLeftPips = _editing?.FindLevels2MinLeftPips ?? IndicatorSymbol.DefaultFindLevels2ArmPips,
-            FindLevels2MinRightPips = _editing?.FindLevels2MinRightPips ?? IndicatorSymbol.DefaultFindLevels2ArmPips,
             FindLevels2PickOnChart = _editing?.FindLevels2PickOnChart ?? false,
-            FindLevel2LeftSteps = LevelStep.CopyOf(_editing?.FindLevel2LeftSteps ?? new List<LevelStep>()),
-            FindLevel2RightSteps = LevelStep.CopyOf(_editing?.FindLevel2RightSteps ?? new List<LevelStep>()),
-            FindLevels2StretchPercent = _editing?.FindLevels2StretchPercent
-                ?? IndicatorSymbol.DefaultFindLevels2StretchPercent,
             FindLevels2MinSpanMinutes = _editing?.FindLevels2MinSpanMinutes ?? 0,
             FindLast = _editing?.FindLast?.Clone(),
             DensityPeriods = densityPeriods,
@@ -1101,6 +1197,9 @@ public partial class SymbolEditorWindow : Window
         ChartDate.IsEnabled = !busy;
         ChartTimeBox.IsEnabled = !busy;
         FlipBox.IsEnabled = !busy;
+        ReverseTimeBox.IsEnabled = !busy;
+        KeyPointsBox.IsEnabled = !busy;
+        ShiftZoomBox.IsEnabled = !busy;
         TargetBox.IsEnabled = !busy;
         IndexStartDate.IsEnabled = !busy;
         IndexStartTimeBox.IsEnabled = !busy;
@@ -1113,6 +1212,9 @@ public partial class SymbolEditorWindow : Window
         CurrencyPairBox.IsEnabled = !busy;
         StopLossBox.IsEnabled = !busy;
         TakeProfitBox.IsEnabled = !busy;
+        SentimentHeightBox.IsEnabled = !busy;
+        BigMinLotsBox.IsEnabled = !busy;
+        BigHeightBox.IsEnabled = !busy;
         DealsFileBox.IsEnabled = !busy;
         DealsBrowseBtn.IsEnabled = !busy;
         VolumeGroupBox.IsEnabled = !busy;

@@ -74,9 +74,9 @@ public partial class SearchParamsWindow : Window
             }
         }
 
-        public double MinLeft { get; set; }
-        public double MinRight { get; set; }
         public long TimeUnix { get; set; }
+        public string MinGap { get; set; } = "";
+        public string MaxGap { get; set; } = "";
 
         public event PropertyChangedEventHandler? PropertyChanged;
     }
@@ -91,9 +91,6 @@ public partial class SearchParamsWindow : Window
     private readonly List<CheckBox> _levels2Boxes = new();
     private readonly IReadOnlyList<ZigZagFindTarget> _zigZagTargets;
     private readonly IReadOnlyList<Levels2FindTarget> _levels2Targets;
-    private List<LevelStep> _findLeft;
-    private List<LevelStep> _findRight;
-    private Levels2Tables _tables;
     private readonly long _fragStartUnix;
     private readonly long _fragEndUnix;
     private readonly ObservableCollection<PatternRow> _rows = new();
@@ -116,7 +113,11 @@ public partial class SearchParamsWindow : Window
     private bool _rowsEdited;
 
     private const double DefaultPipTolerance = 5;
+    private const int GenerateArmPips = 50;
     private const string TableModeLabel = "Table";
+
+    private static readonly Levels2Tables LevelTables =
+        Levels2Tables.Of(IndicatorSymbol.DefaultLevel2LeftSteps(), IndicatorSymbol.DefaultLevel2RightSteps());
     private const string ChartModeLabel = "Chart";
 
     public SearchParams Params { get; private set; } = new(
@@ -140,21 +141,9 @@ public partial class SearchParamsWindow : Window
 
     public string TemplateLevels2Name { get; private set; } = "";
 
-    public int TolerancePips { get; private set; } = IndicatorSymbol.DefaultFindLevelTolerancePips;
-
     public List<Levels2LevelRule> LevelRules { get; private set; } = new();
 
-    public int RequiredMinLeftPips { get; private set; } = IndicatorSymbol.DefaultFindLevels2ArmPips;
-
-    public int RequiredMinRightPips { get; private set; } = IndicatorSymbol.DefaultFindLevels2ArmPips;
-
     public bool RequiredPickOnChart { get; private set; }
-
-    public List<LevelStep> FindLeftSteps => LevelStep.CopyOf(_findLeft);
-
-    public List<LevelStep> FindRightSteps => LevelStep.CopyOf(_findRight);
-
-    public int StretchPercent { get; private set; } = IndicatorSymbol.DefaultFindLevels2StretchPercent;
 
     public int MinSpanMinutes { get; private set; }
 
@@ -190,10 +179,6 @@ public partial class SearchParamsWindow : Window
         }
         ZoomBox.Text = ind.FindZoomPercent.ToString(CultureInfo.InvariantCulture);
         StepBox.Text = ind.FindStepMinutes.ToString(CultureInfo.InvariantCulture);
-        ToleranceBox.Text = Math.Max(1, ind.FindLevelTolerancePips).ToString(CultureInfo.InvariantCulture);
-        RequiredLeftBox.Text = Math.Max(0, ind.FindLevels2MinLeftPips).ToString(CultureInfo.InvariantCulture);
-        RequiredRightBox.Text = Math.Max(0, ind.FindLevels2MinRightPips).ToString(CultureInfo.InvariantCulture);
-        StretchBox.Text = Math.Max(0, ind.FindLevels2StretchPercent).ToString(CultureInfo.InvariantCulture);
         MinSpanUnitBox.Items.Add(MinutesLabel);
         MinSpanUnitBox.Items.Add(HoursLabel);
         MinSpanUnitBox.Items.Add(DaysLabel);
@@ -213,14 +198,8 @@ public partial class SearchParamsWindow : Window
             MinSpanBox.Text = minSpan.ToString(CultureInfo.InvariantCulture);
             MinSpanUnitBox.SelectedItem = minSpan > 0 ? MinutesLabel : HoursLabel;
         }
-        _findLeft = ind.EffectiveFindLevel2LeftSteps();
-        _findRight = ind.EffectiveFindLevel2RightSteps();
-        _tables = Levels2Tables.Of(_findLeft, _findRight);
-        LevelParamsText.Text = LevelParamsWindow.Summary(_findLeft, _findRight);
         ZoomBox.TextChanged += (_, _) => UpdateZoomHint();
-        StretchBox.TextChanged += (_, _) => UpdateStretchHint();
         UpdateZoomHint();
-        UpdateStretchHint();
         var selected = new HashSet<string>(
             ind.EffectiveFindTargets().Select(IndicatorSymbol.NameKey));
         foreach (var pair in pairs)
@@ -351,20 +330,9 @@ public partial class SearchParamsWindow : Window
         if (SmoothUnitBox.Items.Contains(s.SmoothUnit)) SmoothUnitBox.SelectedItem = s.SmoothUnit;
         ZoomBox.Text = s.Zoom;
         StepBox.Text = s.Step;
-        ToleranceBox.Text = s.Tolerance;
-        StretchBox.Text = s.Stretch;
         MinSpanBox.Text = s.MinSpan;
         if (MinSpanUnitBox.Items.Contains(s.MinSpanUnit)) MinSpanUnitBox.SelectedItem = s.MinSpanUnit;
-        RequiredLeftBox.Text = s.LevelsMinLeft;
-        RequiredRightBox.Text = s.LevelsMinRight;
         RequiredModeBox.SelectedItem = s.PickOnChart ? ChartModeLabel : TableModeLabel;
-        if (s.LeftSteps.Count > 0 && s.RightSteps.Count > 0)
-        {
-            _findLeft = LevelStep.CopyOf(s.LeftSteps);
-            _findRight = LevelStep.CopyOf(s.RightSteps);
-            _tables = Levels2Tables.Of(_findLeft, _findRight);
-            LevelParamsText.Text = LevelParamsWindow.Summary(_findLeft, _findRight);
-        }
         CheckByName(_targetBoxes, s.Targets, b => (string)b.Tag!);
         CheckByName(_zigZagBoxes, s.ZigZagTargets, b => _zigZagTargets[(int)b.Tag!].Name);
         CheckByName(_levels2Boxes, s.Levels2Targets, b => _levels2Targets[(int)b.Tag!].Pair);
@@ -426,9 +394,9 @@ public partial class SearchParamsWindow : Window
                     TolUp = r.TolUp,
                     TolDown = r.TolDown,
                     Seq = r.Seq,
-                    MinLeft = r.MinLeft,
-                    MinRight = r.MinRight,
                     TimeUnix = r.TimeUnix,
+                    MinGap = r.MinGap ?? "",
+                    MaxGap = r.MaxGap ?? "",
                 });
             _requiredSource = SelectedTemplate()?.Pair ?? "";
         }
@@ -448,7 +416,7 @@ public partial class SearchParamsWindow : Window
         {
             if (row.TimeUnix == 0 || !TryLevelPoints(target, row.Level, out double points)) continue;
             bool Same(Level2 level) => LevelTime(target, level) == row.TimeUnix
-                && Math.Abs(points - level.Value) < DensityProfile.PipPoints / 2.0;
+                && SamePrice(points, level.Value);
             if (_shownLevels.Any(Same)) continue;
             foreach (var level in _extremes)
             {
@@ -482,22 +450,16 @@ public partial class SearchParamsWindow : Window
             SmoothUnit = SmoothUnitBox.SelectedItem as string ?? MinutesLabel,
             Zoom = ZoomBox.Text.Trim(),
             Step = StepBox.Text.Trim(),
-            Tolerance = ToleranceBox.Text.Trim(),
-            Stretch = StretchBox.Text.Trim(),
             MinSpan = MinSpanBox.Text.Trim(),
             MinSpanUnit = MinSpanUnitBox.SelectedItem as string ?? HoursLabel,
-            LevelsMinLeft = RequiredLeftBox.Text.Trim(),
-            LevelsMinRight = RequiredRightBox.Text.Trim(),
             PickOnChart = IsChartPickMode,
-            LeftSteps = LevelStep.CopyOf(_findLeft),
-            RightSteps = LevelStep.CopyOf(_findRight),
-            Points = _rows.Select(r => new FindPatternRow(Finite(r.Pips), Finite(r.Minutes), Finite(r.PipsUp),
+            Points =_rows.Select(r => new FindPatternRow(Finite(r.Pips), Finite(r.Minutes), Finite(r.PipsUp),
                 Finite(r.PipsDown), Finite(r.MinLeft), Finite(r.MinRight), r.Zoom, r.SourceUnix)).ToList(),
             PointsSource = _patternSource,
             PointsEdited = _rowsEdited,
             Levels = _requiredRows.Select(r => new FindLevelRow(r.Level ?? "", r.Use ?? UseRequired,
-                Finite(r.TolUp), Finite(r.TolDown), r.Seq ?? "", Finite(r.MinLeft), Finite(r.MinRight),
-                r.TimeUnix)).ToList(),
+                Finite(r.TolUp), Finite(r.TolDown), r.Seq ?? "", r.TimeUnix,
+                r.MinGap ?? "", r.MaxGap ?? "")).ToList(),
             LevelsEdited = _requiredEdited,
             SeqEdited = _seqEdited,
         };
@@ -544,8 +506,8 @@ public partial class SearchParamsWindow : Window
             RequiredPicker.Clear();
             return;
         }
-        Levels2Search.TemplateLevels(_tables, target.Minutes, _fragStartUnix, _fragEndUnix, _templateLevels);
-        Levels2Search.TemplateExtremes(_tables, target.Minutes, _fragStartUnix, _fragEndUnix, _extremes);
+        Levels2Search.TemplateLevels(LevelTables, target.Minutes, _fragStartUnix, _fragEndUnix, _templateLevels);
+        Levels2Search.TemplateExtremes(LevelTables, target.Minutes, _fragStartUnix, _fragEndUnix, _extremes);
         _shownLevels.AddRange(_templateLevels);
         RequiredPicker.Show(target.Minutes, _shownLevels, _extremes, _fragStartUnix, _fragEndUnix,
             level => UseOf(RowOfLevel(target, level)),
@@ -571,8 +533,7 @@ public partial class SearchParamsWindow : Window
         RequiredRow? byPrice = null;
         foreach (var row in _requiredRows)
         {
-            if (!TryLevelPoints(target, row.Level, out double points)
-                || Math.Abs(points - level.Value) >= DensityProfile.PipPoints / 2.0)
+            if (!TryLevelPoints(target, row.Level, out double points) || !SamePrice(points, level.Value))
                 continue;
             if (row.TimeUnix == time) return row;
             if (row.TimeUnix == 0) byPrice ??= row;
@@ -616,7 +577,7 @@ public partial class SearchParamsWindow : Window
 
     private void AddLevelRow(Levels2FindTarget target, Level2 level)
     {
-        var row = NewLevelRow(target, level, ReadArmPips(RequiredLeftBox), ReadArmPips(RequiredRightBox), true);
+        var row = NewLevelRow(target, level);
         int at = 0;
         while (at < _requiredRows.Count && _requiredRows[at].TimeUnix != 0
             && _requiredRows[at].TimeUnix <= row.TimeUnix)
@@ -625,20 +586,22 @@ public partial class SearchParamsWindow : Window
         if (!_seqEdited) Renumber();
     }
 
-    private RequiredRow NewLevelRow(Levels2FindTarget target, Level2 level, int left, int right, bool fitArms)
+    private static RequiredRow NewLevelRow(Levels2FindTarget target, Level2 level) => new()
     {
-        double tol = ReadTolerance();
-        double pip = DensityProfile.PipPoints;
-        return new RequiredRow
-        {
-            Level = LevelText(target, level.Value),
-            Use = UseRequired,
-            TolUp = tol,
-            TolDown = tol,
-            MinLeft = fitArms ? Math.Min(left, Math.Floor(level.ApproachPoints / pip)) : left,
-            MinRight = fitArms ? Math.Min(right, Math.Floor(level.ReversalPoints / pip)) : right,
-            TimeUnix = LevelTime(target, level),
-        };
+        Level = LevelText(target, level.Value),
+        Use = UseRequired,
+        TolUp = DefaultPipTolerance,
+        TolDown = DefaultPipTolerance,
+        TimeUnix = LevelTime(target, level),
+    };
+
+    private bool? TopOf(Levels2FindTarget target, RequiredRow row, double points)
+    {
+        if (row.TimeUnix == 0) return null;
+        foreach (var level in _shownLevels.Concat(_extremes))
+            if (LevelTime(target, level) == row.TimeUnix && SamePrice(points, level.Value))
+                return level.Top;
+        return null;
     }
 
     private void Renumber()
@@ -647,14 +610,6 @@ public partial class SearchParamsWindow : Window
         foreach (var row in _requiredRows.Where(r => r.TimeUnix != 0).OrderBy(r => r.TimeUnix))
             row.Seq = (++seq).ToString(CultureInfo.InvariantCulture);
     }
-
-    private static int ReadArmPips(TextBox box) =>
-        TryReadInt(box, out int value) && value >= 0 ? value : IndicatorSymbol.DefaultFindLevels2ArmPips;
-
-    private double ReadTolerance() =>
-        TryReadInt(ToleranceBox, out int value) && value >= 0
-            ? value
-            : IndicatorSymbol.DefaultFindLevelTolerancePips;
 
     private Levels2FindTarget? SelectedTemplate()
     {
@@ -677,40 +632,10 @@ public partial class SearchParamsWindow : Window
         FillRequiredRows();
     }
 
-    private void LevelParamsBtn_Click(object sender, RoutedEventArgs e)
-    {
-        RequiredGrid.CommitEdit(DataGridEditingUnit.Row, true);
-        var dlg = new LevelParamsWindow(_findLeft, _findRight) { Owner = this };
-        if (dlg.ShowDialog() != true) return;
-        _findLeft = dlg.LeftSteps;
-        _findRight = dlg.RightSteps;
-        _tables = Levels2Tables.Of(_findLeft, _findRight);
-        LevelParamsText.Text = LevelParamsWindow.Summary(_findLeft, _findRight);
-        LoadTemplateLevels();
-        FillRequiredRows();
-    }
-
     private void RequiredFillBtn_Click(object sender, RoutedEventArgs e)
     {
         RequiredGrid.CommitEdit(DataGridEditingUnit.Row, true);
-        if (!TryReadRequiredThresholds(out _, out _)) return;
         FillRequiredRows();
-    }
-
-    private bool TryReadRequiredThresholds(out int left, out int right)
-    {
-        right = 0;
-        if (!TryReadInt(RequiredLeftBox, out left) || left < 0 || left > 10000)
-        {
-            Warn("Min left must be a whole number of pips between 0 and 10000.");
-            return false;
-        }
-        if (!TryReadInt(RequiredRightBox, out right) || right < 0 || right > 10000)
-        {
-            Warn("Min right must be a whole number of pips between 0 and 10000.");
-            return false;
-        }
-        return true;
     }
 
     private void FillRequiredRows()
@@ -722,14 +647,11 @@ public partial class SearchParamsWindow : Window
             var target = SelectedTemplate();
             _requiredSource = target?.Pair ?? "";
             if (target?.Minutes == null) return;
-            int left = ReadArmPips(RequiredLeftBox);
-            int right = ReadArmPips(RequiredRightBox);
-            double leftPoints = left * (double)DensityProfile.PipPoints;
-            double rightPoints = right * (double)DensityProfile.PipPoints;
+            double armPoints = GenerateArmPips * (double)DensityProfile.PipPoints;
             foreach (var level in _templateLevels.OrderBy(l => l.Index).ThenByDescending(l => l.Value))
             {
-                if (level.ApproachPoints < leftPoints || level.ReversalPoints < rightPoints) continue;
-                _requiredRows.Add(NewLevelRow(target, level, left, right, false));
+                if (level.ApproachPoints < armPoints || level.ReversalPoints < armPoints) continue;
+                _requiredRows.Add(NewLevelRow(target, level));
             }
             Renumber();
         }
@@ -759,13 +681,14 @@ public partial class SearchParamsWindow : Window
         return true;
     }
 
+    private static bool SamePrice(double rowPoints, double levelPoints) =>
+        Math.Abs(rowPoints - levelPoints) <= DensityProfile.PipPoints / 2.0 + 1e-6;
+
     private void RequiredGrid_InitializingNewItem(object sender, InitializingNewItemEventArgs e)
     {
         if (e.NewItem is not RequiredRow row) return;
-        row.MinLeft = ReadArmPips(RequiredLeftBox);
-        row.MinRight = ReadArmPips(RequiredRightBox);
-        row.TolUp = ReadTolerance();
-        row.TolDown = row.TolUp;
+        row.TolUp = DefaultPipTolerance;
+        row.TolDown = DefaultPipTolerance;
     }
 
     private bool IsZigZagMode => SearchTypeBox.SelectedIndex == 1;
@@ -814,16 +737,10 @@ public partial class SearchParamsWindow : Window
         Levels2TargetsBorder.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
         SmoothLabel.Visibility = plain ? Visibility.Visible : Visibility.Collapsed;
         SmoothPanel.Visibility = plain ? Visibility.Visible : Visibility.Collapsed;
-        StepLabel.Visibility = zig ? Visibility.Collapsed : Visibility.Visible;
-        StepPanel.Visibility = zig ? Visibility.Collapsed : Visibility.Visible;
-        ToleranceLabel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
-        TolerancePanel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
-        StretchLabel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
-        StretchPanel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
+        StepLabel.Visibility = plain ? Visibility.Visible : Visibility.Collapsed;
+        StepPanel.Visibility = plain ? Visibility.Visible : Visibility.Collapsed;
         MinSpanLabel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
         MinSpanPanel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
-        LevelParamsLabel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
-        LevelParamsPanel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
         PointsLabel.Visibility = zig ? Visibility.Visible : Visibility.Collapsed;
         PointsGrid.Visibility = zig ? Visibility.Visible : Visibility.Collapsed;
         RequiredLabel.Visibility = lv2 ? Visibility.Visible : Visibility.Collapsed;
@@ -898,19 +815,6 @@ public partial class SearchParamsWindow : Window
         row.MinRight = _defaultMinTol;
     }
 
-    private void UpdateStretchHint()
-    {
-        if (StretchHint == null) return;
-        if (!TryReadInt(StretchBox, out int percent) || percent < 0)
-        {
-            StretchHint.Text = "";
-            return;
-        }
-        double max = 1 + percent / 100.0;
-        StretchHint.Text = string.Format(CultureInfo.InvariantCulture,
-            "window {0:F2}x .. {1:F2}x of the selection", 1 / max, max);
-    }
-
     private void UpdateZoomHint()
     {
         if (ZoomHint == null) return;
@@ -921,6 +825,26 @@ public partial class SearchParamsWindow : Window
         }
         double max = 1 + percent / 100.0;
         ZoomHint.Text = string.Format(CultureInfo.InvariantCulture, "{0:F2}..{1:F2}", 1 / max, max);
+    }
+
+    public static bool TryReadGap(string? text, out long? seconds)
+    {
+        seconds = null;
+        string s = (text ?? "").Trim().ToLowerInvariant();
+        if (s.Length == 0) return true;
+        long unit = 3600;
+        char last = s[^1];
+        if (last is 'm' or 'h' or 'd')
+        {
+            unit = last switch { 'm' => 60, 'h' => 3600, _ => 86400 };
+            s = s[..^1].Trim();
+        }
+        if (!double.TryParse(s.Replace(',', '.'), NumberStyles.Float & ~NumberStyles.AllowThousands,
+                CultureInfo.InvariantCulture, out double value) || !double.IsFinite(value) || value < 0
+            || value * unit > 100L * 365 * 86400)
+            return false;
+        seconds = (long)Math.Round(value * unit);
+        return true;
     }
 
     private static bool TryReadInt(TextBox box, out int value) =>
@@ -1004,11 +928,6 @@ public partial class SearchParamsWindow : Window
             Accept();
             return;
         }
-        if (!TryReadInt(StepBox, out int stepMinutes) || stepMinutes < 1 || stepMinutes > 10080)
-        {
-            Warn("Step must be a whole number of minutes between 1 and 10080.");
-            return;
-        }
         if (IsLevels2Mode)
         {
             var levels2Names = _levels2Boxes.Where(b => b.IsChecked == true)
@@ -1022,16 +941,6 @@ public partial class SearchParamsWindow : Window
             if (Levels2TemplateBox.SelectedItem is not string templateName)
             {
                 Warn("Pick the template pair.");
-                return;
-            }
-            if (!TryReadInt(ToleranceBox, out int tolerance) || tolerance < 1 || tolerance > 100)
-            {
-                Warn("Tolerance must be a whole number of pips between 1 and 100.");
-                return;
-            }
-            if (!TryReadInt(StretchBox, out int stretch) || stretch < 0 || stretch > 1000)
-            {
-                Warn("Time stretch must be a whole number of percent between 0 and 1000.");
                 return;
             }
             if (!TryReadInt(MinSpanBox, out int minSpan) || minSpan < 0)
@@ -1055,7 +964,6 @@ public partial class SearchParamsWindow : Window
                 Warn("Fix the invalid cell value first.");
                 return;
             }
-            if (!TryReadRequiredThresholds(out int minLeft, out int minRight)) return;
             var template = SelectedTemplate();
             if (template == null)
             {
@@ -1070,12 +978,6 @@ public partial class SearchParamsWindow : Window
                 if (!TryLevelPoints(template, row.Level, out double points))
                 {
                     Warn($"Level {i + 1}: the level must be a price like 1.17250.");
-                    return;
-                }
-                if (!double.IsFinite(row.MinLeft) || !double.IsFinite(row.MinRight)
-                    || row.MinLeft < 0 || row.MinRight < 0)
-                {
-                    Warn($"Level {i + 1}: minimum pips must be 0 or more.");
                     return;
                 }
                 if (!double.IsFinite(row.TolUp) || !double.IsFinite(row.TolDown)
@@ -1093,21 +995,37 @@ public partial class SearchParamsWindow : Window
                     Warn($"Level {i + 1}: sequence must be empty or a whole number 1 or more.");
                     return;
                 }
+                if (!TryReadGap(row.MinGap, out long? minGap) || !TryReadGap(row.MaxGap, out long? maxGap))
+                {
+                    Warn($"Level {i + 1}: a gap must be empty or a time like 30m, 4h or 2d (a plain number is hours).");
+                    return;
+                }
+                if (minGap != null && maxGap != null && minGap > maxGap)
+                {
+                    Warn($"Level {i + 1}: Gap min must not be bigger than Gap max.");
+                    return;
+                }
                 rules.Add(new Levels2LevelRule(points, row.Use != UsePreferred, row.TolUp, row.TolDown, seq,
-                    row.MinLeft, row.MinRight, row.TimeUnix));
+                    row.TimeUnix, TopOf(template, row, points), minGap, maxGap));
+            }
+            if (rules.Count(r => r.Required) < 2)
+            {
+                Warn("Mark at least two points as Required.");
+                return;
             }
             SearchType = FindSearchTypes.Levels2;
             Levels2TargetNames = levels2Names;
             TemplateLevels2Name = templateName;
-            TolerancePips = tolerance;
             LevelRules = rules;
-            RequiredMinLeftPips = minLeft;
-            RequiredMinRightPips = minRight;
             RequiredPickOnChart = IsChartPickMode;
-            StretchPercent = stretch;
             MinSpanMinutes = minSpan;
-            Params = new SearchParams(_seedSmoothMinutes, zoom, stepMinutes);
+            Params = new SearchParams(_seedSmoothMinutes, zoom, _seedStepMinutes);
             Accept();
+            return;
+        }
+        if (!TryReadInt(StepBox, out int stepMinutes) || stepMinutes < 1 || stepMinutes > 10080)
+        {
+            Warn("Step must be a whole number of minutes between 1 and 10080.");
             return;
         }
         var targets = _targetBoxes.Where(b => b.IsChecked == true).Select(b => (string)b.Tag!).ToList();

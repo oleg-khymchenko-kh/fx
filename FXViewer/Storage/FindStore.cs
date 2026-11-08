@@ -6,7 +6,9 @@ namespace FXViewer.Storage;
 public sealed record FindResult(
     long SourceUnix, double Sim, double Score, double Rho, double Zoom, bool Mirrored, int Overlap,
     double MeanA, double MeanB, string Symbol, double TimeFit = 0, int Preferred = 0, int PreferredTotal = 0,
-    int WindowMinutes = 0, long AlignUnix = 0);
+    int WindowMinutes = 0, long AlignUnix = 0, List<FindKeyPoint>? KeyPoints = null, bool Reversed = false);
+
+public sealed record FindKeyPoint(long Unix, int Value, bool Top, bool Required, int Sequence, int Rule);
 
 public sealed record FindData(
     int Version, string Source, long FragStartUnix, long FragEndUnix, long SearchedUnix,

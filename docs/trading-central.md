@@ -483,6 +483,62 @@ nothing changed the file is not written. The chart is downloaded with
 the same rules as the mail charts and reused when the stored signal has
 it.
 
+### Direct inbox (since 2026-10-21)
+
+On 2026-10-20 Cloudflare stopped letting the Claude built-in browser
+in: the challenge page loops even after a human click (its user agent
+has `Claude/<version>`), and Node `fetch` gets "Sorry, you have been
+blocked". A normal Chrome opens the site fine. Claude does not read the
+site any more. A separate app of the user reads the signals and writes
+files; the Claude task only imports them.
+
+Folder: `data/trading-central/direct-inbox` next to FXViewer
+(`FXViewer/bin/Debug/net10.0-windows/data/...`).
+
+File rules for the writer:
+
+- Name `signals-<yyyyMMddHHmm>.json` (UTC read time), so the name order
+  is the read order.
+- Write to a `.tmp` file in the same folder first, then rename to
+  `.json`. The importer takes `*.json` only, so it never sees a half
+  written file.
+- Content: one JSON array, one object per signal, the same object the
+  old task built from the API (see above):
+
+      [{"pair": "USDCHF", "id": "15337148",
+        "text": "Trading signal: USDCHF\nIntraday\n<title>\n<summary>\nPivot\n0.8327\nOur preference\n...\nAlternative scenario\n...\nComment\n...\nSupports and resistances\n0.8400\n...\n0.8327 Pivot\n0.8301 Last\n...",
+        "image": "https://charts.tradingcentral.com/charts/77_20260929155449409901791.gif",
+        "readAt": "2026-09-29T18:16:44.045Z", "stamp": "202609291816",
+        "published": "2026-09-29T15:54:49.000Z"}]
+
+  `text` lines in this order: `Trading signal: <pair>`, term, title,
+  summary, `Pivot`, pivot value, `Our preference`, text,
+  `Alternative scenario`, text, `Comment`, text,
+  `Supports and resistances`, resistance3..1, `<pivot> Pivot`,
+  `<last> Last`, support1..3. Empty values are left out. `image` is the
+  `_359x242.gif` chart of `media`, else the `light` theme one.
+- Pairs: EURUSD, GBPUSD, USDCHF, USDJPY, USDCAD, AUDUSD, NZDUSD,
+  EURGBP. Other symbols are not needed. Writing the same signal again is
+  fine: the importer skips what is already stored.
+- An empty list needs no file.
+
+Writer: `src/fx-browser` is the user's app, plain Playwright
+(`playwright-core`) driving the installed Chrome with its own profile
+(`%LOCALAPPDATA%\fx-browser\profile`), HTTP API on `127.0.0.1:9333`
+(`/status`, `/open`, `/eval`, `/text`, `/screenshot`, `/close`). 
+The user or Claude can start it (`node server.mjs` in `src/fx-browser`).
+If it is already running, scripts connect to it. If not, the scheduled
+task starts it (exit 4 means not running).
+`src/fx-browser/tc-signals.mjs` opens the discover page in it, runs the
+API read above through `/eval` and writes the inbox file. Exit 0 ok,
+1 error, 4 app not running, 5 Cloudflare check shown in the window.
+
+Import: `src/Fx.TradingCentral/import-direct-inbox.ps1` runs
+`signal --file` on each file in name order and moves it to `done`
+(exit 0 or 3) or `failed` (any other exit). The script exits 0, 3 when
+some file had warnings, or 1 when some file failed. It can be run by
+hand any time.
+
 Limits:
 
 - The list holds the 100 newest Forex signals only. A signal that left
@@ -521,9 +577,11 @@ and shows the code to the user.
 
 The task `fx-trading-central-usdchf` ("FX: Trading Central с сайта
 FxPro Direct"; the id is from the first version, which read only
-USDCHF) reads the Forex signals of the pairs above through the API in
-the built-in browser every hour from 07:05 to 23:05 local time on work
-days, and runs `signal`. It is a separate task, so a
+USDCHF) used to read the Forex signals of the pairs above through the
+API in the built-in browser. Since 2026-10-21 it runs
+`src/fx-browser/tc-signals.mjs` (needs the fx-browser app; if it is not
+running, the task starts it) and then `import-direct-inbox.ps1` every hour from 07:05 to 23:05
+local time on work days (see "Direct inbox"). It is a separate task, so a
 stuck browser step (login, permission prompt) never blocks the mail
 import: a run that waits for a permission blocks the next runs of the
 same task.

@@ -3,7 +3,7 @@ using FXViewer.Storage;
 
 namespace FXViewer.Compute;
 
-public static class DollarIndexSymbol
+public static partial class DollarIndexSymbol
 {
     private const int PriceScale = 100000;
     private const int PipScale = 10;
@@ -16,6 +16,20 @@ public static class DollarIndexSymbol
 
     private static bool UsdIsBase(string pair) =>
         pair.StartsWith("USD", StringComparison.OrdinalIgnoreCase);
+
+    internal static bool TryEffectivePrice(Candle c, double pipPoints, out double price)
+    {
+        price = 0;
+        if (c.Avg <= 0) return false;
+        if (!c.WideSpread)
+        {
+            price = c.Avg;
+            return true;
+        }
+        if (!c.HasSpread) return false;
+        price = c.Avg + (c.SpreadTenths - 10) * (pipPoints / 10.0) / 2.0;
+        return true;
+    }
 
     private sealed class State
     {
@@ -42,8 +56,34 @@ public static class DollarIndexSymbol
         Action<string>? log = null, CancellationToken ct = default, IProgress<double>? progress = null)
     {
         var use = Effective(pairs);
-        db.DeleteSymbol(targetSymbol);
         long end = endUnix > 0 ? endUnix : long.MaxValue;
+        if (IndexMethods.IsConsensus(method))
+        {
+            bool pips = IndexAlgorithms.IsPips(algorithm);
+            var candles = ComputeConsensus(db, use, method, startUnix, end, pips, pipPoints, ct, log, progress, null);
+            db.DeleteSymbol(targetSymbol);
+            foreach (var c in candles)
+                db.WriteMinute(targetSymbol, UnixToUtc(c.MinuteUnixSeconds), c.Avg, c.Avg, c.Avg, false);
+            db.FlushAll();
+            if (candles.Length > 0) MarkStored(db, targetSymbol, use, startUnix, method, algorithm);
+            progress?.Report(1.0);
+            if (candles.Length == 0)
+            {
+                log?.Invoke($"{targetSymbol}: no minutes where all {use.Count} pairs have data in the range");
+                return (0, 0);
+            }
+            var last = candles[^1];
+            string final = pips
+                ? $"{(last.Avg - PriceScale) / (double)PipScale:+0.0;-0.0} pips"
+                : $"{last.Avg / (double)PriceScale:F5}";
+            log?.Invoke(
+                $"{targetSymbol}: {candles.Length:N0} minutes written, " +
+                $"{UnixToUtc(last.MinuteUnixSeconds):yyyy-MM-dd HH:mm} last, final {final} " +
+                $"({method}, {algorithm}, {string.Join(" ", use)})");
+            int yearCount = candles.Select(c => UnixToUtc(c.MinuteUnixSeconds).Year).Distinct().Count();
+            return (yearCount, candles.Length);
+        }
+        db.DeleteSymbol(targetSymbol);
         var st = new State(use.Count, IndexAlgorithms.IsPips(algorithm));
         int years = RunRange(db, use, startUnix, end, IndexMethods.IsAverage(method),
             pipPoints, st, DbWriter(db, targetSymbol), ct, progress);
@@ -67,6 +107,16 @@ public static class DollarIndexSymbol
         Action<string>? log = null, CancellationToken ct = default, IProgress<double>? progress = null)
     {
         var use = Effective(pairs);
+        if (IndexMethods.IsConsensus(method))
+        {
+            var all = ComputeConsensus(db, use, method, startUnix, endUnix > 0 ? endUnix : long.MaxValue,
+                IndexAlgorithms.IsPips(algorithm), pipPoints, ct, log, progress, targetSymbol);
+            var (written, cleared) = FlatSeriesSync.Apply(db, targetSymbol, all);
+            if (all.Length > 0) MarkStored(db, targetSymbol, use, startUnix, method, algorithm);
+            progress?.Report(1.0);
+            log?.Invoke($"{targetSymbol}: {written:N0} minutes written, {cleared:N0} cleared");
+            return written;
+        }
         var lastTarget = db.LastFilledMinuteUtc(targetSymbol);
         if (lastTarget == null)
             return Generate(db, targetSymbol, use, startUnix, endUnix, method, algorithm, pipPoints,
@@ -94,7 +144,7 @@ public static class DollarIndexSymbol
             return 0;
         }
 
-        var st = Resume(db, targetSymbol, use, lastTargetUnix, IndexAlgorithms.IsPips(algorithm));
+        var st = Resume(db, targetSymbol, use, lastTargetUnix, IndexAlgorithms.IsPips(algorithm), pipPoints);
         if (st == null)
             return Generate(db, targetSymbol, use, startUnix, endUnix, method, algorithm, pipPoints,
                 log, ct, progress).Minutes;
@@ -109,9 +159,13 @@ public static class DollarIndexSymbol
 
     public static Candle[] Compute(
         CandleDatabase db, IReadOnlyList<string>? pairs, long startUnix, long endUnix,
-        string method, string algorithm, Func<string, int> pipPoints, CancellationToken ct = default)
+        string method, string algorithm, Func<string, int> pipPoints, CancellationToken ct = default,
+        Action<string>? log = null, string? storedSymbol = null)
     {
         var use = Effective(pairs);
+        if (IndexMethods.IsConsensus(method))
+            return ComputeConsensus(db, use, method, startUnix, endUnix > 0 ? endUnix : long.MaxValue,
+                IndexAlgorithms.IsPips(algorithm), pipPoints, ct, log, null, storedSymbol);
         var result = new List<Candle>();
         var st = new State(use.Count, IndexAlgorithms.IsPips(algorithm));
         RunRange(db, use, startUnix, endUnix > 0 ? endUnix : long.MaxValue, IndexMethods.IsAverage(method),
@@ -127,22 +181,25 @@ public static class DollarIndexSymbol
     public static List<Candle> Tail(
         CandleDatabase db, string targetSymbol, IReadOnlyList<string>? pairs, long endUnix,
         string method, string algorithm, Func<string, int> pipPoints,
-        IReadOnlyDictionary<string, Candle[]> livePairs)
+        IReadOnlyDictionary<string, Candle[]> livePairs, long startUnix = 0)
     {
         var tail = new List<Candle>();
         var use = Effective(pairs);
+        if (IndexMethods.IsConsensus(method))
+            return TailConsensus(db, targetSymbol, use, method, startUnix, endUnix, IndexAlgorithms.IsPips(algorithm),
+                pipPoints, livePairs);
         var lastTarget = db.LastFilledMinuteUtc(targetSymbol);
         if (lastTarget == null) return tail;
         long lastTargetUnix = ((DateTimeOffset)lastTarget.Value).ToUnixTimeSeconds();
         long to = Math.Min(endUnix > 0 ? endUnix : long.MaxValue, NowMinuteUnix());
         if (to <= lastTargetUnix) return tail;
-        var st = Resume(db, targetSymbol, use, lastTargetUnix, IndexAlgorithms.IsPips(algorithm));
+        var st = Resume(db, targetSymbol, use, lastTargetUnix, IndexAlgorithms.IsPips(algorithm), pipPoints);
         if (st == null) return tail;
 
         var lists = new IReadOnlyList<Candle>[use.Count];
         for (int i = 0; i < use.Count; i++)
             lists[i] = WithLive(
-                db.ReadRange(use[i], UnixToUtc(lastTargetUnix + 60), UnixToUtc(to)),
+                db.ReadRange(use[i], UnixToUtc(lastTargetUnix + 60), UnixToUtc(to), includeWide: true),
                 livePairs.GetValueOrDefault(use[i]), lastTargetUnix, to);
         Step(lists, use.Select(UsdIsBase).ToArray(), IndexMethods.IsAverage(method),
             use.Select(p => (double)pipPoints(p)).ToArray(), st,
@@ -167,7 +224,8 @@ public static class DollarIndexSymbol
     }
 
     private static State? Resume(
-        CandleDatabase db, string targetSymbol, IReadOnlyList<string> pairs, long lastTargetUnix, bool usePips)
+        CandleDatabase db, string targetSymbol, IReadOnlyList<string> pairs, long lastTargetUnix, bool usePips,
+        Func<string, int> pipPoints)
     {
         var targetCandle = ReadAt(db, targetSymbol, lastTargetUnix);
         if (targetCandle is not { Avg: > 0 }) return null;
@@ -182,8 +240,8 @@ public static class DollarIndexSymbol
         for (int i = 0; i < pairs.Count; i++)
         {
             var c = ReadAt(db, pairs[i], lastTargetUnix);
-            if (c is not { Avg: > 0 }) return null;
-            st.LastPrice[i] = c.Value.Avg;
+            if (c == null || !TryEffectivePrice(c.Value, pipPoints(pairs[i]), out double price)) return null;
+            st.LastPrice[i] = price;
         }
         return st;
     }
@@ -216,7 +274,7 @@ public static class DollarIndexSymbol
             long yearFrom = Math.Max(from, YearStartUnix(year));
             long yearTo = Math.Min(to, YearStartUnix(year + 1) - 60);
             for (int i = 0; i < pairs.Count; i++)
-                lists[i] = db.ReadRange(pairs[i], UnixToUtc(yearFrom), UnixToUtc(yearTo));
+                lists[i] = db.ReadRange(pairs[i], UnixToUtc(yearFrom), UnixToUtc(yearTo), includeWide: true);
             Step(lists, usdBase, useAverage, pip, st, write, ct);
             done++;
             progress?.Report((double)done / span.Count);
@@ -246,9 +304,9 @@ public static class DollarIndexSymbol
                 vals[i] = 0;
                 if (idx[i] < lists[i].Count && lists[i][idx[i]].MinuteUnixSeconds == t)
                 {
-                    if (lists[i][idx[i]].Avg > 0)
+                    if (TryEffectivePrice(lists[i][idx[i]], pip[i], out double price))
                     {
-                        vals[i] = lists[i][idx[i]].Avg;
+                        vals[i] = price;
                         present++;
                     }
                     idx[i]++;
@@ -305,7 +363,7 @@ public static class DollarIndexSymbol
     private static Candle? ReadAt(CandleDatabase db, string symbol, long unix)
     {
         var utc = UnixToUtc(unix);
-        var candles = db.ReadRange(symbol, utc, utc);
+        var candles = db.ReadRange(symbol, utc, utc, includeWide: true);
         return candles.Count > 0 ? candles[0] : null;
     }
 

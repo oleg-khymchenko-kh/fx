@@ -35,8 +35,10 @@ Between two points the shift is interpolated linearly, outside
 
 Time is measured on the chart's own x axis: virtual (weekend-compressed)
 seconds when "No weekends" is on, real seconds otherwise, so the map is
-rebuilt when that switch is toggled. `FlattenMap` (Chart/FlattenMap.cs)
-holds the sorted times, the shifts and does the lookup by binary search.
+rebuilt when that switch is toggled. `LineFlattenMap`
+(Chart/LineFlattenMap.cs, base class `FlattenMap`) holds the sorted
+times, the shifts and does the lookup by binary search. The same base
+class is used by [flatten by avg](flatten-by-avg.md).
 
 The shift is one number per chart time, so it is applied to **all**
 series - pairs, indicators and other drawings alike. Their vertical
@@ -49,6 +51,7 @@ distances to each other never change, the whole picture is bent as one.
   it is passed to the rasterizer in `RenderLine.ColumnShift`. `DrawLine`
   adds it to the chosen value of the column. The jump after the end of
   the line is drawn as a normal vertical connector between two columns.
+  The last price line of a series gets the shift of its last column.
 - Drawing lines: each segment is cut at the vertex times of the flatten
   line (`FlattenMap.CutsBetween`), the original value is interpolated at
   every cut and the shift is added there, so a segment that crosses a

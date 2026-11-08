@@ -8,21 +8,26 @@ public sealed class VolumeCollector
 {
     public static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
 
-    public static readonly (string Pair, string Root)[] Futures =
+    public const string Cme = "CME";
+    public const string Eurex = "EUREX";
+
+    public static readonly (string Pair, string Root, string Exchange)[] Futures =
     {
-        ("EURUSD", "6E"),
-        ("GBPUSD", "6B"),
-        ("USDCHF", "6S"),
-        ("USDJPY", "6J"),
-        ("AUDUSD", "6A"),
-        ("NZDUSD", "6N"),
-        ("USDCAD", "6C"),
+        ("EURUSD", "6E", Cme),
+        ("GBPUSD", "6B", Cme),
+        ("USDCHF", "6S", Cme),
+        ("USDJPY", "6J", Cme),
+        ("AUDUSD", "6A", Cme),
+        ("NZDUSD", "6N", Cme),
+        ("USDCAD", "6C", Cme),
+        ("GER40", "FDAX", Eurex),
     };
+
+    public static string ScidName(string contract, string exchange) => $"{contract}-{exchange}.scid";
 
     private const int SettleMinutes = 3;
     private const int BackfillHours = 48;
     private const int WaitingLogSeconds = 300;
-    private const int ProfilePipPoints = 10;
     private const int RollCheckSeconds = 300;
     private const int RecentHours = 24;
     private const int WideRecentHours = 96;
@@ -41,6 +46,7 @@ public sealed class VolumeCollector
 
     private sealed class PairState
     {
+        public string Exchange = Cme;
         public string Contract = "";
         public long Offset;
         public bool Missing;
@@ -111,16 +117,16 @@ public sealed class VolumeCollector
             .ToUnixTimeSeconds();
         if (_firstPass) _log($"volume: reading Sierra data from {_folder}");
 
-        foreach (var (pair, root) in Futures)
+        foreach (var (pair, root, exchange) in Futures)
         {
             if (!_state.TryGetValue(pair, out var st))
             {
-                st = new PairState();
+                st = new PairState { Exchange = exchange };
                 _state[pair] = st;
             }
             if (!ChooseContract(pair, root, st, utcNow, nowUnix)) continue;
             var contract = st.Contract;
-            var path = ContractPath(contract);
+            var path = ContractPath(contract, st.Exchange);
             if (!File.Exists(path))
             {
                 if (!st.Missing) _log($"volume {pair}: no file {Path.GetFileName(path)}, skipped");
@@ -129,9 +135,10 @@ public sealed class VolumeCollector
             }
             st.Missing = false;
 
-            var ticksInto = VolumeProfileStore.SupportedPairs.Contains(pair) ? st.PendingTicks : null;
+            var scale = VolumeProfileStore.ScaleOf(pair);
+            var ticksInto = scale != null ? st.PendingTicks : null;
             var res = ScidReader.ReadMinuteVolumes(path, st.Offset, st.Pending, ticksInto,
-                VolumeProfileStore.IsReciprocal(pair));
+                VolumeProfileStore.IsReciprocal(pair), scale?.PriceScale ?? 100000);
             if (!res.Ok)
             {
                 _log($"volume {pair}: {res.Error}");
@@ -174,9 +181,9 @@ public sealed class VolumeCollector
             }
             if (written > 0) db.FlushSymbol(pair);
 
-            if (ticksInto != null && !aborted && st.PendingTicks.Count > 0 && _canWrite())
+            if (scale is { } profileScale && !aborted && st.PendingTicks.Count > 0 && _canWrite())
             {
-                var writer = db.ProfileWriter(pair, ProfilePipPoints, _log);
+                var writer = db.ProfileWriter(pair, profileScale, _log);
                 if (st.ProfileFloor < 0) st.ProfileFloor = writer.LastStoredMinute();
                 long skipBelow = Math.Max(st.ProfileFloor, horizon - 60);
                 if (skipBelow > 0)
@@ -205,7 +212,7 @@ public sealed class VolumeCollector
                         }
                         if (!avgByMinute.TryGetValue(minute, out var avg)) continue;
                         int shift = st.Shift.Push(minute, avg, accum.VwapPoints);
-                        var record = VolumeProfileStore.Build(minute, accum, shift, ProfilePipPoints);
+                        var record = VolumeProfileStore.Build(minute, accum, shift, profileScale.PipPoints);
                         if (record == null)
                         {
                             overflow++;
@@ -278,15 +285,15 @@ public sealed class VolumeCollector
         var recent = new Dictionary<string, ScidReader.RecentResult>(StringComparer.OrdinalIgnoreCase);
         foreach (var c in candidates)
         {
-            var r = ScidReader.ReadRecent(ContractPath(c), since, wideSince);
-            if (r.Exists && !r.Ok) _log($"volume {pair}: {c}-CME.scid: {r.Error}");
+            var r = ScidReader.ReadRecent(ContractPath(c, st.Exchange), since, wideSince);
+            if (r.Exists && !r.Ok) _log($"volume {pair}: {ScidName(c, st.Exchange)}: {r.Error}");
             recent[c] = r;
         }
         var best = PickContract(candidates, recent, st.Contract, front);
         if (best == null)
         {
             if (!st.Missing)
-                _log($"volume {pair}: no file {front}-CME.scid or {previous}-CME.scid, skipped");
+                _log($"volume {pair}: no file {ScidName(front, st.Exchange)} or {ScidName(previous, st.Exchange)}, skipped");
             st.Missing = true;
             return false;
         }
@@ -297,7 +304,7 @@ public sealed class VolumeCollector
             string detail = Describe(best, recent[best], freshest);
             if (!Same(best, front))
                 detail += ", calendar " + Describe(front, recent[front], freshest)
-                    + Advice(front, recent[front], freshest);
+                    + Advice(front, st.Exchange, recent[front], freshest);
             if (st.Contract.Length > 0)
                 _log($"volume {pair}: contract {st.Contract} -> {best} ({detail})");
             else
@@ -310,7 +317,7 @@ public sealed class VolumeCollector
         {
             st.LastStaleLog = nowUnix;
             _log($"volume {pair}: staying on {Describe(best, recent[best], freshest)}, calendar " +
-                Describe(front, recent[front], freshest) + Advice(front, recent[front], freshest));
+                Describe(front, recent[front], freshest) + Advice(front, st.Exchange, recent[front], freshest));
         }
         _chosen[pair] = st.Contract;
         return true;
@@ -361,7 +368,7 @@ public sealed class VolumeCollector
         if (st.NewestSeen <= 0 || nowUnix - st.NewestSeen < DeadAfterHours * 3600L) return;
         if (nowUnix - st.LastDeadLog < DeadLogSeconds) return;
         st.LastDeadLog = nowUnix;
-        _log($"volume {pair}: no trades in {st.Contract}-CME.scid since " +
+        _log($"volume {pair}: no trades in {ScidName(st.Contract, st.Exchange)} since " +
             $"{Utc(st.NewestSeen):yyyy-MM-dd HH:mm} UTC, is a chart for it open in Sierra?");
     }
 
@@ -375,12 +382,13 @@ public sealed class VolumeCollector
         return $"{contract} {r.WideVolume:N0} in 96h";
     }
 
-    private static string Advice(string front, ScidReader.RecentResult frontRecent, long freshest) =>
+    private static string Advice(string front, string exchange, ScidReader.RecentResult frontRecent, long freshest) =>
         !frontRecent.Exists || Frozen(frontRecent, freshest)
-            ? $", open a chart for {front}-CME in Sierra"
+            ? $", open a chart for {front}-{exchange} in Sierra"
             : "";
 
-    private string ContractPath(string contract) => Path.Combine(_folder, contract + "-CME.scid");
+    private string ContractPath(string contract, string exchange) =>
+        Path.Combine(_folder, ScidName(contract, exchange));
 
     private static bool Same(string a, string b) =>
         string.Equals(a, b, StringComparison.OrdinalIgnoreCase);

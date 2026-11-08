@@ -213,6 +213,20 @@ public static class ChartColumns
             ExpandOnce(minuteFullRange, minuteFirst, run, firstBucket, count));
     }
 
+    public static ChartSeries BuildLineView(CandleHistory history, long columnSeconds, long firstBucket,
+        int count, WeekendCompressor? map, long maxUnix = long.MaxValue, CandleHistory? extension = null)
+    {
+        int run = MinuteRun(columnSeconds);
+        if (run == 1)
+            return BuildExtendedView(history, extension, columnSeconds, firstBucket, count, map, maxUnix);
+        long minuteFirst = MinuteBucket(firstBucket, run);
+        var minutes = BuildExtendedView(
+            history, extension, MinuteSeconds, minuteFirst, MinuteCount(count, run), map, maxUnix);
+        return new ChartSeries(
+            Expand(minutes.Columns, minuteFirst, run, firstBucket, count, default),
+            columnSeconds, firstBucket);
+    }
+
     private static ChartSeries BuildExtendedView(CandleHistory history, CandleHistory? extension,
         long columnSeconds, long firstBucket, int count, WeekendCompressor? map, long maxUnix)
     {

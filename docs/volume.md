@@ -429,6 +429,44 @@ profile is built from the selected minutes instead (see "Selection
 mode" in docs/price-density.md) and the candle profile is skipped -
 the selection already is the window.
 
+### Volume average line (VWAP) of the selection
+
+With a selection active, the profile also gets a dark gray (`#505050`)
+1 px horizontal line at the volume weighted average price of the
+selected minutes: the sum of `level x volume` over all pip levels of
+the selection profile, divided by the total volume. It reads the same
+histogram the profile draws, so it uses the real per-pip split where
+the volume-at-price store has data and the even split elsewhere. The
+line covers only the volume bar of its own row: it starts at the right
+edge and stops at the left end of that bar, never past it. When the
+average falls on a row with no volume (a price gap between two
+clusters), an 8 px stub at the right edge marks it. The line moves
+live with the selection. Each Volume indicator draws its own line at
+its own pair's offset. Without a selection there is no line.
+
+### Rectangle selection (Q)
+
+The measure rectangle (press `Q` on the chart, move the mouse, click)
+limits both time and price. While it is on the chart, the Volume
+profile uses it instead of the lookback window or the Shift
+selection:
+
+- time: the minutes of the rectangle's columns, like a Shift
+  selection;
+- price: only the pip levels inside the rectangle's top and bottom
+  are kept, everything above and below is dropped. The levels are
+  taken in the pair's own coordinates (offset and flatten shift at
+  the rectangle's end are removed), so the kept rows are exactly the
+  rows the rectangle covers on screen.
+
+The profile follows the rectangle live while it is drawn, the label
+reads `NAME: selection`, the cursor candle is not drawn, and the VWAP
+line is the average of the kept levels only. A rectangle with no
+volume inside leaves the profile empty. Escape or the click that
+removes the rectangle brings the normal profile back. Only the Volume
+profile reacts to the rectangle; Density, Levels and the order book
+keep their usual window.
+
 ## Live filling inside the app (v3)
 
 The console tool cannot run while FXViewer is open: it writes the year
@@ -571,3 +609,65 @@ missing, `C:\SierraChart\Data`.
   OHLCV file has no distribution inside the minute.
 - Pips of the candle range whose minutes carry no volume stay empty,
   so a candle can look shorter than the price bar next to it.
+
+## GER40 volume from Eurex (v8, 2026-10-16)
+
+GER40 is the only non-FX pair with a futures volume source: the DAX
+future on Eurex, root `FDAX` (full contract; `FDXM` mini and `FDXS`
+micro exist too but are not read). The `Futures` table in
+`VolumeCollector` therefore carries an exchange per pair, and the
+file name is `{contract}-{exchange}.scid`: `6EZ26-CME.scid` for
+EURUSD, `FDAXZ26-EUREX.scid` for GER40. `DepthCollector` builds its
+`.depth` names the same way.
+
+Eurex data comes through Sierra Chart's free **Delayed Exchange Data
+Feed** (15 minutes behind, no exchange fee, included in the service
+package). The real-time Eurex entitlement (EUREX EOBI, $25 a month)
+is not needed: the collector already runs on delayed CME data, and
+volume per minute does not care about a 15 minute lag. Real-time
+would only matter if the live tail of the volume panel had to be
+current.
+
+How the chart was opened (2026-10-16): Sierra `Find Symbol` >>
+search `FDAX` >> group `FDAX?##-EUREX | DAX - EUREX` >>
+`FDAXZ26-EUREX | December 2026` >> `Open Intraday Chart`, then save
+the chartbook so the chart survives a Sierra restart. The download
+gave 560,038 tick records from 2026-04-27 (the whole life of the Dec
+2026 contract so far, sparse until it became the front month in
+September) to the current minute, 22 MB. FDAX trades about 26-29
+thousand times a day on the front month, 30 thousand contracts.
+
+Deeper history (done 2026-10-16): the expired contracts are listed in
+the same Find Symbol group with `(Exp.)`, and any older one can be
+typed into the `Selected Symbol` field (`FDAXZ24-EUREX`) and opened
+with `Open Intraday Chart`; the delayed feed downloads each contract's
+file in seconds. Twelve contracts H24..Z26 gave 50-110 MB each, about
+6 months per file with generous overlap (H24 runs 2023-09-28 ..
+2024-03-15). `Fx.VolumeFill --scid C:\SierraChart\Data --prefix FDAX
+--pair GER40` (FXViewer closed) merged them with the per-UTC-day
+active-contract pick: 733,821 minutes 2023-09-28 .. 2026-10-16, 711,850
+written, 21,971 without a GER40 candle, 24.7 million contracts, 4
+seconds. Per-pip profiles are skipped for GER40 by the tool itself.
+
+Sierra UI traps met on the way: `Ctrl+A` does not select the text of
+the `Selected Symbol` field (use `End`, `Shift+Home`), and a mistyped
+symbol still opens a chart and creates a 56-byte `.scid` that must be
+deleted before the fill; the toolbar button next to `Save Cbook` is
+`Close Cbook` (closes the whole chartbook), not `Close Chart`. The
+expired-contract charts were dropped afterwards by closing the
+chartbook without saving and reopening the saved one, so only the
+four live charts (6B, 6E, 6S, FDAX Z26) persist.
+
+Quarterly months and the calendar roll are the same H/M/U/Z pattern as
+CME FX; FDAX expires on the third Friday instead of the Monday before
+the third Wednesday, so the calendar front switches a few days early,
+and the volume-based pick (v6/v7) keeps the old contract until the new
+one really carries the trades.
+
+Until 2026-10-20 the volume-at-price profile skipped GER40, so its
+Volume bars had no buy / sell colors. Since then GER40 has a `.vap`
+store too: the price scale and the pip come from a per-pair table
+(GER40: 100 raw points per pip, price x 100), the FDAX history from
+2019-12 is filled from ticks, and the in-app loading keeps up with
+7 years of profiles. Details in docs/volume-at-price.md, "v4: GER40
+из FDAX".

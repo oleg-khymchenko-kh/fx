@@ -6,9 +6,8 @@ public sealed record FindPatternRow(
     double Pips, double Minutes, double PipsUp, double PipsDown, double MinLeft, double MinRight, bool Zoom,
     long SourceUnix);
 
-public sealed record FindLevelRow(
-    string Level, string Use, double TolUp, double TolDown, string Seq, double MinLeft, double MinRight,
-    long TimeUnix);
+public sealed record FindLevelRow(string Level, string Use, double TolUp, double TolDown, string Seq, long TimeUnix,
+    string MinGap = "", string MaxGap = "");
 
 public sealed class FindDialogState
 {
@@ -23,15 +22,9 @@ public sealed class FindDialogState
     public string SmoothUnit { get; set; } = "";
     public string Zoom { get; set; } = "";
     public string Step { get; set; } = "";
-    public string Tolerance { get; set; } = "";
-    public string Stretch { get; set; } = "";
     public string MinSpan { get; set; } = "";
     public string MinSpanUnit { get; set; } = "";
-    public string LevelsMinLeft { get; set; } = "";
-    public string LevelsMinRight { get; set; } = "";
     public bool PickOnChart { get; set; }
-    public List<LevelStep> LeftSteps { get; set; } = new();
-    public List<LevelStep> RightSteps { get; set; } = new();
     public List<FindPatternRow> Points { get; set; } = new();
     public string PointsSource { get; set; } = "";
     public bool PointsEdited { get; set; }
@@ -62,15 +55,9 @@ public sealed class FindDialogState
         SmoothUnit = SmoothUnit,
         Zoom = Zoom,
         Step = Step,
-        Tolerance = Tolerance,
-        Stretch = Stretch,
         MinSpan = MinSpan,
         MinSpanUnit = MinSpanUnit,
-        LevelsMinLeft = LevelsMinLeft,
-        LevelsMinRight = LevelsMinRight,
         PickOnChart = PickOnChart,
-        LeftSteps = LevelStep.CopyOf(LeftSteps),
-        RightSteps = LevelStep.CopyOf(RightSteps),
         Points = new List<FindPatternRow>(Points),
         PointsSource = PointsSource,
         PointsEdited = PointsEdited,

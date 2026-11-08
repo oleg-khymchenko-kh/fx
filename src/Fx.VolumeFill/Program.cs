@@ -79,10 +79,10 @@ if (scidPath != null)
     if (reciprocal)
         Console.WriteLine($"{csvPair}: {(scidPrefix ?? "the future")} is quoted upside down, " +
             "tick prices are inverted and the aggressor side is swapped");
-    var perContract = new List<(string Name, Dictionary<long, long> Minutes, Dictionary<long, TickMinute> Profiles)>();
+    var perContract = new List<(string Path, Dictionary<long, long> Minutes)>();
     foreach (var file in files.OrderBy(f => f))
     {
-        var (minutes, profiles) = ReadScid(file, reciprocal, out string error);
+        var (minutes, _) = ReadScid(file, reciprocal, 0, null, out string error);
         if (error.Length > 0)
         {
             Console.Error.WriteLine($"{Path.GetFileName(file)}: {error}");
@@ -92,20 +92,19 @@ if (scidPath != null)
         long total = minutes.Values.Sum();
         Console.WriteLine($"{Path.GetFileName(file),-24} {minutes.Count,9:N0} minutes  " +
             $"{FormatUtc(minutes.Keys.Min())} .. {FormatUtc(minutes.Keys.Max())}  " +
-            $"volume {total:N0}" +
-            (profiles.Count > 0 ? $"  ticks in {profiles.Count:N0} minutes" : ""));
-        perContract.Add((Path.GetFileNameWithoutExtension(file), minutes, profiles));
+            $"volume {total:N0}");
+        perContract.Add((file, minutes));
     }
     if (perContract.Count == 0)
     {
         Console.Error.WriteLine("No usable records");
         return 1;
     }
-    var (mergedVolumes, mergedProfiles) = MergeByActiveContract(perContract);
+    var (mergedVolumes, dayWinner) = MergeByActiveContract(perContract.Select(c => c.Minutes).ToList());
     Console.WriteLine($"{perContract.Count} contract file(s) -> {mergedVolumes.Count:N0} minutes, " +
         $"{FormatUtc(mergedVolumes.Keys.Min())} .. {FormatUtc(mergedVolumes.Keys.Max())} UTC");
     WritePair(dataRoot, csvPair, mergedVolumes);
-    WriteProfiles(dataRoot, csvPair, mergedProfiles);
+    WriteProfiles(dataRoot, csvPair, perContract.Select(c => c.Path).ToList(), dayWinner, reciprocal);
     Console.WriteLine($"Done in {sw.Elapsed.TotalSeconds:F0} s");
     return 0;
 }
@@ -236,23 +235,21 @@ void WritePair(string root, string pair, Dictionary<long, int> volumes)
     Console.WriteLine($"{written:N0} written, {noCandle:N0} without a candle, total volume {total:N0}");
 }
 
-void WriteProfiles(string root, string pair, Dictionary<long, (TickMinute Accum, int Contract)> profiles)
+void WriteProfiles(string root, string pair, List<string> contracts, Dictionary<long, int> dayWinner,
+    bool reciprocal)
 {
-    if (profiles.Count == 0) return;
-    if (!VolumeProfileStore.SupportedPairs.Contains(pair))
+    if (VolumeProfileStore.ScaleOf(pair) is not { } scale)
     {
-        Console.WriteLine($"{pair}: ticks in {profiles.Count:N0} minutes, but per-pip profiles " +
-            $"support {string.Join(", ", VolumeProfileStore.SupportedPairs)} only, " +
+        Console.WriteLine($"{pair}: per-pip profiles support " +
+            $"{string.Join(", ", VolumeProfileStore.SupportedPairs.Keys)} only, " +
             "totals written without profiles");
         return;
     }
-    const int PipPoints = 10;
-    const int PriceScale = 100000;
     var dir = Path.Combine(root, pair);
     if (!Directory.Exists(dir)) return;
     try
     {
-        WriteProfilesCore(dir, pair, profiles, PipPoints, PriceScale);
+        WriteProfilesCore(dir, pair, contracts, dayWinner, reciprocal, scale.PipPoints, scale.PriceScale);
     }
     catch (IOException ex)
     {
@@ -260,10 +257,9 @@ void WriteProfiles(string root, string pair, Dictionary<long, (TickMinute Accum,
     }
 }
 
-void WriteProfilesCore(string dir, string pair,
-    Dictionary<long, (TickMinute Accum, int Contract)> profiles, int PipPoints, int PriceScale)
+void WriteProfilesCore(string dir, string pair, List<string> contracts, Dictionary<long, int> dayWinner,
+    bool reciprocal, int PipPoints, int PriceScale)
 {
-
     var yearBytes = new Dictionary<int, byte[]?>();
     int SpotAvg(long minuteUnix)
     {
@@ -294,26 +290,50 @@ void WriteProfilesCore(string dir, string pair,
         return BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(off + 8));
     }
 
-    var estimator = new ShiftEstimator();
+    string Pips(int points) => (points / (double)PipPoints).ToString("F1", CultureInfo.InvariantCulture);
+
     var fresh = new List<ProfileRecord>();
+    int tickMinutes = 0;
     int noCandle = 0;
     int overflow = 0;
-    int prevContract = -1;
-    foreach (var (minute, entry) in profiles.OrderBy(p => p.Key))
+    for (int i = 0; i < contracts.Count; i++)
     {
-        var accum = entry.Accum;
-        if (!accum.HasTrades) continue;
-        if (entry.Contract != prevContract)
+        int contract = i;
+        var (_, ticks) = ReadScid(contracts[i], reciprocal, PriceScale,
+            minute => dayWinner.TryGetValue(minute - Mod(minute, 86400), out var winner) && winner == contract,
+            out string error);
+        if (error.Length > 0)
         {
-            if (prevContract >= 0) estimator.Reset();
-            prevContract = entry.Contract;
+            Console.Error.WriteLine($"{Path.GetFileName(contracts[i])}: {error}");
+            continue;
         }
-        int avg = SpotAvg(minute);
-        if (avg < 0) { noCandle++; continue; }
-        int shift = estimator.Push(minute, avg, accum.VwapPoints);
-        var record = VolumeProfileStore.Build(minute, accum, shift, PipPoints);
-        if (record == null) { overflow++; continue; }
-        fresh.Add(record.Value);
+        if (ticks.Count == 0) continue;
+        tickMinutes += ticks.Count;
+        var estimator = new ShiftEstimator();
+        int before = fresh.Count;
+        var shifts = new List<int>();
+        foreach (var (minute, accum) in ticks.OrderBy(p => p.Key))
+        {
+            if (!accum.HasTrades) continue;
+            int avg = SpotAvg(minute);
+            if (avg < 0) { noCandle++; continue; }
+            int shift = estimator.Push(minute, avg, accum.VwapPoints);
+            var record = VolumeProfileStore.Build(minute, accum, shift, PipPoints);
+            if (record == null) { overflow++; continue; }
+            fresh.Add(record.Value);
+            shifts.Add(shift);
+        }
+        shifts.Sort();
+        Console.WriteLine($"{Path.GetFileName(contracts[i]),-24} profiles {fresh.Count - before,9:N0} minutes" +
+            (shifts.Count > 0
+                ? $"  shift to spot {Pips(shifts[0])} .. {Pips(shifts[shifts.Count / 2])} .. " +
+                  $"{Pips(shifts[^1])} pips"
+                : ""));
+    }
+    if (tickMinutes == 0)
+    {
+        Console.WriteLine($"{pair}: no ticks in the .scid files, totals written without profiles");
+        return;
     }
     if (fresh.Count == 0)
     {
@@ -432,10 +452,9 @@ static long Mod(long value, long m)
 }
 
 static (Dictionary<long, long> Minutes, Dictionary<long, TickMinute> Profiles) ReadScid(
-    string path, bool reciprocal, out string error)
+    string path, bool reciprocal, int priceScale, Func<long, bool>? tickMinute, out string error)
 {
     const long ScidEpochOffset = 2209161600L;
-    const int PriceScale = 100000;
     var minutes = new Dictionary<long, long>();
     var profiles = new Dictionary<long, TickMinute>();
     error = "";
@@ -473,6 +492,7 @@ static (Dictionary<long, long> Minutes, Dictionary<long, TickMinute> Profiles) R
                 long unix = micros / 1_000_000 - ScidEpochOffset;
                 long minute = unix - Mod(unix, 60);
                 minutes[minute] = minutes.TryGetValue(minute, out var have) ? have + volume : volume;
+                if (tickMinute == null || !tickMinute(minute)) continue;
                 float open = BitConverter.ToSingle(buf, off + 8);
                 if (open != 0f && open >= -1e30f) continue;
                 float close = BitConverter.ToSingle(buf, off + 20);
@@ -484,7 +504,7 @@ static (Dictionary<long, long> Minutes, Dictionary<long, TickMinute> Profiles) R
                     accum = new TickMinute();
                     profiles[minute] = accum;
                 }
-                accum.Add(VolumeProfileStore.SpotPoints(close, reciprocal, PriceScale), volume,
+                accum.Add(VolumeProfileStore.SpotPoints(close, reciprocal, priceScale), volume,
                     reciprocal ? ask : bid, reciprocal ? bid : ask);
             }
             if (read != usable) fs.Position -= read - usable;
@@ -497,49 +517,29 @@ static (Dictionary<long, long> Minutes, Dictionary<long, TickMinute> Profiles) R
     return (minutes, profiles);
 }
 
-static (Dictionary<long, int> Volumes, Dictionary<long, (TickMinute Accum, int Contract)> Profiles)
-    MergeByActiveContract(
-    List<(string Name, Dictionary<long, long> Minutes, Dictionary<long, TickMinute> Profiles)> contracts)
+static (Dictionary<long, int> Volumes, Dictionary<long, int> DayWinner) MergeByActiveContract(
+    List<Dictionary<long, long>> contracts)
 {
     var merged = new Dictionary<long, int>();
-    var mergedProfiles = new Dictionary<long, (TickMinute Accum, int Contract)>();
-    if (contracts.Count == 1)
-    {
-        foreach (var (minute, volume) in contracts[0].Minutes)
-            merged[minute] = (int)Math.Min(volume, int.MaxValue);
-        foreach (var (minute, accum) in contracts[0].Profiles)
-            mergedProfiles[minute] = (accum, 0);
-        return (merged, mergedProfiles);
-    }
-    var dayWinner = new Dictionary<long, (int Index, long Volume)>();
+    var best = new Dictionary<long, (int Index, long Volume)>();
     for (int i = 0; i < contracts.Count; i++)
     {
         var perDay = new Dictionary<long, long>();
-        foreach (var (minute, volume) in contracts[i].Minutes)
+        foreach (var (minute, volume) in contracts[i])
         {
             long day = minute - Mod(minute, 86400);
             perDay[day] = perDay.TryGetValue(day, out var have) ? have + volume : volume;
         }
         foreach (var (day, volume) in perDay)
-            if (!dayWinner.TryGetValue(day, out var best) || volume > best.Volume)
-                dayWinner[day] = (i, volume);
+            if (!best.TryGetValue(day, out var leader) || volume > leader.Volume)
+                best[day] = (i, volume);
     }
+    var dayWinner = best.ToDictionary(p => p.Key, p => p.Value.Index);
     for (int i = 0; i < contracts.Count; i++)
-    {
-        foreach (var (minute, volume) in contracts[i].Minutes)
-        {
-            long day = minute - Mod(minute, 86400);
-            if (dayWinner.TryGetValue(day, out var best) && best.Index == i)
+        foreach (var (minute, volume) in contracts[i])
+            if (dayWinner.TryGetValue(minute - Mod(minute, 86400), out var winner) && winner == i)
                 merged[minute] = (int)Math.Min(volume, int.MaxValue);
-        }
-        foreach (var (minute, accum) in contracts[i].Profiles)
-        {
-            long day = minute - Mod(minute, 86400);
-            if (dayWinner.TryGetValue(day, out var best) && best.Index == i)
-                mergedProfiles[minute] = (accum, i);
-        }
-    }
-    return (merged, mergedProfiles);
+    return (merged, dayWinner);
 }
 
 static bool TryParseUnix(string text, TimeZoneInfo? zone, out long unix)

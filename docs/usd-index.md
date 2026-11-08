@@ -15,9 +15,14 @@ The index extracts the common "dollar part" out of the movements.
 The user picks which pairs build the index with checkboxes (all base
 pairs are offered: EURUSD, GBPUSD, USDCHF, USDJPY, AUDUSD, NZDUSD,
 USDCAD; the default selection is the six major non-JPY ones), sets a
-start time (index = 1.0000 there) and an optional end time. With no end
-time the index runs to the end of history and can be extended
-incrementally as new history arrives.
+start time (index = 1.0000 there) and an optional history end. With no
+history end the index runs to the end of history and can be extended
+incrementally as new history arrives. With a history end, the minutes
+of the pairs after that time do not exist for the index: they are never
+read, so they cannot change it. Every method computes a minute from
+earlier minutes only (Consensus and Consensus 2 since 2026-10-20), so a
+history end only cuts the index; the values before it are the same as
+without it (see docs/usd-index-consensus.md, "History end").
 
 The index is a standalone symbol, not an indicator of some pair: it has
 no Source, it sits at the top level of the symbol bar next to the real
@@ -128,7 +133,12 @@ floor.
 A step is computed only on minutes where every selected pair has a
 filled M1 candle (the candle Avg price is used). Each pair keeps its
 price from the last computed step, and the next step's return is taken
-from that price.
+from that price. Since 2026-10-17 a wide spread minute
+(docs/wide-spread.md) counts too, whatever the "Hide wide spread
+minutes" setting says, with the corrected bid the moving averages use,
+`bid + (spread - 1 pip) / 2`; a flagged minute without a stored spread
+is treated as missing (`DollarIndexSymbol.TryEffectivePrice`). The
+live tail follows the same rule.
 So movement that happens while some pair has a data gap is not lost - it
 is included in the next full step. The sum of a pair's step returns
 always telescopes to its total change since the start.
@@ -176,9 +186,11 @@ data params) removes the drift.
 Same Add/Edit dialog, with the fields ordered Name, Type, Source. Type
 is required and starts empty for a new symbol, so nothing is created by
 accident. Picking "USD Index" hides the Source row (an index has no
-source) and shows the index block: Start (date + HH:mm, required), End
-(date + HH:mm, both empty = to the end of history), Method combo
-(Median / Average), Algorithm combo (Percent / Pips), the Pairs
+source) and shows the index block: Start (date + HH:mm, required),
+History end (date + HH:mm in UTC, both empty = no limit; the label was
+"End" before 2026-10-20, the field and its config key `EndTimeUnix` are
+the same), Method combo (Median / Average / Consensus / Consensus 2),
+Algorithm combo (Percent / Pips), the Pairs
 checkboxes and the Mirror checkbox. At least one pair must be checked. Mirror is display only: ticking or
 unticking it just reloads the chart, it never recomputes the data.
 
@@ -235,6 +247,11 @@ symbol. The user also picks one USD pair; the index built is for the
 OTHER currency of that pair (EURUSD gives EUR, USDCHF gives CHF), and
 the dialog shows the derived currency next to the combo.
 
+Since 2026-10-17 a currency index is not stored. It is computed when it
+is read, from the stored USD index and the stored pair, one value per
+minute of the index (see "No storage since v2" below); the rest of this
+section describes the values, which did not change.
+
 Once the dollar's own path is known, the rest of a pair's move belongs
 to the other currency. In logs, for a pair with USD as the quote side
 (EURUSD):
@@ -276,14 +293,61 @@ Sanity check on 2011-2026 with the six-pair median index: USD 1.419,
 EUR 1.185, CHF 1.655, with the franc's jump in January 2015 (the SNB
 de-peg) clearly visible.
 
-Storage, refresh and rendering work like the other stored indicators:
-flat candles at scale 100000, incremental Refresh from the last stored
-minute (limited by the earlier of the index's and the pair's last
-minute), nested under its index in the symbol bar with pip scale 10 and
-the index's mirror flag. Because a currency index and its parent dollar
-index live on the same 1.0000 baseline, "Align to source" is meaningful
-for it.
+It is nested under its index in the symbol bar with pip scale 10.
+Because a currency index and its parent dollar index live on the same
+1.0000 baseline, "Align to source" is meaningful for it.
 SameData compares the source index and the pair.
+
+### No storage since v2
+
+A currency index writes nothing to disk (`IndicatorTypes.HasStorage`
+is false for `Currency`, so there is no Refresh or Rebuild and Compute
+derived skips it). Its value at a minute is a function of the stored
+USD index value and the pair's price at that minute, so it is computed
+wherever the chart would otherwise read a stored symbol:
+
+    Pips     currency = 1.0000 + (usd pips + s * pair move in pips) / 10000
+    Percent  currency = exp(ln(usd) + s * ln(pair now / pair at the start))
+
+where `s` is +1 for a USD-quote pair (EURUSD) and -1 for a USD-base
+pair (USDCHF), `usd pips` is the stored index level minus 1.0000 in
+pips, and the pair move is counted from the pair's price at the first
+stored minute of the index (the minute where the index is 1.0000). The
+pair price is the same effective price the index itself used: the
+corrected bid on a wide spread minute (`DollarIndexSymbol.
+TryEffectivePrice`), nothing on a flagged minute without a spread.
+These are the same values the old stored symbol held, step by step; the
+closed form is the telescoped sum.
+
+Code: `CurrencyIndexSymbol`. At chart load `MainWindow` registers one
+`Spec` per Currency indicator (name, index symbol, pair, Pips or
+Percent from the index, pip points of the pair) with
+`CurrencyIndexSymbol.Register`; `SeriesDataLoader.ReadYears` and
+`ExistingYears`, the lazy loader's year reads, `ReadLastCandle` and the
+hourly index rebuild's `ReloadIndexSeriesAsync` all go through
+`CurrencyIndexSymbol.SpecOf`: a registered name reads the index years
+and the pair years (`includeWide: true`) and combines them, any other
+name reads the DB as before. So the years on disk, the lazy loading by
+year, the symbol bar price and the live tail work like for a stored
+symbol:
+
+- the 10 second tail (`MainWindow.IndexAuto`) takes the USD index tail
+  and the pair's DB and live minutes and combines them
+  (`CurrencyIndexSymbol.Tail`); no stored currency value is needed to
+  resume, because every value is pointwise;
+- after the hourly index rebuild the currency series of that index are
+  re-read for their loaded years and replaced in place, together with
+  the index;
+- the pair's start price is cached per (index, pair) until the next
+  chart load, when `Register` clears the cache.
+
+Display: a currency index is drawn in its natural orientation,
+"currency up = up", like EURUSD and like the mirrored USDCHF. It does
+not inherit the Mirror flag of its USD index any more (other indicators
+built on the index still do). The USD index itself is unchanged.
+
+Old builds stored currency indexes in the candle DB. On chart load
+`DropStoredCurrencyCandles` deletes those folders once and logs it.
 
 ## Automatic refresh and rebuild
 
@@ -299,11 +363,11 @@ is never written to the DB:
   index minute (same as Refresh) and steps over the pair minutes after
   it: DB minutes (provisional ones included) merged with the live
   minutes that are not in the DB yet (closed minutes still in memory and
-  the forming minute, avg = (open + high + low + close) / 4, wide spread
-  minutes skipped when they are hidden). A DB minute wins over a live
-  one for the same time.
-- `CurrencyIndexSymbol.Tail` does the same for each currency, with the
-  USD tail as the index input.
+  the forming minute, avg = (open + high + low + close) / 4; a wide
+  spread minute keeps its flag and enters with the corrected bid). A DB
+  minute wins over a live one for the same time.
+- `CurrencyIndexSymbol.Tail` combines the USD tail with the pair's
+  minutes for each currency (see "No storage since v2").
 - The result goes to the chart as the series live tail
   (`ChartView.SetLiveTail`), like the live tail of a real pair, and the
   last value goes to the symbol bar. Averages built on the index follow
@@ -314,14 +378,15 @@ recompute, because it resumes from a rounded stored value. The next
 rebuild removes that.
 
 Every hour (rebuild), and on the first tick after startup: the whole
-index is computed again from the start and the DB is brought to that
-result. The end is clamped to the confirmed watermark (see
+index is computed again from the start (for the Consensus method: the
+last 28 weeks, see docs/usd-index-consensus.md) and the DB is brought
+to that result. The end is clamped to the confirmed watermark (see
 docs/live-candles.md), so provisional minutes are never stored; they
-stay in the tail.
+stay in the tail. Currency indexes are not written any more; their
+chart series are re-read from the new index data after the write.
 
-- `DollarIndexSymbol.Compute` and `CurrencyIndexSymbol.Compute` run the
-  same steps as Generate, but into memory, in the background, with no
-  DB lock.
+- `DollarIndexSymbol.Compute` runs the same steps as Generate, but into
+  memory, in the background, with no DB lock.
 - `FlatSeriesSync.Diff` compares the result with the stored minutes and
   makes a plan: minutes to write (new or changed) and minutes to clear
   (stored but not in the result).
@@ -354,6 +419,34 @@ rewrites 118 MB.
 
 Manual Refresh and Rebuild in the symbol bar menu still work as before.
 
+## v2: the Consensus method
+
+Since 2026-10-17 the Method combo has a third value, Consensus. It
+keeps the Pips / Percent algorithm, the storage, the Currency Index and
+the 10 second live tail of v1, but computes the index as a whole: for
+intervals of every length from one minute to 18 weeks it finds the
+value the pairs agree on and builds the one curve that fits all those
+agreements best. The hourly rebuild recomputes it from scratch (about
+11 s for the user's index), the 10 second tail appends v1 median steps
+until the next rebuild. Spec: docs/usd-index-consensus.md.
+
+A fourth value, Consensus 2, was added the same day: the same machine
+with heavier EURUSD and GBPUSD weights and with the return intervals of
+the EUR/GBP spread added to the frame, so the index passes through the
+points where those two pairs moved the same distance. Two index symbols
+with the two methods can be shown on one chart to compare them. Spec:
+the "Consensus 2" section of docs/usd-index-consensus.md.
+
+Since 2026-10-20 both Consensus methods are causal: each minute is
+computed once from the past only and never changes when new candles
+arrive (the first version above looked ahead and rewrote the last 19
+weeks every hour). The hourly step only appends minutes, and the 10
+second tail uses the same algorithm instead of v1 median steps, so what
+the tail shows is what gets stored. Indexes stored by the first version
+are rebuilt once by the first hourly step. Spec: the "Causal algorithm"
+section of docs/usd-index-consensus.md.
+
 ## Not in v1 (next steps)
 
-- Weighting pairs by liquidity, or PCA / Kalman style factor extraction.
+- Weighting pairs by liquidity, or PCA / Kalman style factor extraction
+  (the Consensus method covers the weighting part).

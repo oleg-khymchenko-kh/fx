@@ -136,6 +136,15 @@ in `CandleHistory.LiveHidden`, and an average reads the merged
 `AverageMinutes` / `AverageLive`. See docs/moving-average.md, "Wide
 spread minutes".
 
+## The USD index uses the corrected price too
+
+Since 2026-10-17 the USD index (both the v1 methods and Consensus) and
+the currency indexes read the pairs with `includeWide: true` and take a
+flagged minute with the same corrected bid, `bid + (spread - 1 pip) /
+2`; a flagged minute without a spread is skipped. So the index covers
+the post-close hours whatever this setting says. See docs/usd-index.md,
+"Steps and gaps".
+
 ## The Spread panel is the exception
 
 Hiding the widest spreads from the Spread indicator would hide exactly
