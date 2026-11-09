@@ -151,7 +151,12 @@ Connection tab:
 
 The light index is loaded once at startup and after each import/download.
 Startup also runs `Download calendar` in the background, so the current
-week appears without pressing anything.
+week appears without pressing anything. After that the same download runs
+every 3 hours (`CalendarRefreshInterval`) while the app is open. The
+`thisweek` feed rolls to the new week on Sunday, so an app left open over
+the weekend picks up the new week within 3 hours, and `actual` values of
+past events arrive the same way. A tick is skipped while an import,
+backfill or manual download is running.
 
 ## Rendering (stage 2)
 

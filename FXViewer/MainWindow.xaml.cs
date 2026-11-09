@@ -381,6 +381,8 @@ public partial class MainWindow : Window, INotesHost
     private readonly DispatcherTimer _liveRepairTimer;
     private readonly DispatcherTimer _orderBookTimer;
     private readonly DispatcherTimer _volumeTimer;
+    private static readonly TimeSpan CalendarRefreshInterval = TimeSpan.FromHours(3);
+    private readonly DispatcherTimer _calendarTimer;
     private CancellationTokenSource? _repairCts;
     private Task? _repairTask;
     private readonly Dictionary<string, long> _gapSpreadFrom = new(SymbolNameComparer);
@@ -852,6 +854,8 @@ public partial class MainWindow : Window, INotesHost
         _depthTimer.Start();
         _volumeTimer = new DispatcherTimer { Interval = VolumeCollector.PollInterval };
         _volumeTimer.Tick += (_, _) => PollVolume();
+        _calendarTimer = new DispatcherTimer { Interval = CalendarRefreshInterval };
+        _calendarTimer.Tick += (_, _) => _ = AutoRefreshCalendarAsync();
         BuildTabs();
         Loaded += async (_, _) => await StartupAsync();
     }
@@ -865,6 +869,7 @@ public partial class MainWindow : Window, INotesHost
         ReloadForecasts();
         await LoadCalendarEntriesAsync();
         _ = AutoRefreshCalendarAsync();
+        _calendarTimer.Start();
         PollOrderBook();
         _orderBookTimer.Start();
         PollVolume();
@@ -6061,6 +6066,7 @@ public partial class MainWindow : Window, INotesHost
         _stateSaveTimer.Stop();
         SaveChartState();
         _authCts?.Cancel();
+        _calendarTimer.Stop();
         _calendarCts?.Cancel();
         _historyCts?.Cancel();
         _repairCts?.Cancel();
